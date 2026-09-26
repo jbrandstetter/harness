@@ -35,6 +35,7 @@ import (
 	"github.com/stump-wtf/harness/internal/notify"
 	rt "github.com/stump-wtf/harness/internal/runtrace/runtracetest"
 	"github.com/stump-wtf/harness/internal/supervisor"
+	"github.com/stump-wtf/harness/internal/testwait"
 )
 
 // notifyRecorder is a hook that saves each delivery's stdin and
@@ -93,10 +94,14 @@ func readHookDeliveries(t *testing.T, dir string) []hookDelivery {
 	return out
 }
 
-// waitHookEvent waits for a delivery of event and returns it.
+// waitHookEvent waits for a delivery of event and returns it. The budget
+// scales with the go test deadline (testwait.Budget), like the other waits
+// in this suite: on a loaded CI runner the daemon runs far slower than a
+// laptop, and a fixed 15s expired before the stop+notify path was scheduled
+// at all (main went red twice on this after #649 landed).
 func waitHookEvent(t *testing.T, dir, event string) hookDelivery {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(testwait.Budget(t, 15*time.Second))
 	for {
 		for _, d := range readHookDeliveries(t, dir) {
 			if d.payload.Event == event {
