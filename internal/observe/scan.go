@@ -43,6 +43,11 @@ package observe
 // @joestump-agent 09/21/2026 - review: a read that returns items leaves the
 // stall check armed, so an orphan and a resume landing in one poll interval
 // are recovered without waiting for the session to write again.
+//
+// @joestump-agent 09/25/2026 - Attribution judges an open run as of the
+// moment the session was read (readAt, #732), not the scan's start, so
+// activity written during a slow scan is delivered instead of dropped as
+// Unattributed (#710; regression tests in attribution_clock_test.go).
 
 import (
 	"context"
@@ -468,7 +473,18 @@ func (o *Observer) read(ctx context.Context, st *session, scopes []runtrace.Scop
 		return
 	}
 
-	name, claimants := runtrace.ClaimantAt(st.meta, at, scopes, readAt)
+	// readAt is the moment this session was read, later than the scan's own
+	// clock when a scan takes seconds. A row can still be dated later still —
+	// its instant is the data's clock, not the host's, and a fixture's frozen
+	// clock does not move under a read — so an open run is judged as of the
+	// later of the two. With the scan's start clock alone, a row newer than
+	// now+Slack matched no run, was counted Unattributed, and the watermark
+	// moved past it for good (#710; attribution_clock_test.go).
+	asOf := readAt
+	if at.After(asOf) {
+		asOf = at
+	}
+	name, claimants := runtrace.ClaimantAt(st.meta, at, scopes, asOf)
 	st.contested = len(claimants) > 1
 	t := targets[name]
 	if name == "" || t == nil || !t.hasWorkdir {
