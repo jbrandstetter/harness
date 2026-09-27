@@ -79,7 +79,16 @@ In one change, and for one repository only:
 
 While the block is still on, the forge refuses to merge any PR that is behind
 `main`, so a train in `merge` mode would get `merge-refused` for nearly every
-PR. That is why the two changes go together.
+PR. That is why the two changes go together. The train deliberately does not
+work around the block by running the forge's "update branch" on refused PRs:
+an update creates a new head SHA, which orphans every existing approval (the
+PR becomes `no approval on current head` and stale approvals are dismissed),
+so the PR would loop out of the queue until a reviewer re-approved it — while
+rewriting the author's branch as a side effect. The stuck-PR path is instead
+the one-comment author todo, and the block comes off at cutover because the
+train's tested-tree guarantee is exactly the guarantee the block was
+providing. The reasoning is written up in ADR-0032, *Relationship to the
+rebase update*.
 
 ## Rollback
 
@@ -131,8 +140,11 @@ bypass that skipped step 3 still shows up in the daemon log.
 
 ## Known limits
 
-- **One PR per train.** A 10-minute pipeline lands at most about six PRs an
-  hour. Batching is a later decision.
+- **One PR per train (today).** The current binary spends one CI run per PR:
+  a 10-minute pipeline lands at most about six PRs an hour. Batching — up to
+  `batch` PRs sharing one train commit, bisecting by halves on red — is
+  specified as SPEC-0025 REQ-17 and is not yet in the binary; the daemon
+  ignores `batch` until it lands.
 - **Singleton per host.** Enable the train in exactly one daemon's config.
   Two daemons on different hosts would race. The re-check before each merge
   and the tree verification after it limit the damage to one merge and a

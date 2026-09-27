@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-09-23
 decision-makers: [joestump]
 related: [ADR-0005, ADR-0006, ADR-0008, ADR-0016]
@@ -8,8 +8,13 @@ governs: [SPEC-0025]
 
 # ADR-0032: A merge train — one deterministic merger per repo tests the exact tree that lands, and only it moves `main`
 
-> **Not yet implemented.** Design stage for epic #540. SPEC-0025 specifies the
-> behaviour; the stories #597–#605 implement it.
+> **Implemented** on `main` (`internal/mergetrain/`, `internal/config/mergetrain.go`,
+> `internal/core/mergetrain.go`), landed by epic
+> [stump.wtf/harness#540](https://gitea.stump.rocks/stump.wtf/harness/issues/540)
+> (stories #596–#605).
+> SPEC-0025 (`docs/openspec/specs/merge-train/`) specifies the behaviour;
+> the pilot and cutover are tracked on #605. Batching (2026-09-27) is
+> specified as SPEC-0025 REQ-17 and is follow-up code work.
 
 ## Context and Problem Statement
 
@@ -132,8 +137,11 @@ Per enabled repo, one driver goroutine. Each tick (default every 60 s):
 
 "Batching" in this ADR means the queue drains without a human between merges,
 not that several PRs share one CI run. One PR per train keeps the tree-equality
-argument simple and a red run attributable; combining PRs is a later, separate
-decision (see *More Information*).
+argument simple and a red run attributable. Sharing a train commit was later
+accepted anyway (SPEC-0025 REQ-17, `batch > 1`): one CI run on up to N heads,
+bisecting by halves on red, with the merge, re-check and verification still
+per PR — batching changes how many PRs share a train commit, not any of the
+safety properties below.
 
 ### Why tested == merged (Decisions 1 and 2)
 
@@ -290,6 +298,28 @@ to resolve a conflict the train reported, and on repos without a train. While
 an outdated PR, so a train in `merge` mode could only land PRs that are
 already current; that is why the pilot runs in `report` mode and the cutover
 turns the block off in the same change that turns the train on (#605).
+
+**Why the train does not just click "update branch".** When the block is on,
+a refused PR could be refreshed with `POST /repos/{o}/{r}/pulls/{n}/update`
+instead of turning the block off. The train deliberately does not, because an
+update is not free: it creates a **new head SHA**, and every approval the
+reviewer left is on the old head. Under REQ-2 the PR is immediately
+ineligible (`no approval on current head`), and `dismiss_stale_approvals`
+makes it explicit — so the PR leaves the queue until someone re-approves a
+branch the author did not meaningfully change. The train would trade a
+deterministic merge-refused for a loop that needs a human reviewer to break,
+while rewriting the author's branch history as a side effect (which is why
+A3 was rejected too). Conflicts are worse: resolving one needs an LLM or a
+human writing commits, and D3 keeps LLMs out of the train. The unstick path
+is already the E1 comment: on `merge-refused` (or a conflict) the train
+@mentions the author once and Switchboard routes an author todo — the train
+keeps moving with the other PRs while the stuck PR's author (or their agent)
+fixes it; once the refreshed head carries a qualifying approval, the PR
+re-enters the queue on its own. Turning the block off at cutover remains the
+right move for the common case: the train's squash merge lands
+`merge(base, head)` regardless of whether the head contains `base`, so the
+current-tree guarantee the block provides is precisely what the train
+reproduces by itself.
 
 ### Emergency bypass
 

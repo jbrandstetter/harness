@@ -21,7 +21,6 @@ it.
 ### Non-Goals
 
 - A GitHub implementation. Gitea is where our CI gates merges.
-- Batching several PRs into one train commit.
 - Writing Switchboard todos (ADR-0032, Decision 5, Option 1).
 
 ## Decisions
@@ -200,6 +199,29 @@ type Logger interface {
 }
 ```
 
+### Batching (`batch > 1`, REQ-17)
+
+The v1 train spent one CI run per PR; at a ten-minute pipeline that is six
+landings an hour, and on a queue-heavy repo the train, not CI, becomes the
+bottleneck. Batching spends **one CI run on up to `batch` heads**:
+
+- The tick takes the first `batch` eligible PRs in `Order`, and the build
+  folds them onto the train commit in sequence (`merge-tree <tree-so-far>
+  <head-i>` for each head, in order). A conflict is attributed to the first
+  head that rejects, which gets the usual comment; the earlier heads in the
+  batch could have landed on their own, so on conflict the batch shrinks to
+  the heads before the failing one and that smaller batch is built.
+- Red bisects by halves (REQ-17): split, rebuild, recurse. The bisect reuses
+  the same build/CI path, so it needs no new state machine — a half is just a
+  smaller batch, built and tested the same way.
+- The merge phase is unchanged per PR: heads stay pinned, REQ-7 re-checks and
+  REQ-8 verification run per merge, so a batch green for the combined tree
+  still cannot land an unverified tree per PR.
+- `TrainSpec` grows `Heads []PRHead` (number, SHA) with `HeadSHA` kept as the
+  single-PR spelling; `batch = 1` builds exactly today's commit. The fake's
+  `OnTrain` hook already decides what a build produces, so tests script
+  batch builds without a new interface.
+
 ### Configuration (#604)
 
 ```toml
@@ -207,6 +229,7 @@ type Logger interface {
 enabled = false                 # REQ-1
 mode = "report"                 # or "merge"
 repos = ["stump.wtf/harness"]
+batch = 1                       # REQ-17: PRs per train commit; > 1 batches and bisects on red
 base_branch = "main"
 poll_interval = "60s"
 ci_timeout = "30m"
