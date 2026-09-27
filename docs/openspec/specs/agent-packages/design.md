@@ -1,4 +1,4 @@
-# Design: Agent Package Taps
+# Design: Agent Package Stables
 
 ## Context
 
@@ -33,7 +33,7 @@ installer, converge rules), ADR-0029 (no supply-chain opt-in), ADR-0030
 
 ### Goals
 
-* A single command installs a named package from a trusted tap into a
+* A single command installs a named package from a trusted stable into a
   running or not-yet-running configuration.
 * One git repository can hold many independently installable packages.
 * Nothing a package manifest can declare can execute code, reach the
@@ -47,7 +47,7 @@ installer, converge rules), ADR-0029 (no supply-chain opt-in), ADR-0030
 
 ### Non-Goals
 
-* **A central package index.** Discovery is per-tap, by design (ADR-0040
+* **A central package index.** Discovery is per-stable, by design (ADR-0040
   Decision 1).
 * **Package build steps, install hooks, or scripts of any kind.** A package
   is data. An author who needs a wrapper script publishes it separately and
@@ -55,7 +55,7 @@ installer, converge rules), ADR-0029 (no supply-chain opt-in), ADR-0030
 * **Cryptographic signing or provenance attestation.** Commit-SHA pinning
   plus a mandatory diff-and-confirm is the whole of this revision's
   supply-chain defense. Sigstore/GPG is a credible upgrade, not a blocker.
-* **A first-party "official" tap with weaker scrutiny.** Every tap, however
+* **A first-party "official" stable with weaker scrutiny.** Every stable, however
   reputable, goes through the same scan-diff-confirm gate. This is a
   permanent stance, not a v1 gap.
 * **Fleet-wide prompt registration, scheduled jobs, or MCP servers as
@@ -68,15 +68,15 @@ installer, converge rules), ADR-0029 (no supply-chain opt-in), ADR-0030
 
 ## Decisions
 
-### Reuse `skill_repo`'s shape for `tap`, rather than a fourth external-source pattern
+### Reuse `skill_repo`'s shape for `stable`, rather than a fourth external-source pattern
 
-**Choice**: `[tap.*]` is structurally `skill_repo` with the fields it
+**Choice**: `[stable.*]` is structurally `skill_repo` with the fields it
 needs and none it doesn't: `remote`, `public`. Same global-only rule, same
 "a managed clone the daemon never fetches" rule, same explicit
 `update`/`sync` verb.
 
 **Rationale**: an operator who already has `skill_repo` tables understands
-`tap` tables for free. Diverging the shape for no functional reason would
+`stable` tables for free. Diverging the shape for no functional reason would
 be a second thing to learn.
 
 **Alternatives considered**: a bespoke registry format with its own schema
@@ -85,22 +85,22 @@ needs a different shape than installable-skill-definitions at the
 trust-declaration layer; they diverge only in what happens *after* the
 source is trusted (REQ-3 onward).
 
-### The content-addressed store is the unit of immutability, not the tap clone
+### The content-addressed store is the unit of immutability, not the stable clone
 
 **Choice**: installing copies a package's files at one commit into
-`installed/<tap>/<package>/<sha>/`, a directory that is never rewritten
-once it exists. The tap's own clone (`taps/<name>/`) is a mutable,
-fast-forward-only working copy that `tap update` moves forward; it is
+`installed/<stable>/<package>/<sha>/`, a directory that is never rewritten
+once it exists. The stable's own clone (`stables/<name>/`) is a mutable,
+fast-forward-only working copy that `stable update` moves forward; it is
 never itself a resolution target once a package's content has been copied
 out of it.
 
 **Rationale**: this is what makes rollback network-free (re-point `source`
 at a retained prior `sha`) and what makes a config load's resolution step
-pure filesystem I/O with no dependency on the tap clone's current state.
-It also means pruning the tap clone (not designed here, but a natural
-future `tap gc`) can never invalidate an installed pin.
+pure filesystem I/O with no dependency on the stable clone's current state.
+It also means pruning the stable clone (not designed here, but a natural
+future `stable gc`) can never invalidate an installed pin.
 
-**Alternatives considered**: resolve `source` against the tap clone
+**Alternatives considered**: resolve `source` against the stable clone
 directly at whatever commit `HEAD` happens to be (Decision 4, Option 3 in
 the ADR) — rejected because a `git fetch` moving the clone's `HEAD` would
 then silently change a running configuration's meaning between reloads,
@@ -112,7 +112,7 @@ which is the exact ambient-trust problem this feature exists to remove.
 credential/exfiltration phrases, pipe-to-shell phrases, oversized encoded
 blocks) ship compiled into the `harness` binary and are not
 operator-configurable in v1. `harness agent info` and every scan-blocked
-error name which pattern matched, by a stable identifier, so a false
+error name which pattern matched, by a fixed identifier, so a false
 positive is reportable and fixable upstream.
 
 **Rationale**: a configurable scanner is a second thing a malicious project
@@ -132,7 +132,7 @@ see Open Questions.
 
 ### `harness agent` is a pure client subtree; the daemon gains one resolver, nothing else
 
-**Choice**: every subcommand under `harness agent` (`tap add/remove/update`,
+**Choice**: every subcommand under `harness agent` (`stable add/remove/update`,
 `search`, `info`, `install`, `upgrade`, `uninstall`, `prune`, `list`) runs
 entirely in the CLI process, reading and writing `harness.toml` and the two
 on-disk stores directly. The only daemon-side change is the config loader's
@@ -152,14 +152,14 @@ running at all, the same way hand-editing `harness.toml` does today.
 sequenceDiagram
     participant Op as Operator
     participant CLI as harness agent (client)
-    participant TapClone as tap clone (state dir)
+    participant TapClone as stable clone (state dir)
     participant Store as content-addressed store
     participant Cfg as harness.toml
     participant Daemon as daemon (config load)
 
-    Op->>CLI: tap add stump-wtf <remote>
+    Op->>CLI: stable add stump-wtf <remote>
     CLI->>TapClone: git clone
-    CLI->>Cfg: write [tap.stump-wtf]
+    CLI->>Cfg: write [stable.stump-wtf]
 
     Op->>CLI: agent install stump-wtf/pr-reviewer
     CLI->>TapClone: read packages/pr-reviewer/package.toml at HEAD
@@ -196,12 +196,12 @@ sequenceDiagram
   Option 1 (silent after the first trust), per ADR-0040 Decision 3; the
   typed-retype requirement for `high` findings and for `mcp_allow` "write"
   specifically resists rubber-stamping those two cases.
-* **Two more pieces of local git/filesystem state per tap.** More moving
+* **Two more pieces of local git/filesystem state per stable.** More moving
   parts than a single `harness.toml`. → Same cost ADR-0030 already accepted
-  for `skill_repo`; `harness agent list`/`tap list` make the state
+  for `skill_repo`; `harness agent list`/`stable list` make the state
   inspectable rather than hidden.
 * **No provenance stronger than "whoever controls this git remote right
-  now."** A compromised tap maintainer's account, or a compromised forge,
+  now."** A compromised stable maintainer's account, or a compromised forge,
   can serve a bad commit under a name the operator already trusts. →
   Deferred to a future signing mechanism (see Open Questions); commit-SHA
   pinning at least means a *specific* compromised commit has to be the one
@@ -212,7 +212,7 @@ sequenceDiagram
 ## Migration Plan
 
 Purely additive. No existing harness table, adapter, or skill-path
-behavior changes for a harness that never sets `source`. `[tap.*]` is a new
+behavior changes for a harness that never sets `source`. `[stable.*]` is a new
 table with no prior meaning to collide with. The SPEC-0006 skill-path merge
 order gains a tier that contributes nothing until a `source` is present, so
 every existing configuration's resolved skill set is byte-identical before
@@ -221,7 +221,7 @@ and after this ships.
 ## Open Questions
 
 * Should the fixed scan pattern list be versioned and exposed
-  (`harness agent scan --dry-run <path>`) so a tap author can check their
+  (`harness agent scan --dry-run <path>`) so a stable author can check their
   own package against it before publishing, the way `harness skills lint`
   lets a skill-repo author self-check?
 * Should there be an opt-in, clearly-labeled model-assisted second pass on

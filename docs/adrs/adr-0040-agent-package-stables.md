@@ -7,7 +7,7 @@ governs: [SPEC-0026]
 related: [ADR-0008, ADR-0011, ADR-0023, ADR-0024, ADR-0029, ADR-0038, ADR-0039]
 ---
 
-# ADR-0040: Agent package taps — installable, trust-gated harness definitions shared as git repositories
+# ADR-0040: Agent package stables — installable, trust-gated harness definitions shared as git repositories
 
 ## Context and Problem Statement
 
@@ -47,7 +47,7 @@ moment it is installed?
 * **The daemon stays agnostic and gains no new trust boundary.** It must
   resolve an already-installed, already-pinned package from local disk
   exactly the way it resolves a hand-written harness table, and it must
-  never clone, fetch, or reach a tap's git remote itself — the same rule
+  never clone, fetch, or reach a stable's git remote itself — the same rule
   ADR-0030 already enforces for skill repos ("the daemon never fetches,
   because a private remote would need a credential").
 * **Trust is an explicit, hand-authored act, never inherited from a cloned
@@ -91,7 +91,7 @@ Four questions.
 
 * Option 1 — A single global registry/index (npm- or crates.io-style),
   centrally curated and searched by name.
-* Option 2 — Git-repo taps, Homebrew-style: any git remote the operator
+* Option 2 — Git-repo stables, Homebrew-style: any git remote the operator
   explicitly names can hold any number of packages under a fixed layout; no
   central index at all.
 * Option 3 — Ungrouped, one-off installs from a bare URL or path with no
@@ -111,7 +111,7 @@ Four questions.
 
 ### Decision 3 — What happens to bundled skills/text before an agent ever sees them
 
-* Option 1 — Trust the tap once, at `tap add`; every install/upgrade after
+* Option 1 — Trust the stable once, at `stable add`; every install/upgrade after
   that is silent.
 * Option 2 — Every install and upgrade — not just the first — runs a
   heuristic content scan and shows the human a full diff of the manifest and
@@ -126,24 +126,24 @@ Four questions.
   into `harness.toml` as an ordinary `[harness.*]` table, indistinguishable
   from hand-written config.
 * Option 2 — A harness table gains one new field, `source =
-  "<tap>/<package>@<sha>"`, resolved at config-load time against an
+  "<stable>/<package>@<sha>"`, resolved at config-load time against an
   immutable, content-addressed local store; any other key on the same table
   is a local override layered over the package's declared values.
 * Option 3 — Packages are resolved live at every daemon start/reload
-  directly from the tap's working clone, with no separate pin and no
+  directly from the stable's working clone, with no separate pin and no
   managed store.
 
 ## Decision Outcome
 
-Chosen: **Decision 1 → Option 2** (git-repo taps), **Decision 2 → Option 2**
+Chosen: **Decision 1 → Option 2** (git-repo stables), **Decision 2 → Option 2**
 (declarative-only, narrowed schema), **Decision 3 → Option 2** (scan + diff +
 confirm on every install and upgrade, high severity blocks), **Decision 4 →
 Option 2** (a `source` pointer field over an immutable, content-addressed
 local store).
 
-In one sentence: a **tap** is a git remote the operator explicitly trusts
+In one sentence: a **stable** is a git remote the operator explicitly trusts
 once (joining a global-only table, exactly like ADR-0030's `skill_repo`);
-`harness agent install <tap>/<package>` clones or updates that tap's managed
+`harness agent install <stable>/<package>` clones or updates that stable's managed
 local copy, resolves one package's manifest, scans its content, shows the
 human everything it would change, and — only on confirmation — pins it by
 commit SHA into a content-addressed store and writes one line (`source =
@@ -152,37 +152,42 @@ one line against the local, already-installed pin, so the entire
 fetch-scan-confirm-trust surface stays outside the supervisor, exactly where
 ADR-0030 already put `harness distill`/`harness skills sync`.
 
-### Taps: the trust ledger, global-only
+The name is Harness's own, not Homebrew's: a *stable* is where harnesses are
+kept, and "a stable of agents" already reads as ordinary English. The
+mechanism is still the Homebrew tap model, so the rest of this record says
+"tap" only when it means Homebrew's.
+
+### Stables: the trust ledger, global-only
 
 ```toml
 # ~/.config/harness/harness.toml. Global only: a project file declaring any
 # of this is rejected, joining ADR-0009's list beside [adapter.*] and
 # [skill_repo.*].
 
-[tap.stump-wtf]
-remote = "https://gitea.stump.rocks/stump.wtf/harness-tap.git"
+[stable.stump-wtf]
+remote = "https://gitea.stump.rocks/stump.wtf/harness-stable.git"
 public = true            # declared visibility, as ADR-0030; unset is treated as public
 ```
 
-* `harness agent tap add <name> <remote> [--public|--private]` is the only
-  way a tap is added — mirrors `brew tap` and ADR-0030's `skill_repo`: adding
+* `harness agent stable add <name> <remote> [--public|--private]` is the only
+  way a stable is added — mirrors `brew tap` and ADR-0030's `skill_repo`: adding
   trust is a deliberate, one-time, hand-run command, never an implicit side
   effect of installing anything.
-* `harness agent tap remove <name>` deletes the table and reports every
+* `harness agent stable remove <name>` deletes the table and reports every
   package still installed from it (removal does not uninstall them; see
   Uninstall below).
-* `harness agent tap update [name]` is the only thing that ever fetches.
-  Like `harness skills sync`, the daemon never fetches — a private tap needs
+* `harness agent stable update [name]` is the only thing that ever fetches.
+  Like `harness skills sync`, the daemon never fetches — a private stable needs
   a credential, and that credential belongs to the CLI invocation, never to
   the supervisor.
-* A tap's clone lives at `$XDG_STATE_HOME/harness/agents/taps/<name>/`,
+* A stable's clone lives at `$XDG_STATE_HOME/harness/agents/stables/<name>/`,
   read-only from the daemon's perspective, exactly as ADR-0030's serving
   clone is never the operator's own checkout.
 
 ### Layout: one repo, many packages
 
 ```
-<tap-repo>/
+<stable-repo>/
   packages/
     pr-reviewer/
       package.toml
@@ -192,8 +197,8 @@ public = true            # declared visibility, as ADR-0030; unset is treated as
       package.toml
 ```
 
-`harness agent search [query]` and `harness agent info <tap>/<package>` read
-the tap's local clone; nothing here needs the daemon at all, matching the
+`harness agent search [query]` and `harness agent info <stable>/<package>` read
+the stable's local clone; nothing here needs the daemon at all, matching the
 "client command, not daemon subsystem" split ADR-0030 already drew for
 `harness distill`.
 
@@ -227,7 +232,7 @@ network     = false
   containing `${`, closing exactly the smuggling path ADR-0038 defined.
 * `[package]`/`[requests]` are metadata; nothing under them is executable.
   No table other than `[package]`, `[harness]`, `[requests]` may appear:
-  `[adapter.*]`, `[skill_repo.*]`, `[tap.*]`, `[mcp.*]`, `[job.*]`,
+  `[adapter.*]`, `[skill_repo.*]`, `[stable.*]`, `[mcp.*]`, `[job.*]`,
   `[server]`, `[profile.*]` are all load errors inside a package manifest,
   for the same reason a project `harness.toml` is barred from them
   (ADR-0009, ADR-0039, ADR-0030).
@@ -241,12 +246,12 @@ network     = false
 
 ### Install: scan, diff, confirm, pin
 
-`harness agent install <tap>/<package>[@<version>] [--as <name>]`:
+`harness agent install <stable>/<package>[@<version>] [--as <name>]`:
 
-1. Resolves `<version>` (default: the tap's current default branch) to an
-   exact commit SHA in the tap's local clone. Nothing floats past this
+1. Resolves `<version>` (default: the stable's current default branch) to an
+   exact commit SHA in the stable's local clone. Nothing floats past this
    point. When `<version>` is itself a full commit SHA already present in
-   the local content-addressed store, resolution is entirely local — no tap
+   the local content-addressed store, resolution is entirely local — no stable
    clone lookup is needed, which is also how a rollback to a previously
    installed pin works.
 2. Runs the **content scan** (a heuristic lint over the manifest and every
@@ -257,24 +262,24 @@ network     = false
    itemized, human-readable asks, every bundled file's path, and — for an
    upgrade — a diff against what's currently pinned. A `high` finding blocks
    unless `--force-unsafe` is given, which requires re-typing
-   `<tap>/<package>` and is recorded in the install record. A request for
+   `<stable>/<package>` and is recorded in the install record. A request for
    `mcp_allow` including `"write"` requires the same typed re-confirmation
    regardless of scan findings, because ADR-0010 already treats MCP write
    scope as a deliberate, documented acceptance of risk.
 4. On confirmation (or `--yes`, which never bypasses a `high` block), copies
    the package's files at that commit into
-   `$XDG_STATE_HOME/harness/agents/installed/<tap>/<package>/<sha>/` —
+   `$XDG_STATE_HOME/harness/agents/installed/<stable>/<package>/<sha>/` —
    immutable, content-addressed, prior pins retained until pruned.
 5. Writes or updates exactly one line in the target `[harness.<name>]` table
    (default `<name>` is the package name; `--as` overrides it, so the same
    package can be installed more than once under different local names) in
-   the target `harness.toml`: `source = "<tap>/<package>@<sha>"`. Any other
+   the target `harness.toml`: `source = "<stable>/<package>@<sha>"`. Any other
    key already on that table (`workdir`, `model`, additional `skill_paths`,
    …) is preserved and layers over the package's declared values as a local
    override — the same "nearest wins" rule ADR-0011's merge already uses.
 
-`harness agent upgrade <tap>/<package>` re-runs steps 1–5 against the tap's
-latest **already-fetched** state (`tap update` must be run first; upgrade
+`harness agent upgrade <stable>/<package>` re-runs steps 1–5 against the stable's
+latest **already-fetched** state (`stable update` must be run first; upgrade
 never fetches either) and is the only way an installed pin ever changes.
 `harness agent uninstall <name>` removes the whole harness table (with
 confirmation) and, once nothing references it, `harness agent prune` removes
@@ -282,9 +287,9 @@ the content-addressed entry.
 
 ### Trust declaration is global-only; naming a package is not
 
-`[tap.*]` joins ADR-0009's global-only list — a cloned repository must never
+`[stable.*]` joins ADR-0009's global-only list — a cloned repository must never
 expand what is trusted. `source` itself is **not** global-only: a project
-`harness.toml` may reference an already-installed `<tap>/<package>@<sha>`
+`harness.toml` may reference an already-installed `<stable>/<package>@<sha>`
 exactly as it may already set `skill_paths`, because naming a pin trusts
 nothing new. The pin must already exist in the local content-addressed
 store — installed by an explicit prior command on that machine — or config
@@ -296,7 +301,7 @@ scanned, or newly trusted merely by naming a `source`.
 
 At config load, a harness table with `source` set is resolved by reading
 the pinned manifest from the local, already-installed store — never the
-network, never the tap's live clone — merging its `[harness]` values under
+network, never the stable's live clone — merging its `[harness]` values under
 the table's own local keys, and validating the result exactly as a
 hand-written table would be. A `source` naming a pin that is not in the
 local store (never installed, or the store was pruned) is the same class of
@@ -334,11 +339,11 @@ suggests the human add it by hand; nothing does it for them.
   row.
 * Good, because a package cannot smuggle a credential (ADR-0038's
   `env_file`/`secrets_env`/`${NAME}` ban) or a new execution primitive (no
-  hooks, no scripting, adapter selection only) — the worst a malicious tap
+  hooks, no scripting, adapter selection only) — the worst a malicious stable
   can do at *install* time is fail a scan; at *run* time it is exactly as
   scoped as a hand-written harness the operator typed themselves.
 * Good, because pinning by commit SHA plus a diff on every upgrade closes
-  the Homebrew tap-rug-pull shape: a tap that earns trust with a clean
+  the Homebrew tap rug-pull shape: a stable that earns trust with a clean
   package and later adds injected content cannot reach a running harness
   silently — the human sees the exact diff before the new pin takes effect.
 * Good, because `source` keeps `harness.toml` small and hand-editable
@@ -346,7 +351,7 @@ suggests the human add it by hand; nothing does it for them.
   keys, and the file never balloons with a copy of someone else's manifest.
 * Good, because reusing ADR-0030's shape (global-only trust table, managed
   clone, explicit sync, credential split) means an operator who already
-  understands `skill_repo` and `harness distill` already understands `tap`
+  understands `skill_repo` and `harness distill` already understands `stable`
   and `harness agent`.
 * Bad, because the content scan is a heuristic tripwire over natural
   language — it will miss a well-disguised instruction and will also flag
@@ -360,11 +365,11 @@ suggests the human add it by hand; nothing does it for them.
   way ADR-0030 built for machine-authored skills — the review gate here is
   entirely the installing human reading a diff once, not an automated
   fidelity check.
-* Bad, because a fifth global-only table (`tap.*`, alongside `adapter.*`,
+* Bad, because a fifth global-only table (`stable.*`, alongside `adapter.*`,
   `skill_repo.*`, `[server]`, `[profile.*]`) is one more thing ADR-0009's
   project-file rejection list must enumerate and one more thing a config
   validator must keep in sync.
-* Bad, because two independent local git states now exist per tap plus a
+* Bad, because two independent local git states now exist per stable plus a
   content-addressed store per installed package — more moving parts on disk
   than a single `harness.toml`, mirroring the same cost ADR-0030 already
   accepted for `skill_repo`.
@@ -373,7 +378,7 @@ suggests the human add it by hand; nothing does it for them.
 
 ### Confirmation
 
-SPEC-0026 formalizes tap registration and the global-only rule, the manifest
+SPEC-0026 formalizes stable registration and the global-only rule, the manifest
 schema and its forbidden-table/forbidden-key list, the content scan's
 severity levels and blocking behavior, the install/upgrade/uninstall
 lifecycle including the content-addressed store and the `source` field's
@@ -382,14 +387,14 @@ testable requirements.
 
 Acceptance tests that matter:
 
-* A project `harness.toml` declaring `[tap.*]` fails load, naming the file
+* A project `harness.toml` declaring `[stable.*]` fails load, naming the file
   (the same shape as `[adapter.*]`/`[skill_repo.*]` today).
 * A package manifest declaring `env_file`, `secrets_env`, or a string value
   containing `${` fails to install with an error naming the offending key.
 * A package manifest declaring any table other than `[package]`,
   `[harness]`, `[requests]` fails to install, naming the table.
 * Installing pins an exact commit SHA even when `@version` names a moving
-  branch; a second `install` of the same `tap/package` with no intervening
+  branch; a second `install` of the same `stable/package` with no intervening
   `upgrade` resolves to the same pin.
 * An upgrade whose diff includes a `high`-severity scan finding is refused
   without `--force-unsafe`, and refused even with `--yes`.
@@ -417,26 +422,26 @@ Acceptance tests that matter:
 * Good, because search and discovery are trivial with one index.
 * Bad, because it centralizes curation Harness has no team to do, and a
   single index is a bigger single point of trust and failure than a
-  decentralized set of taps the operator names one at a time.
+  decentralized set of stables the operator names one at a time.
 * Bad, because it does nothing the owner actually asked for: a
   Homebrew-style tap, explicitly, is a decentralized model by design.
 
-#### Option 2 — Git-repo taps (chosen)
+#### Option 2 — Git-repo stables (chosen)
 
 * Good, because it needs no infrastructure Harness doesn't already run — a
   git remote, exactly like `skill_repo`.
-* Good, because one repo naturally holds many packages, satisfying the tap
+* Good, because one repo naturally holds many packages, satisfying the stable
   requirement directly.
-* Neutral, because discovery is per-tap (`search` inside a trusted tap), not
+* Neutral, because discovery is per-stable (`search` inside a trusted stable), not
   global — a deliberate trade against Option 1's centralization risk.
 
 #### Option 3 — Bare URL installs
 
 * Good, because it is the least machinery.
 * Bad, because it has no persistent trust ledger: every install re-asks the
-  human to trust a URL from scratch, with no `tap list` to audit what's
+  human to trust a URL from scratch, with no `stable list` to audit what's
   trusted, and namespacing collapses (two packages named `pr-reviewer` from
-  different sources cannot coexist as `<tap>/<package>`).
+  different sources cannot coexist as `<stable>/<package>`).
 * Bad, because it invites exactly the copy-paste-a-URL habit this feature
   exists to replace.
 
@@ -468,12 +473,12 @@ Acceptance tests that matter:
 
 ### Decision 3
 
-#### Option 1 — Trust once at tap add, then silent
+#### Option 1 — Trust once at stable add, then silent
 
-* Good, because it is the least friction after the first `tap add`.
-* Bad, because it is exactly the tap-rug-pull shape: a tap earns trust with
+* Good, because it is the least friction after the first `stable add`.
+* Bad, because it is exactly the tap rug-pull shape: a stable earns trust with
   a clean first package, then a later version — or a different package in
-  the same tap — carries injected content with no second look from anyone.
+  the same stable — carries injected content with no second look from anyone.
 
 #### Option 2 — Scan + diff + confirm every time (chosen)
 
@@ -516,11 +521,11 @@ Acceptance tests that matter:
   must be reached for that, the same cost ADR-0039 already accepted for
   adapters.
 
-#### Option 3 — Resolve live from the tap's clone every load
+#### Option 3 — Resolve live from the stable's clone every load
 
 * Good, because there's no separate pin or store to manage.
 * Bad, because a config reload could silently change a running definition
-  if the tap's clone moved underneath it — reintroducing exactly the
+  if the stable's clone moved underneath it — reintroducing exactly the
   untracked, ambient trust this ADR exists to remove.
 
 ## Architecture Diagram
@@ -528,24 +533,24 @@ Acceptance tests that matter:
 ```mermaid
 flowchart TD
     subgraph cfg["harness.toml, global only"]
-        TAP["[tap.name] remote, public"]
-        H["[harness.pr-reviewer]<br/>source = tap/pkg@sha<br/>+ local overrides"]
+        STABLE["[stable.name] remote, public"]
+        H["[harness.pr-reviewer]<br/>source = stable/pkg@sha<br/>+ local overrides"]
     end
 
     subgraph cli["harness agent — client only, never the daemon"]
-        ADD["tap add: clone tap, record trust"]
-        UPD["tap update: explicit fetch only"]
-        SRCH["search / info: read local tap clone"]
+        ADD["stable add: clone stable, record trust"]
+        UPD["stable update: explicit fetch only"]
+        SRCH["search / info: read local stable clone"]
         INST["install / upgrade:<br/>resolve pin -> scan -> diff -> confirm"]
         UNIN["uninstall: drop harness table, prune store"]
     end
 
     subgraph store["local, content-addressed"]
-        TAPCLONE["$XDG_STATE_HOME/harness/agents/taps/name/<br/>(read-only clone)"]
-        PINNED["$XDG_STATE_HOME/harness/agents/installed/tap/pkg/sha/<br/>(immutable manifest + skills)"]
+        TAPCLONE["$XDG_STATE_HOME/harness/agents/stables/name/<br/>(read-only clone)"]
+        PINNED["$XDG_STATE_HOME/harness/agents/installed/stable/pkg/sha/<br/>(immutable manifest + skills)"]
     end
 
-    TAP --> ADD --> TAPCLONE
+    STABLE --> ADD --> TAPCLONE
     UPD --> TAPCLONE
     TAPCLONE --> SRCH
     TAPCLONE --> INST
@@ -569,10 +574,10 @@ flowchart TD
 ## More Information
 
 * **Extends ADR-0006** — adds `source` to the harness table schema and a new
-  global-only `[tap.*]` table; the file stays hand-authored and the source
+  global-only `[stable.*]` table; the file stays hand-authored and the source
   of truth, and a package pin is one grep-able line, never a hidden
   resolution.
-* **Extends ADR-0009** — `[tap.*]` joins the global-only list, because a
+* **Extends ADR-0009** — `[stable.*]` joins the global-only list, because a
   cloned repository must never expand what's trusted. `source` is
   deliberately *not* on that list: naming an already-installed pin is a
   value reference, not a trust declaration, and it resolves to nothing if
@@ -606,7 +611,7 @@ flowchart TD
   ADR's secret-reference grammar.
 * **Governs SPEC-0026**.
 * **Deferred:** cryptographic signing or provenance attestation beyond
-  commit-SHA pinning (Sigstore/GPG); a first-party "official" tap tier with
+  commit-SHA pinning (Sigstore/GPG); a first-party "official" stable tier with
   any different scrutiny than a third-party one — explicitly rejected as a
   permanent design stance, not merely deferred, because no tier should ever
   make a human trust an install without seeing it; fleet-wide
