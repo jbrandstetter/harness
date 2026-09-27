@@ -154,11 +154,7 @@ removal is a reviewed change. Scrubbing happens in `buildEnv` after the
 | `command` | its `transcripts` adapter's row | same | same | same |
 
 The table is data (`PinEvidence`), updated as agent-trace and the clients
-<<<<<<< HEAD
-record more. Until agent-trace#105 lands, every row is `model` at best, taken from
-=======
 record more. Until agent-trace emits usage items, every row is `model` at best, taken from
->>>>>>> origin/main
 `SessionMeta.Model`, which is session-level only. That makes `attest = "full"`
 a load error everywhere except Claude Code on `anthropic`. The capability check
 states that plainly, rather than pretending.
