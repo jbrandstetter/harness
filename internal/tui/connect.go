@@ -94,6 +94,11 @@ func (m *mutexController) Logs(name string, lines int) (protocol.LogsData, error
 	defer m.mu.Unlock()
 	return m.c.Logs(name, lines)
 }
+func (m *mutexController) LogEvents(name string, o client.LogOptions) (protocol.LogsData, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.c.LogEvents(name, o)
+}
 func (m *mutexController) Profiles() ([]protocol.ProfileInfo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

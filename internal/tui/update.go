@@ -83,6 +83,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case peekActivityMsg:
+		m.onPeekActivity(msg)
+		return m, nil
+
+	case chatHistoryMsg:
+		m.onChatHistory(msg)
+		return m, nil
+
 	case opResultMsg:
 		return m.onOpResult(msg)
 
@@ -355,6 +363,9 @@ func (m *Model) onTick() (tea.Model, tea.Cmd) {
 		// Retry the connection while disconnected.
 		cmds = append(cmds, m.connectCmd())
 	}
+	if m.chatHistoryDue() {
+		cmds = append(cmds, m.chatHistoryCmd())
+	}
 	if m.att != nil && m.att.animate() {
 		// keep ticking to finish the hop animation (tick already re-armed)
 	}
@@ -393,5 +404,8 @@ func (m *Model) peekCmd() tea.Cmd {
 	if !ok {
 		return nil
 	}
-	return fetchLogs(m.ctrl, sel.Name, peekLines)
+	// A one-shot's preview is its activity (peek_activity.go). The raw tail is
+	// still fetched: it is the fallback when the daemon cannot build the
+	// activity view, and the history attached scrollback opens on.
+	return tea.Batch(fetchLogs(m.ctrl, sel.Name, peekLines), m.peekActivityCmd(sel))
 }

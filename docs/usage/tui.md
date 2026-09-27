@@ -55,6 +55,22 @@ agent's messages show as plain text. Anything that is not modeled — shell
 errors, escape output, unknown event kinds — still passes through untouched.
 Every other adapter keeps the byte-faithful mirror.
 
+A **one-shot** — any harness with a `prompt` or `prompt_file`, scheduled or
+not — is read rather than sat in, so its preview is not its PTY at all. It
+shows the run exactly as `harness logs <name>` prints it on a terminal: the run
+header, then every read, edit and command as one line each, with repeats
+collapsed (`×2 11:45:31–11:45:45`) and failures marked. It refreshes every two
+seconds while the run is live. A daemon too old to build that view, or a
+harness whose agent keeps no transcript, falls back to the mirror.
+
+The **chatroom** (`C`) is every agent's activity in one stream, in the same
+visual language — clock, `@harness`, label, detail. Opening it also pulls each
+harness's latest run from the daemon and merges it in by time, so it is not
+empty just because nothing happened in the last few minutes, and it keeps
+pulling every ten seconds while open: a harness whose transcripts this machine
+cannot read (a remote daemon, a crush instance with its own data directory)
+still shows up. Rows the live stream and the daemon both deliver appear once.
+
 | Key | Action |
 |-----|--------|
 | `↵` | attach to the selected harness |

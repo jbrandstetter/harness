@@ -188,6 +188,14 @@ type Model struct {
 	search      textinput.Model
 	searchQuery string
 
+	// peekAct is a one-shot's structured activity, which the preview renders
+	// the way `harness logs` does instead of mirroring its PTY (peek_activity.go).
+	peekAct peekActivity
+	// chatHistPending counts the chatroom's outstanding history requests,
+	// chatHistAt when the latest round went out (chatroom_history.go).
+	chatHistPending int
+	chatHistAt      time.Time
+
 	// Live preview session (#200, see peek.go). The dashboard's peek is a
 	// read-only attach sized to the pane, so the daemon knows how big the
 	// viewer is and the guest's PTY follows it. peekSess is 0 when none is
