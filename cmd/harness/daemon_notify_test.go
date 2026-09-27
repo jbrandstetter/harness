@@ -35,6 +35,7 @@ import (
 	"github.com/stump-wtf/harness/internal/notify"
 	rt "github.com/stump-wtf/harness/internal/runtrace/runtracetest"
 	"github.com/stump-wtf/harness/internal/supervisor"
+	"github.com/stump-wtf/harness/internal/testwait"
 )
 
 // notifyRecorder is a hook that saves each delivery's stdin and
@@ -93,10 +94,19 @@ func readHookDeliveries(t *testing.T, dir string) []hookDelivery {
 	return out
 }
 
-// waitHookEvent waits for a delivery of event and returns it.
-func waitHookEvent(t *testing.T, dir, event string) hookDelivery {
+// waitHookEvent waits for a delivery of event and returns it. The budget
+// scales with the go test deadline (testwait.Budget), like the other waits
+// in this suite: on a loaded CI runner the daemon runs far slower than a
+// laptop, and a fixed 15s expired before the stop+notify path was scheduled
+// at all (main went red twice on this after #649 landed).
+//
+// The variadic diagnostics run once at the timeout and are appended to the
+// failure, so a red run on the runner says where the event died — observer
+// counters (delivered, dropped, unattributed, parse errors) or the guard's
+// view (events seen, trips issued) — instead of leaving the question open.
+func waitHookEvent(t *testing.T, dir, event string, diagnostics ...func() string) hookDelivery {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(testwait.Budget(t, 15*time.Second))
 	for {
 		for _, d := range readHookDeliveries(t, dir) {
 			if d.payload.Event == event {
@@ -108,7 +118,13 @@ func waitHookEvent(t *testing.T, dir, event string) hookDelivery {
 			for _, d := range readHookDeliveries(t, dir) {
 				got = append(got, d.payload.Event)
 			}
-			t.Fatalf("the hook never received %q (got %v)", event, got)
+			msg := fmt.Sprintf("the hook never received %q (got %v)", event, got)
+			for _, d := range diagnostics {
+				if s := d(); s != "" {
+					msg += "\n" + s
+				}
+			}
+			t.Fatalf("%s", msg)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -253,7 +269,14 @@ func TestDaemonNotifyFiresOnLoopStop(t *testing.T) {
 		)
 	}
 
-	got := waitHookEvent(t, out, core.NotifyLoopStopped)
+	got := waitHookEvent(t, out, core.NotifyLoopStopped,
+		// harness#740 review: the run-14372 red showed zero deliveries in
+		// 124s with nothing in the log between hook activation and failure,
+		// so whether the observer ever emitted or the guard ever tripped
+		// could not be told apart. These two lines answer it on the next red.
+		func() string { return fmt.Sprintf("observer stats: %+v", obs.Stats()) },
+		func() string { return fmt.Sprintf("loop guard: seen=%d trips=%+v", guard.Seen(), guard.Trips()) },
+	)
 	p := got.payload
 	if p.Harness != h.Name || p.Tool != "mcp_gitea_issue_write" || p.Count != loopguard.DefaultThreshold || p.State != "stopped" {
 		t.Fatalf("loop_stopped payload = %+v", p)
