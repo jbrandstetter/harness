@@ -78,20 +78,26 @@ func printHarnessTable(w io.Writer, hs []protocol.HarnessInfo) error {
 	for _, h := range hs {
 		// A stalled session (issue #347) reads healthy in every process
 		// signal; the marker is the one place the truth shows in `list`.
-		state := t.stateCell(h.State, h.Schedule, h.Held, h.ClosingUntil != "")
+		state := t.stateCell(h.State, harnessFiring(h), h.Held, h.ClosingUntil != "")
 		if h.SessionStalled {
 			state += " ⚠ session stalled"
 		}
 		t.Row(
 			h.Name,
 			state,
-			t.scheduleCell(h.Schedule, h.OperatingHours),
+			t.firingCell(h),
 			t.nextRunCell(h),
 			fmt.Sprintf("%d", h.RestartCount),
 			t.dimPlain(h.Description),
 		)
 	}
 	return t.Flush()
+}
+
+// harnessFiring is the schedfmt firing key of a listed harness: its schedule,
+// or the triggered marker when trigger sources are all that fire it.
+func harnessFiring(h protocol.HarnessInfo) string {
+	return schedfmt.Firing(h.Schedule, len(h.Triggers) > 0)
 }
 
 // nextRunSuffix renders a human-readable next-run time ("in 3h", "in 12m",
@@ -129,11 +135,12 @@ func cmdDescribe(c *client.Client, o verbOpts) error {
 	// Pass the schedule: without it describe renders "stopped" in pink for the
 	// same harness `harness list` shows as amber "armed" (#268, #331). schedfmt exists
 	// so the surfaces cannot phrase one harness two ways.
-	t.Row("state", t.stateCell(h.State, h.Schedule, h.Held, h.ClosingUntil != ""))
-	// A scheduled harness is always enabled = false (SPEC-0008 REQ "Schedule
-	// Exclusions"), so printing "enabled no" says nothing true about it: the
-	// schedule is its intent. Show whether it is armed instead (#331).
-	if h.Schedule != "" {
+	t.Row("state", t.stateCell(h.State, harnessFiring(h), h.Held, h.ClosingUntil != ""))
+	// A triggered harness is always enabled = false (SPEC-0008 REQ "Schedule
+	// Exclusions", SPEC-0014 REQ "Triggered Harness Exclusions"), so printing
+	// "enabled no" says nothing true about it: its schedule or its triggers
+	// are its intent. Show whether it is armed instead (#331, #476).
+	if harnessFiring(h) != "" {
 		t.Row("armed", t.faintPlain("yes"))
 	} else {
 		t.Row("enabled", t.enabledCell(h.Enabled))
@@ -169,6 +176,16 @@ func cmdDescribe(c *client.Client, o verbOpts) error {
 	if h.AutoAccept {
 		t.Row("auto_accept", t.faintPlain("true"))
 	}
+	// SPEC-0018 REQ-11: the claude-code one-shot persona keys, shown when set.
+	if h.SystemPromptFile != "" {
+		t.Row("system_prompt_file", t.faintPlain(h.SystemPromptFile))
+	}
+	if h.MCPConfig != "" {
+		t.Row("mcp_config", t.faintPlain(h.MCPConfig))
+	}
+	if len(h.AllowedTools) > 0 {
+		t.Row("allowed_tools", t.faintPlain(strings.Join(h.AllowedTools, ", ")))
+	}
 	t.Row("backend", t.faintPlain(h.Backend))
 	switch {
 	case h.Schedule != "":
@@ -193,6 +210,16 @@ func cmdDescribe(c *client.Client, o verbOpts) error {
 		if h.LeaseUntil != "" {
 			t.Row("lease_until", t.faintPlain(h.LeaseUntil))
 		}
+	}
+	// Each trigger source with its state (SPEC-0014 REQ "Trigger
+	// Visibility"). References and states only: a source's URL, headers and
+	// counters are `harness triggers`' to show.
+	for i, b := range h.Triggers {
+		key := ""
+		if i == 0 {
+			key = "triggers"
+		}
+		t.Row(key, t.faintPlain(bindingLabel(b)))
 	}
 	t.Row("restarts", fmt.Sprintf("%d", h.RestartCount))
 	t.Row("last_exit", fmt.Sprintf("%d", h.LastExitCode))
@@ -270,7 +297,7 @@ func cmdLogs(c *client.Client, o verbOpts) error {
 	if o.json {
 		return printJSON(ld)
 	}
-	printLogText(os.Stdout, ld.Text)
+	writeLogText(newRawWriter(os.Stdout, logStyleFor(os.Stdout)), ld.Text)
 	for _, n := range ld.Notices {
 		fmt.Fprintln(os.Stderr, "note: "+n)
 	}
@@ -279,38 +306,59 @@ func cmdLogs(c *client.Client, o verbOpts) error {
 
 // printLogText prints durable-log text made inert first, so escape payloads
 // (DCS/sixel, OSC, cursor addressing) don't act on the user's terminal (#146 —
-// acceptance criteria require no payload bytes reach `harness logs`).
+// acceptance criteria require no payload bytes reach `harness logs`). It is
+// the plain form, byte for byte what a pipe reads.
 func printLogText(w io.Writer, raw string) {
+	writeLogText(newRawWriter(w, nil), raw)
+}
+
+// writeLogText is printLogText through a raw writer, which styles the
+// daemon's own lines when it is styled.
+func writeLogText(rw *rawWriter, raw string) {
 	text := inertLogText(raw)
-	fmt.Fprint(w, text)
+	rw.write(text)
 	if len(text) > 0 && text[len(text)-1] != '\n' {
-		fmt.Fprintln(w)
+		rw.write("\n")
 	}
 }
 
 // followLogs re-fetches the tail on an interval and prints the new suffix.
 func followLogs(c *client.Client, o verbOpts) error {
-	ld, err := c.Logs(o.name, o.lines)
+	fetch := func(lines int) (string, error) {
+		ld, err := c.Logs(o.name, lines)
+		return ld.Text, err
+	}
+	return followRawLogs(newRawWriter(os.Stdout, logStyleFor(os.Stdout)), fetch, o.lines, func() bool {
+		time.Sleep(time.Second)
+		return true
+	})
+}
+
+// followRawLogs prints the tail, then re-fetches it until wait reports false,
+// printing only the newly appended suffix.
+func followRawLogs(rw *rawWriter, fetch func(lines int) (string, error), lines int, wait func() bool) error {
+	text, err := fetch(lines)
 	if err != nil {
 		return err
 	}
-	prev := inertLogText(ld.Text)
-	fmt.Print(prev)
-	for {
-		time.Sleep(time.Second)
-		ld, err := c.Logs(o.name, o.lines*4)
+	prev := inertLogText(text)
+	rw.write(prev)
+	for wait() {
+		text, err := fetch(lines * 4)
 		if err != nil {
 			return err
 		}
-		cur := inertLogText(ld.Text)
+		cur := inertLogText(text)
 		if len(cur) > len(prev) && hasSuffixOverlap(cur, prev) {
-			fmt.Print(cur[len(prev):])
+			rw.write(cur[len(prev):])
 		} else if cur != prev {
 			// Rotation/truncation broke continuity; reprint the whole tail.
-			fmt.Print(cur)
+			rw.restart()
+			rw.write(cur)
 		}
 		prev = cur
 	}
+	return nil
 }
 
 // inertLogText filters raw PTY bytes from the daemon log through ansifold so
@@ -353,7 +401,9 @@ func cmdUseProfile(c *client.Client, o verbOpts) error {
 	if o.json {
 		return printJSON(ps)
 	}
-	fmt.Printf("activated profile %q\n", o.name)
+	emit(os.Stdout, fmt.Sprintf("activated profile %q\n", o.name), func(s lifecycleStyle) string {
+		return s.renderUseProfile(o.name, ps)
+	})
 	return nil
 }
 
@@ -365,7 +415,9 @@ func cmdReload(c *client.Client, o verbOpts) error {
 	if o.json {
 		return printJSON(hs)
 	}
-	fmt.Printf("reloaded — %d harnesses\n", len(hs))
+	emit(os.Stdout, fmt.Sprintf("reloaded — %d harnesses\n", len(hs)), func(s lifecycleStyle) string {
+		return s.renderReload(hs)
+	})
 	return nil
 }
 
@@ -425,7 +477,9 @@ func cmdStopDaemon(o verbOpts) error {
 	if err := p.Signal(syscall.SIGTERM); err != nil {
 		return fmt.Errorf("signal daemon %d: %w", di.PID, err)
 	}
-	fmt.Fprintf(os.Stderr, "harness: daemon (pid %d) stopping\n", di.PID)
+	emit(os.Stderr, fmt.Sprintf("harness: daemon (pid %d) stopping\n", di.PID), func(s lifecycleStyle) string {
+		return s.renderDaemonStopping(di.PID)
+	})
 	return nil
 }
 

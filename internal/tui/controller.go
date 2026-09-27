@@ -9,6 +9,7 @@ package tui
 import (
 	"errors"
 
+	"github.com/stump-wtf/harness/internal/client"
 	"github.com/stump-wtf/harness/internal/protocol"
 )
 
@@ -27,6 +28,10 @@ type Controller interface {
 	Enable(name string) (protocol.HarnessInfo, error)
 	Disable(name string) (protocol.HarnessInfo, error)
 	Logs(name string, lines int) (protocol.LogsData, error)
+	// LogEvents is the structured `logs` reply: the latest run's lifecycle and
+	// agent activity, the view `harness logs` prints. The one-shot preview and
+	// the chatroom's history both render it.
+	LogEvents(name string, o client.LogOptions) (protocol.LogsData, error)
 	Profiles() ([]protocol.ProfileInfo, error)
 	UseProfile(name string) ([]protocol.ProfileInfo, error)
 	Reload() ([]protocol.HarnessInfo, error)

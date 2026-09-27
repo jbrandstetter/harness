@@ -21,14 +21,13 @@ it.
 ### Non-Goals
 
 - A GitHub implementation. Gitea is where our CI gates merges.
-- Batching several PRs into one train commit.
-- Writing Switchboard todos (ADR-0032 E1).
+- Writing Switchboard todos (ADR-0032, Decision 5, Option 1).
 
 ## Decisions
 
 ### Package layout, and why the PR types live in `internal/forge`
 
-```
+```text
 internal/forge/            types.go   PullRequest, Review
                            forge.go   Forge, TrainSpec, TrainBranch, errors
 internal/forge/fake/       fake.go    in-memory Forge
@@ -137,7 +136,7 @@ Departures from the interface sketched in #599, each forced by ADR-0032:
 
 | Change | Why |
 |---|---|
-| `CreateBranch(name, fromSHA)` → `CreateTrainBranch(spec)` | the train commit does not exist on the forge until the train makes it; a branch-at-SHA call cannot create a merge (ADR-0032 A1) |
+| `CreateBranch(name, fromSHA)` → `CreateTrainBranch(spec)` | the train commit does not exist on the forge until the train makes it; a branch-at-SHA call cannot create a merge (ADR-0032, Decision 1, Option 1) |
 | `SquashMerge` gains `headSHA` | pins the head in the merge call itself, so the forge refuses a merge of a head that moved (REQ-7) |
 | `+ BranchHead` | `base` is read before the build and re-read before the merge (REQ-4, REQ-7, REQ-8) |
 | `+ ListComments` | the one-comment-per-head dedupe lives on the forge and survives a restart (REQ-9) |
@@ -200,6 +199,29 @@ type Logger interface {
 }
 ```
 
+### Batching (`batch > 1`, REQ-17)
+
+The v1 train spent one CI run per PR; at a ten-minute pipeline that is six
+landings an hour, and on a queue-heavy repo the train, not CI, becomes the
+bottleneck. Batching spends **one CI run on up to `batch` heads**:
+
+- The tick takes the first `batch` eligible PRs in `Order`, and the build
+  folds them onto the train commit in sequence (`merge-tree <tree-so-far>
+  <head-i>` for each head, in order). A conflict is attributed to the first
+  head that rejects, which gets the usual comment; the earlier heads in the
+  batch could have landed on their own, so on conflict the batch shrinks to
+  the heads before the failing one and that smaller batch is built.
+- Red bisects by halves (REQ-17): split, rebuild, recurse. The bisect reuses
+  the same build/CI path, so it needs no new state machine — a half is just a
+  smaller batch, built and tested the same way.
+- The merge phase is unchanged per PR: heads stay pinned, REQ-7 re-checks and
+  REQ-8 verification run per merge, so a batch green for the combined tree
+  still cannot land an unverified tree per PR.
+- `TrainSpec` grows `Heads []PRHead` (number, SHA) with `HeadSHA` kept as the
+  single-PR spelling; `batch = 1` builds exactly today's commit. The fake's
+  `OnTrain` hook already decides what a build produces, so tests script
+  batch builds without a new interface.
+
 ### Configuration (#604)
 
 ```toml
@@ -207,10 +229,11 @@ type Logger interface {
 enabled = false                 # REQ-1
 mode = "report"                 # or "merge"
 repos = ["stump.wtf/harness"]
+batch = 1                       # REQ-17: PRs per train commit; > 1 batches and bisects on red
 base_branch = "main"
 poll_interval = "60s"
 ci_timeout = "30m"
-forge_base_url = "https://gitea.stump.rocks"
+forge_base_url = "https://gitea.example.com"
 forge_token_env = "HARNESS_MERGETRAIN_TOKEN"   # the variable's NAME
 ```
 
@@ -232,7 +255,7 @@ A change to `[mergetrain]` takes effect at the next daemon restart, like
 
 1. Land the code with the train off (#597–#604).
 2. Add `train/**` to the pipeline's `push` trigger and a `train/*` protection
-   rule allowing only `joestump-agent` to push (#605).
+   rule allowing only the bot account to push (#605).
 3. Pilot in `report` mode on `stump.wtf/harness`, with
    `block_on_outdated_branch` still on (#605).
 4. In one change: `mode = "merge"` and `block_on_outdated_branch: false` on

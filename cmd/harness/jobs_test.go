@@ -68,7 +68,7 @@ func TestPrintJobsTable(t *testing.T) {
 	}
 
 	buf.Reset()
-	if err := printJobsTable(&buf, nil, now); err != nil || !strings.Contains(buf.String(), "no scheduled harnesses") {
+	if err := printJobsTable(&buf, nil, now); err != nil || !strings.Contains(buf.String(), "no triggered harnesses") {
 		t.Errorf("empty jobs table = %q, %v", buf.String(), err)
 	}
 }
@@ -92,6 +92,28 @@ func TestPrintRunsTable(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("runs table missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// TestPrintRunsTableSkipReason: a template_unresolved skip names the path it
+// lacked (SPEC-0017 REQ-11), so `harness runs` alone tells the operator what
+// to fix; other skips keep their one-word row.
+func TestPrintRunsTableSkipReason(t *testing.T) {
+	start := time.Date(2026, 9, 11, 3, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	rd := protocol.RunsData{Name: "report", Runs: []protocol.RunInfo{
+		{RunID: 2, Trigger: "manual", Outcome: "skipped", Reason: "template_unresolved", MissingPath: "run.source", StartedAt: start, EndedAt: start},
+		{RunID: 1, Trigger: "schedule", Outcome: "skipped", Reason: "overlap", StartedAt: start, EndedAt: start},
+	}}
+	var buf bytes.Buffer
+	if err := printRunsTable(&buf, rd); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if want := "run #2 skipped: template_unresolved ({{run.source}} has no value for a manual run)\n"; !strings.Contains(out, want) {
+		t.Errorf("runs output missing %q:\n%s", want, out)
+	}
+	if strings.Contains(out, "run #1 skipped") {
+		t.Errorf("an overlap skip grew a note:\n%s", out)
 	}
 }
 

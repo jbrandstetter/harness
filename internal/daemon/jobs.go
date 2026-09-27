@@ -39,16 +39,19 @@ import (
 // limit — keep_runs' default, so an unset limit shows a default history whole.
 const defaultRunsLimit = 20
 
-// opJobs lists every scheduled harness, in config order.
+// opJobs lists every triggered harness — a `schedule`, `triggers`, or both —
+// in config order. A harness with no schedule has no next window to report,
+// so it carries none; its triggers, with their source states, say what fires
+// it instead (SPEC-0014 REQ "Trigger Visibility").
 func (c *conn) opJobs() []protocol.JobInfo {
 	mgr := c.srv.mgr
 	out := []protocol.JobInfo{}
 	for _, snap := range mgr.Snapshots() {
-		if !snap.Scheduled {
+		if !snap.Triggered {
 			continue
 		}
 		h, _, ok := mgr.HarnessRecord(snap.Name)
-		if !ok || h.Schedule == "" {
+		if !ok || !h.Triggered() {
 			continue
 		}
 		job := protocol.JobInfo{
@@ -60,8 +63,9 @@ func (c *conn) opJobs() []protocol.JobInfo {
 			TimeoutMs:   h.Timeout.Milliseconds(),
 			OnOverlap:   string(h.OnOverlap),
 			KeepRuns:    h.KeepRuns,
+			Triggers:    c.triggerBindings(h),
 		}
-		if c.srv.sched != nil {
+		if h.Schedule != "" && c.srv.sched != nil {
 			if next, ok := c.srv.sched.NextFire(snap.Name); ok {
 				job.NextRun = next.Format(time.RFC3339)
 			}
@@ -288,6 +292,9 @@ func (c *conn) runInfo(name string, r supervisor.RunRecord) protocol.RunInfo {
 	// Record Fields").
 	info.Source = r.Source
 	info.EventID = r.EventID
+	// For a template_unresolved skip, the path's name: never a rendered
+	// value (SPEC-0017 REQ-11). Reason itself is set below.
+	info.MissingPath = r.MissingPath
 	if path := runLogOf(c.srv.mgr, name, r); path != "" && !r.LogPruned {
 		if _, err := os.Stat(path); err == nil {
 			info.HasLog = true

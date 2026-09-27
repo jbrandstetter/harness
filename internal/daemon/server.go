@@ -45,9 +45,13 @@ const defaultLivenessTimeout = 4 * defaultPingInterval
 
 // Server serves the protocol on a Unix socket.
 type Server struct {
-	mgr        *supervisor.Manager
-	reg        *attach.Registry
-	sched      *scheduler.Scheduler
+	mgr      *supervisor.Manager
+	reg      *attach.Registry
+	sched    *scheduler.Scheduler
+	notifier Notifier
+	// triggers is the trigger source manager, nil when the daemon runs none
+	// (triggers.go).
+	triggers   TriggerSources
 	socketPath string
 	configPath string
 	version    string
@@ -88,6 +92,10 @@ type Server struct {
 	remoteMu   sync.Mutex
 	remoteAddr string
 	remoteKeys int
+	// webhookAddr / webhookTLS are the running webhook listener, recorded by
+	// SetWebhook (triggers.go) under remoteMu for the same reason.
+	webhookAddr string
+	webhookTLS  bool
 
 	// connMu guards the set of live client connections and the closing flag.
 	// Close() closes each raw socket to unblock its ReadFrame loop; without this
@@ -104,7 +112,11 @@ type Options struct {
 	Registry *attach.Registry
 	// Scheduler exposes next-fire times for scheduled harnesses in list and
 	// describe (ADR-0013). Optional: nil leaves NextRun empty.
-	Scheduler  *scheduler.Scheduler
+	Scheduler *scheduler.Scheduler
+	// Triggers is the trigger source manager the triggers op, the harness
+	// projection and jobs read source states from (SPEC-0014 REQ "Trigger
+	// Visibility"). Optional: nil reports every source with no state.
+	Triggers   TriggerSources
 	SocketPath string
 	ConfigPath string // for the reload op
 	Version    string
@@ -119,6 +131,11 @@ type Options struct {
 	// the socket path still names this server's listener (socket.go). Zero —
 	// the production case — means defaultSocketWatchInterval.
 	SocketWatchInterval time.Duration
+
+	// Notifier is the [notify] hook's dispatcher, for daemon_info and
+	// notify_test (SPEC-0003 REQ "Operator Notification"). Optional: nil
+	// reports notify as off.
+	Notifier Notifier
 }
 
 // NewServer builds a Server. It does not listen until Listen is called.
@@ -139,6 +156,8 @@ func NewServer(opts Options) *Server {
 		mgr:             opts.Manager,
 		reg:             opts.Registry,
 		sched:           opts.Scheduler,
+		notifier:        opts.Notifier,
+		triggers:        opts.Triggers,
 		socketPath:      opts.SocketPath,
 		configPath:      opts.ConfigPath,
 		version:         opts.Version,
@@ -318,7 +337,9 @@ func (s *Server) relayLoop() {
 			if !ok {
 				return
 			}
-			s.broadcast(toEventMsg(ev))
+			if m := toEventMsg(ev); m.Kind != "" {
+				s.broadcast(m)
+			}
 		case <-s.done:
 			return
 		}
@@ -357,6 +378,8 @@ func (s *Server) unsubscribe(ch chan protocol.EventMsg) {
 
 // toEventMsg projects a supervisor.Event onto the wire EventMsg. The three
 // supervisor kinds map 1:1 to the first three protocol event kinds (SPEC-0002).
+// A kind with no wire form (EventTemplateRenderFailed, which only feeds
+// metrics) projects to an empty Kind, and the relay drops it.
 func toEventMsg(ev supervisor.Event) protocol.EventMsg {
 	m := protocol.EventMsg{Name: ev.Name}
 	switch ev.Kind {
@@ -379,6 +402,8 @@ func toEventMsg(ev supervisor.Event) protocol.EventMsg {
 		}
 		m.RunID = ev.Run.RunID
 		m.Trigger = string(ev.Run.Trigger)
+		// SPEC-0014 REQ "Trigger Visibility": which source fired the run.
+		m.Source = ev.Run.Source
 		m.Outcome = string(ev.Run.Outcome)
 		m.ExitCode = ev.Run.ExitCode
 		if ev.Run.EndedAt != nil {

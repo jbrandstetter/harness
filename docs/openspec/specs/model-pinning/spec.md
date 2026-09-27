@@ -267,9 +267,9 @@ configuration. REQ-16's gateway case is the verification.
 
 The daemon SHALL attest each model call of a pinned harness from **evidence**:
 the served model and, where recorded, the served upstream provider and
-generation ID, taken from agent-trace per-message usage items
-(stump.wtf/agent-trace#105) for the harness's transcript source. Each adapter
-SHALL declare its evidence capability per route: `model`, or `model+provider`.
+generation ID, taken from agent-trace per-message usage items for the harness's
+transcript source. Each adapter SHALL declare its evidence capability per route:
+`model`, or `model+provider`.
 For `openrouter`, an adapter whose transcript records a generation ID but no
 provider MAY declare `model+provider` through a **generation lookup**. That is
 a request to the route's generation-metadata endpoint using the harness's own
@@ -454,7 +454,7 @@ credentials or generation-lookup responses (ADR-0008).
 The daemon SHALL expose, under SPEC-0013's registry, listener and cardinality
 cap:
 
-```
+```text
 harness_model_calls_attested_total{harness,outcome}   counter  outcome: attested|mismatch|unattested
 harness_model_mismatch_total{harness,kind}            counter  kind: model|provider
 harness_model_pin_held{harness}                       gauge    0|1

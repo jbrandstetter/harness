@@ -19,7 +19,7 @@ What exists on `main` today:
   HTTP client.
 * `internal/redact` masks credentials in agent activity and logs.
   `internal/cairnexport` can POST to Cairn, but nothing calls it, and it is
-  deleted once ADR-0022's telemetry export lands (#499).
+  deleted once ADR-0022's telemetry export lands.
 * Switchboard's drain verbs (`claim`, `claim_next`, `heartbeat`, `complete`,
   `fail`, `list_todos`) exist in every release. Their input schemas forbid
   unknown properties. Switchboard SPEC-0034 (in flight) adds attempt history, a
@@ -31,7 +31,7 @@ SPEC-0006 (prompt and argv), SPEC-0012 (hours), SPEC-0013 (metrics).
 
 Related ADRs: ADR-0021 (partly reversed), ADR-0013, ADR-0008, ADR-0019, and,
 accepted with this one on 2026-09-22, ADR-0023, ADR-0027 and ADR-0028. Harness
-ADR-0022 (#408) is not on `main` yet. Cross-repo, by number: Switchboard
+ADR-0022 is not on `main` yet. Cross-repo, by number: Switchboard
 ADR-0039 / SPEC-0034; Cairn ADR-0027 / SPEC-0021.
 
 ## Goals / Non-Goals
@@ -164,7 +164,7 @@ records the attempt as having died, which is the truth.
 
 **Choice**: `[cairn.*]` plus `attempt_receipt` creates one Markdown artifact per
 attempt through `internal/relay/receipt.go`, a small client of its own for
-Cairn's artifact API (the unused `cairnexport` package is being deleted, #499),
+Cairn's artifact API (the unused `cairnexport` package is being deleted),
 with a 30-second cap. It is a tagged Markdown artifact, which every
 Cairn accepts today. There is no capability probe and no fallback: when Cairn
 SPEC-0021 receipt metadata ships, a follow-up switches to it outright and
@@ -323,7 +323,7 @@ stateDiagram-v2
 {
   "version": 1,
   "todo": {
-    "id": "td_8f2c", "queue": "ci-failures", "title": "CI red on PR #482",
+    "id": "td_8f2c", "queue": "ci-failures", "title": "CI red on main",
     "kind": "check_suite", "source": "gitea", "payload": {"…": "…"},
     "work_order": null, "created_at": "2026-09-22T14:03:11Z"
   },
@@ -383,18 +383,17 @@ client can be built in parallel, and its relay behaviour lands once firings
 exist. Rolling back means removing `lease` from config; in-flight attempts are
 stopped and their leases lapse.
 
-## Open Questions
+## Settled Questions
 
 Every question below was settled in the Operation Stumply design review. None is
 left open.
 
 - **Should `harness trigger <name>` on a leased harness accept `--todo <id>`?**
-  Resolved (design review 2026-09-22): not in this spec, as proposed. It is the
-  one place option 4B has a real use; add it as a debugging follow-up if
-  operators ask.
+  Not in this spec. It is the one place ADR-0025's Decision 4, Option 2 has a
+  real use; add it as a debugging follow-up if operators ask.
 - **Should a relay record which model served the attempt (ADR-0026) in
-  `result.harness`?** Resolved (design review 2026-09-22): yes, as a follow-up
+  `result.harness`?** Yes, as a follow-up
   once model attestation lands; it is not part of the first cut.
 - **Should `success_check` also be allowed on an unleased triggered harness?**
-  Resolved (design review 2026-09-22): out of scope here, as proposed; a small
+  Out of scope here; a small
   follow-up if wanted.

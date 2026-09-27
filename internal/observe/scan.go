@@ -43,6 +43,11 @@ package observe
 // @joestump-agent 09/21/2026 - review: a read that returns items leaves the
 // stall check armed, so an orphan and a resume landing in one poll interval
 // are recovered without waiting for the session to write again.
+//
+// @joestump-agent 09/25/2026 - Attribution judges an open run as of the
+// moment the session was read (readAt, #732), not the scan's start, so
+// activity written during a slow scan is delivered instead of dropped as
+// Unattributed (#710; regression tests in attribution_clock_test.go).
 
 import (
 	"context"
@@ -424,6 +429,15 @@ func (o *Observer) read(ctx context.Context, st *session, scopes []runtrace.Scop
 		return
 	}
 	st.lastSeen = now
+	// Judge what was read at the moment it was read, not at the scan's start.
+	// A scan reads its sessions one after another, and on a loaded host that
+	// takes seconds, so a call written while the scan was under way is dated
+	// after the scan's now. Measured against that now, a running harness's
+	// open window closed before the call did, and past runtrace.Slack the call
+	// was counted Unattributed and, the watermark already past it, never
+	// delivered. TestDaemonLoopGuardStopsTheRealHarness lost its calls that
+	// way under load.
+	readAt := o.opts.Now()
 
 	// What could be live at all, whoever wrote it: past the observer's own
 	// floor and this session's, and — on a baseline read — dated. Only these
@@ -446,7 +460,7 @@ func (o *Observer) read(ctx context.Context, st *session, scopes []runtrace.Scop
 		case !ok && baseline:
 			continue
 		case !ok:
-			when = now // not there at the last read, so it is from since then
+			when = readAt // not there at the last read, so it is from since then
 		case when.Before(floor):
 			continue
 		}
@@ -459,7 +473,18 @@ func (o *Observer) read(ctx context.Context, st *session, scopes []runtrace.Scop
 		return
 	}
 
-	name, claimants := runtrace.ClaimantAt(st.meta, at, scopes, now)
+	// readAt is the moment this session was read, later than the scan's own
+	// clock when a scan takes seconds. A row can still be dated later still —
+	// its instant is the data's clock, not the host's, and a fixture's frozen
+	// clock does not move under a read — so an open run is judged as of the
+	// later of the two. With the scan's start clock alone, a row newer than
+	// now+Slack matched no run, was counted Unattributed, and the watermark
+	// moved past it for good (#710; attribution_clock_test.go).
+	asOf := readAt
+	if at.After(asOf) {
+		asOf = at
+	}
+	name, claimants := runtrace.ClaimantAt(st.meta, at, scopes, asOf)
 	st.contested = len(claimants) > 1
 	t := targets[name]
 	if name == "" || t == nil || !t.hasWorkdir {
@@ -485,7 +510,7 @@ func (o *Observer) read(ctx context.Context, st *session, scopes []runtrace.Scop
 		if c.when.Before(cutoff) {
 			continue
 		}
-		ev := Event{Harness: name, Adapter: t.scope.Adapter, Session: meta, Time: c.when, ObservedAt: now}
+		ev := Event{Harness: name, Adapter: t.scope.Adapter, Session: meta, Time: c.when, ObservedAt: readAt}
 		if c.mark {
 			ev.Kind, ev.Mark = KindMark, redactMark(c.mk)
 		} else {
@@ -504,7 +529,9 @@ func (o *Observer) fetch(ctx context.Context, st *session, now time.Time) ([]ite
 		// ParseSince's watermark never lands inside an open tool call: it
 		// withholds everything past the last point with no call outstanding,
 		// and returns that point. Storing only what it returns is what makes
-		// the stream complete and duplicate-free.
+		// the stream complete and duplicate-free. ParseSince, not
+		// ParseItemsSince: agent-trace v0.6.0's Usage items are not read, so
+		// no Event carries one until a Kind exists for them.
 		events, marks, meta, wm, err := ip.ParseSince(ctx, st.path, st.watermark, st.nextSeq)
 		if err != nil {
 			return nil, false, err

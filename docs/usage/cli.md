@@ -29,6 +29,25 @@ harness start --all           # start/stop/restart every harness at once
 render live per-harness progress with a Bubble Tea animation so a large fleet
 start/stop is visible as it converges.
 
+On a terminal, a single-harness verb shows a spinner while the daemon works,
+then records the transition in the state's colour, with a faint context line:
+
+```text
+● claude-rc  failed → running
+  restarted · pid 48211 · 3 restarts · remote-control claude
+```
+
+A harness that comes out `failed` or `degraded` adds a
+`→ see why: harness logs <name>` hint. The other mutating verbs (`use-profile`,
+`reload`, `down`, `rm`, `run`, `trigger`, `daemon stop`) get the same styled
+treatment on a terminal.
+
+Piped or redirected output stays exactly one plain line per result, e.g.
+`● claude-rc → running` or `reloaded — 12 harnesses`, so scripts are
+unaffected. `--json` is unchanged. Colour follows your terminal's
+capabilities and `NO_COLOR`; the glyph and state words carry the meaning
+without it.
+
 The client warns when its own build is older or newer than the daemon's
 (client/daemon skew) — after upgrading, restart the daemon so both sides speak
 the same protocol version.
@@ -71,8 +90,15 @@ next firing reads `⏱ armed` rather than `stopped`, because it is loaded and
 will fire on its own; `harness describe` reports `armed` instead of an
 `enabled` that is false for every scheduled harness by construction.
 
+A harness fired by trigger sources (`triggers`, see
+[Trigger sources](#trigger-sources)) is a one-shot too, and reads the same
+way: `↯ armed` between firings, never `stopped` or `(disabled)`. Its SCHEDULE
+column lists its sources (`webhook.ci, channel.sb`, after the cadence when it
+also has a `schedule`), and NEXT reads `on event` when there is no window to
+count down to.
+
 ```sh
-harness jobs                    # every scheduled harness: next run, last run, consecutive failures
+harness jobs                    # every triggered harness: sources, next run, last run, consecutive failures
 harness runs <name>             # its run history, newest first (--limit N, default 20)
 harness trigger <name>          # run it now — on_overlap applies, as for a firing
 harness trigger <name> --wait   # …stream the run's log and exit with its exit code
@@ -82,7 +108,15 @@ harness logs <name> --run 3     # what run 3 did (--raw for its own log)
 `trigger --wait` exits with the run's own exit code, `124` when the run timed
 out, and `75` when it was skipped because a run was already in flight — so a job
 scripts like the command it wraps. The verb is `trigger` because `harness run`
-starts a throwaway scratchpad.
+starts a throwaway [scratchpad](#scratchpads-harness-run).
+
+A `command` harness whose `argv` template needs a value the run does not have
+(a required `{{run.source}}` on a manual trigger, say) runs nothing: the run is
+recorded `skipped`, and `harness runs` prints a line under the table naming the
+missing path (`run #4 skipped: template_unresolved ({{run.source}} has no value
+for a manual run)`). `--json` carries it as `"reason": "template_unresolved"`
+and `"missing_path": "run.source"`, and `trigger --wait` exits `75`. See
+[Argv templates](./configuration#argv-templates).
 
 `--wait` polls the run history rather than consuming events, because history is
 authoritative even when an event is dropped. When the trigger was queued behind
@@ -90,6 +124,61 @@ a run already in flight, `--wait` attaches to the oldest manual, non-skipped run
 newer than the moment it was issued — so if two manual triggers fire
 concurrently, either may pick up the other's run and both stream the same log.
 Scheduled firings never collide this way.
+
+`jobs` lists every harness with a `schedule`, `triggers`, or both. Its
+TRIGGERS column shows each source with that source's state
+(`webhook.ci listening, channel.sb backoff`), so a job that never runs starts
+its explanation in the row; a harness with no `schedule` shows no next
+window.
+
+## Trigger sources
+
+```sh
+harness triggers                # every [channel.*] / [webhook.*] source
+harness triggers --json         # …with every per-outcome counter
+```
+
+`harness triggers` answers "did anything hear the doorbell?" — the one
+question no run record can, because a source that never fired leaves none.
+One row per declared source:
+
+| Column | Meaning |
+|---|---|
+| SOURCE | The reference a harness's `triggers` names, e.g. `channel.sb` |
+| STATE | `connecting`, `connected`, `backoff` or `error` for a channel; `listening` or `no_listener` for a webhook; `disabled` (`enabled = false`) or `unbound` (no harness lists it) for either |
+| FOR | How long it has been in that state. For a channel that is not connected, how long it has been **down** — `down 10m` — measured from when it left `connected`, not from its latest retry |
+| LAST EVENT | When it last fired |
+| FIRED | Events fired since the daemon started |
+| HARNESSES | The harnesses it fires, in config order |
+
+Under the table, each source gets its endpoint — a channel's `url` with the
+query removed and its header **names**, or a webhook's `POST /hooks/<name>`,
+`verify` scheme and `events` — then its last error, and any deliveries it
+dropped by outcome. `--json` carries the same fields plus every counter
+(`fired`, `ignored`, `duplicate`, `unauthorized`, `too_large`,
+`rate_limited`, `invalid`), zeros included.
+
+No output of `triggers`, `describe` or the event stream carries a header value,
+a URL query or a secret: the daemon scrubs a channel's last error of both
+before it leaves the daemon, because Go's HTTP client quotes the request URL
+in its errors. `describe` lists a harness's triggers with each source's state.
+
+A client subscribed to events receives `trigger_source_changed` (`source`,
+`source_kind`, `state`, `error`) on every source state change, in order, and
+`job_run_started`/`job_run_finished` carry the `source` that fired the run.
+
+`harness doctor` adds a `triggers` row that flags the setups that fail
+quietly: a webhook listener bound off loopback without TLS, a `[webhook.*]`
+source no listener serves (`no_listener`), a source `env_file` readable by
+group or other, and a channel source in `error`. With the daemon down it still
+checks what the config alone can show.
+
+:::note Rejected webhook deliveries are not counted yet
+`fired` and a channel's `invalid` are counted today. A webhook delivery the
+listener rejects — `unauthorized`, `too_large`, `rate_limited`, `duplicate`,
+`ignored` — is answered and logged but not yet counted, so those counters read
+`0` until the listener reports them.
+:::
 
 ## Operating hours
 
@@ -164,7 +253,8 @@ is active at a time; `harness list` flags it with `*`. See
 
 ```sh
 harness reload                # re-read config, reconcile running harnesses
-harness doctor                # health check battery (config, daemon, versions, remote SSH, harnesses)
+harness doctor                # health check battery (config, daemon, versions, remote SSH, notify, harnesses)
+harness doctor --notify-test  # also have the daemon run the [notify] hook once with a test event
 ```
 
 `reload` picks up config changes without restarting the daemon. `describe`
@@ -180,6 +270,50 @@ harness attach <name> --ro    # read-only: attach but ignore keystrokes
 
 `attach` reuses the same full-window terminal the dashboard uses, with the
 1-line status bar and tmux-style detach chords. See [Cockpit TUI](./tui).
+
+## Scratchpads (`harness run`)
+
+```sh
+harness run claude                     # Claude Code in the current directory, then attach
+harness run crush --yolo               # the words after the kind are the agent's args
+harness run htop                       # not a kind: runs `sh -c "htop"`
+harness run --detach codex             # print the name and leave it running
+harness run --name spike --workdir ../api claude
+```
+
+`harness run` starts a **scratchpad**: a throwaway harness that exists only
+until the daemon exits. It is the `tmux new-session` gesture. A scratchpad:
+
+- is **not** in any `harness.toml`, so it is never reloaded, rescheduled or
+  autostarted;
+- gets a **random name**: a slug of the kind and words plus four random
+  characters, such as `claude-code-x4yx` or `generic-htop-9k2p`, printed when it
+  starts;
+- starts, then **attaches** you to it, unless you pass `--detach` or either
+  stdin or stdout is not a terminal;
+- is **not restarted** when its process exits. It stays in `harness list` with
+  its exit state until you remove it with `harness rm NAME`;
+- is **gone when the daemon exits**, and never written to the daemon's state.
+
+The first word picks what runs. If it names a harness kind (`claude` or
+`claude-code`, `crush`, `codex`, `generic`), that adapter runs and every
+following word becomes its `args`. Anything else falls back to `generic`, and
+the **whole invocation** runs as one `sh -c` command. `run`'s own flags must come
+before that first word; everything after it belongs to the command, so
+`harness run htop -t` reaches the shell as `htop -t`.
+
+| Flag | What it does |
+|------|--------------|
+| `--kind KIND` | Use this adapter (`crush`, `claude-code`, `codex`, `generic`) instead of guessing from the first word, and pass **every** word as its args. For the rare command whose name collides with a kind. |
+| `--name SLUG` | Use this slug instead of the kind or command. A random suffix is still appended. |
+| `--workdir DIR` | Start in `DIR` instead of your current directory. A relative path resolves against your shell's directory, not the daemon's. |
+| `--model MODEL` | Prepend `--model MODEL` to the agent's args. Same as writing `harness run claude --model MODEL`. |
+| `--detach` | Don't attach: print the name and leave it running. `--json` implies it. |
+
+Use a scratchpad for a one-off session you want to detach from and come back to.
+Anything that should survive a daemon restart, run on a clock, or fire on an
+event belongs in `harness.toml` instead: a resident harness, or a prompt harness
+you fire with `schedule`, `triggers` or [`harness trigger`](#scheduled-jobs).
 
 ## Project verbs
 

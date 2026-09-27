@@ -26,6 +26,7 @@ import (
 	"github.com/charmbracelet/x/term"
 
 	"github.com/stump-wtf/agent-trace/tail"
+	"github.com/stump-wtf/harness/internal/adapter"
 	"github.com/stump-wtf/harness/internal/protocol"
 	"github.com/stump-wtf/harness/internal/runtrace"
 	"github.com/stump-wtf/harness/internal/tui/chatroom"
@@ -115,6 +116,11 @@ type formInputs struct {
 	// round-trips it — the save path rewrites the whole table, so a dropped
 	// prompt_file is a scheduled harness silently losing its instructions.
 	promptFile string
+	// systemPromptFile/mcpConfig/allowedTools are the claude-code one-shot
+	// persona keys (SPEC-0018 REQ-11); allowedTools is shell-quoted, same
+	// encoding as args, because a tool pattern can carry a space. Carried for
+	// the round-trip reason promptFile is.
+	systemPromptFile, mcpConfig, allowedTools string
 	// tmuxSocket/mcpAllow are string-bound like the rest; mcpAllow is
 	// space-separated (parsed by toForm, same shape as args).
 	tmuxSocket, description, mcpAllow             string
@@ -185,6 +191,14 @@ type Model struct {
 	search      textinput.Model
 	searchQuery string
 
+	// peekAct is a one-shot's structured activity, which the preview renders
+	// the way `harness logs` does instead of mirroring its PTY (peek_activity.go).
+	peekAct peekActivity
+	// chatHistPending counts the chatroom's outstanding history requests,
+	// chatHistAt when the latest round went out (chatroom_history.go).
+	chatHistPending int
+	chatHistAt      time.Time
+
 	// Live preview session (#200, see peek.go). The dashboard's peek is a
 	// read-only attach sized to the pane, so the daemon knows how big the
 	// viewer is and the guest's PTY follows it. peekSess is 0 when none is
@@ -195,6 +209,12 @@ type Model struct {
 	peekCols     int
 	peekRows     int
 	peekView     *vtView
+	// peekFmt renders the guest's PTY bytes readably before they reach the
+	// emulator (issue #13). The claude-code adapter supplies one for its
+	// stream-json; nil keeps the byte-faithful mirror every other backend
+	// gets. It is replaced on every session change — it is stateful, and
+	// state from the previous harness must not bleed into the next one.
+	peekFmt adapter.PeekFormatter
 	// peekPainted latches once the live session's screen holds something. A
 	// session that is open but has never painted is not yet worth rendering
 	// over the polled tail (#290) — see peekLive.

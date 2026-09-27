@@ -171,7 +171,7 @@ func (m *Manager) ProjectUp(project string, defs []core.Harness) (ProjectUpResul
 	// their actor loop processes them). Removed harnesses stop in parallel —
 	// each Shutdown can block up to Policy.StopGrace on a SIGTERM-deaf
 	// process, so a sequential loop would cost N*grace.
-	shutdownAll(removed)
+	shutdownAll(removed, ReasonReload)
 	for _, full := range removedNames {
 		m.releaseHarnessResources(full)
 	}
@@ -215,7 +215,7 @@ func (m *Manager) ProjectDown(project string) ([]string, error) {
 	// Graceful stops run outside the lock, in parallel (each can block up to
 	// StopGrace); afterwards every per-harness resource is released so nothing
 	// of the project outlives the down (SPEC-0004 REQ "Tear Down").
-	shutdownAll(sups)
+	shutdownAll(sups, ReasonOperator)
 	for _, full := range removedNames {
 		m.releaseHarnessResources(full)
 	}
@@ -287,7 +287,7 @@ func (m *Manager) RemoveHarness(name string) error {
 	m.mu.Unlock()
 
 	if s != nil {
-		s.Shutdown()
+		s.ShutdownFor(ReasonOperator)
 	}
 	m.releaseHarnessResources(name)
 	m.markDirty()
@@ -297,14 +297,15 @@ func (m *Manager) RemoveHarness(name string) error {
 // shutdownAll stops supervisors in parallel and waits for all of them. Each
 // Shutdown blocks up to Policy.StopGrace waiting SIGTERM→grace→SIGKILL, so the
 // fan-out caps tear-down at ~max(grace) instead of N*grace. Callers must not
-// hold m.mu (Shutdown blocks on each supervisor's actor loop).
-func shutdownAll(sups []*Supervisor) {
+// hold m.mu (Shutdown blocks on each supervisor's actor loop). reason is why
+// they are going: their runs close cancelled with it (SPEC-0022 REQ-5).
+func shutdownAll(sups []*Supervisor, reason RunReason) {
 	var wg sync.WaitGroup
 	for _, s := range sups {
 		wg.Add(1)
 		go func(s *Supervisor) {
 			defer wg.Done()
-			s.Shutdown()
+			s.ShutdownFor(reason)
 		}(s)
 	}
 	wg.Wait()
@@ -500,12 +501,17 @@ func checkCommandDef(h core.Harness) error {
 		return errors.New("args is not accepted on a command harness: put the whole command line in argv (argv[0] is the executable)")
 	case h.Prompt != "" || h.PromptFile != "":
 		return errors.New("a command harness takes no prompt yet: nothing delivers a prompt to its argv")
-	case h.Model != "":
-		return errors.New("model is unused: no argv element references {{model}}")
 	case h.AutoAccept || h.MaxTurns != 0:
 		return errors.New("auto_accept and max_turns are not accepted on a command harness: it owns its argv")
 	}
-	return core.CheckCommandArgv(h.Argv)
+	if err := core.CheckCommandArgv(h.Argv); err != nil {
+		return err
+	}
+	// The same template-context rules as the file: `model` only with
+	// {{model}}, and — since schedule and triggers never travel here, so a
+	// wire harness is always resident — no required run.* reference, which
+	// could never render. Governing: SPEC-0017 REQ-7, REQ-14.
+	return core.CheckCommandTemplateContext(h.Argv, h.Model, h.Schedule != "", h.Triggered())
 }
 
 // harnessDefEqual reports whether two definitions are identical field-for-
@@ -523,7 +529,10 @@ func harnessDefEqual(a, b core.Harness) bool {
 		a.MaxTurns == b.MaxTurns &&
 		a.Quiet == b.Quiet &&
 		a.Workdir == b.Workdir &&
-		a.EnvFile == b.EnvFile &&
+		slices.Equal(a.EnvFiles, b.EnvFiles) &&
+		a.SystemPromptFile == b.SystemPromptFile &&
+		a.MCPConfig == b.MCPConfig &&
+		slices.Equal(a.AllowedTools, b.AllowedTools) &&
 		a.RestartDelay == b.RestartDelay &&
 		a.Restart == b.Restart &&
 		a.Backend == b.Backend &&
