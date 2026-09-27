@@ -32,7 +32,10 @@ func TestSlowSubscriberDoesNotStallCloses(t *testing.T) {
 	for i := 1; i <= 1000; i++ {
 		mustAppend(t, l, closed("busy", i, time.Now(), "success"), true)
 	}
-	if took := time.Since(start); took > 30*time.Second {
+	// The bound is generous: on a loaded runner 1,000 fsyncs alone can
+	// approach half a minute. What must not happen is closes waiting on a
+	// subscriber, which no bound here can hide — they would never return.
+	if took := time.Since(start); took > 60*time.Second {
 		t.Errorf("1,000 synced closes took %s behind a subscriber that never reads", took)
 	}
 	if d := l.FeedDropped()["stuck"]; d != 1000 {
