@@ -356,7 +356,11 @@ left open.
 - **The run-log text fallback.** Resolved (design review 2026-09-22): accepted
   as temporary. Matching the last 4 KiB of a non-zero exit's sanitized run log
   stays until claude-code API errors arrive as marks, then it is removed.
+<<<<<<< HEAD
+  stump.wtf/agent-trace#104 closed on 2026-09-22, but
+=======
   agent-trace's claude-code reader gained those marks on 2026-09-22, but
+>>>>>>> origin/main
   Harness still pins an agent-trace from 2026-08-10, so the fallback retires
   with the dependency bump that picks the marks up.
 - **Should `--over-budget` on a resident default to the remaining operating
