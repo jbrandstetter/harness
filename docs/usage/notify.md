@@ -140,4 +140,4 @@ An alert on a hook that has stopped working:
   expr: increase(harness_notify_deliveries_total{result=~"error|timeout|dropped"}[1h]) > 0
 ```
 
-<!-- canary 2026-09-26: docs-only PR to exercise the forward review loop -->
+*Canary note (2026-09-26): this page is exercised by the forward review-loop canary.*
