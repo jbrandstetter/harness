@@ -263,14 +263,15 @@ func wireHarnesses(proj *config.Project) []protocol.ProjectHarness {
 	for _, name := range proj.Config.HarnessOrder {
 		h := proj.Config.Harnesses[name]
 		out = append(out, protocol.ProjectHarness{
-			Name:       name,
-			Harness:    h.Adapter,
-			Args:       h.Args,
-			Argv:       h.Argv,
-			Prompt:     h.Prompt,
-			PromptFile: h.PromptFile,
-			Model:      h.Model,
-			AutoAccept: h.AutoAccept,
+			Name:        name,
+			Harness:     h.Adapter,
+			Args:        h.Args,
+			Argv:        h.Argv,
+			Transcripts: h.Transcripts,
+			Prompt:      h.Prompt,
+			PromptFile:  h.PromptFile,
+			Model:       h.Model,
+			AutoAccept:  h.AutoAccept,
 			// SPEC-0018 REQ-11: the claude-code one-shot persona keys.
 			SystemPromptFile: h.SystemPromptFile,
 			MCPConfig:        h.MCPConfig,

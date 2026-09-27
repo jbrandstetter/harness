@@ -90,10 +90,13 @@ workdir = "~/src/my-project"
 enabled = true
 ```
 
-`harness` is required and names the kind. `crush`, `claude-code` and `codex`
-are the agents agent-trace can read. `command` runs any other program, with no
-shell: its `argv` array is the whole process, so each element reaches the
-program as one byte-identical argument.
+`harness` is required and names the kind. `crush`, `claude-code`, `codex`,
+`pi` and `omp` are agent CLIs with adapters of their own; agent-trace reads the
+sessions of all but `omp`, which is observed once it can. `command` runs any
+other program, with no shell: its `argv` array is the whole process, so each
+element reaches the program as one byte-identical argument. A `command`
+harness that hand-builds an agent's argv can set `transcripts` to that agent's
+kind to be observed as it.
 
 The `generic` kind, which ran an arbitrary `sh` command, is deprecated and is
 being removed (ADR-0033); a harness must be an agent agent-trace can read.
