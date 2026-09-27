@@ -212,16 +212,15 @@ func Sources(s Scope) ([]tail.Adapter, error) {
 		// One reader for the family, at the root the harness's own
 		// environment gives it (PI_CODING_AGENT_DIR, then the CLI's default
 		// under HOME), so an env_file that relocates the agent directory is
-		// followed. OMP's sessions do not parse with agent-trace's Pi reader
-		// yet (adapter.PiFamily.Observed), so an omp harness reports no
-		// trajectory rather than a store that always lists empty.
+		// followed. The OMP flag makes the reader label every session it
+		// reads tail.HarnessOMP, so an omp scope claims exactly its own.
 		// Governing: SPEC-0017 REQ-13 "Pi And OMP Adapters".
 		fam := adapter.Pi
 		if s.Adapter == core.AdapterOMP {
 			fam = adapter.OMP
 		}
 		if fam.Observed() {
-			return []tail.Adapter{&tail.PiAdapter{Dir: fam.SessionRoot(s.Env, s.home())}}, nil
+			return []tail.Adapter{&tail.PiAdapter{Dir: fam.SessionRoot(s.Env, s.home()), OMP: s.Adapter == core.AdapterOMP}}, nil
 		}
 	}
 	return nil, fmt.Errorf("%w: %q", ErrNoTrajectory, s.Adapter)

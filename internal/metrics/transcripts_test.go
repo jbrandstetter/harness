@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,7 +70,7 @@ func TestTranscriptBindingAndPiThroughTheRealObserver(t *testing.T) {
 	claudeDir := filepath.Join(root, "claude-cfg")
 	hand := core.Harness{Name: "hand", Adapter: core.AdapterCommand, Transcripts: "claude-code",
 		Argv:    []string{"claude", "-p", "--verbose", "--output-format", "stream-json", "sweep"},
-		Workdir: handWork, EnvFile: writeEnvFile(t, root, "CLAUDE_CONFIG_DIR="+claudeDir)}
+		Workdir: handWork, EnvFiles: []string{writeEnvFile(t, root, "CLAUDE_CONFIG_DIR="+claudeDir)}}
 	// A pi harness whose agent directory its env_file relocates.
 	piWork := filepath.Join(root, "pi")
 	piAgent := filepath.Join(root, "pi-agent")
@@ -78,11 +79,22 @@ func TestTranscriptBindingAndPiThroughTheRealObserver(t *testing.T) {
 		t.Fatal(err)
 	}
 	pi := core.Harness{Name: "pi-worker", Adapter: core.AdapterPi, Prompt: "fix the build",
-		Workdir: piWork, EnvFile: writeEnvFile(t, piDir, "PI_CODING_AGENT_DIR="+piAgent)}
-	// Controls: the same argv unbound, and an omp harness, are unobserved.
+		Workdir: piWork, EnvFiles: []string{writeEnvFile(t, piDir, "PI_CODING_AGENT_DIR="+piAgent)}}
+	// An omp harness, observed like pi since agent-trace v0.6.0, with its
+	// agent directory relocated the same way. Its fixture carries OMP's
+	// 256-byte title slot, so the reader proves it reads real OMP bytes.
+	ompWork := filepath.Join(root, "omp")
+	ompAgent := filepath.Join(root, "omp-agent")
+	ompDir := filepath.Join(root, "omp-env")
+	if err := os.MkdirAll(ompDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	omp := core.Harness{Name: "omp-worker", Adapter: core.AdapterOMP, Prompt: "fix the build",
+		Workdir: ompWork, EnvFiles: []string{writeEnvFile(t, ompDir, "PI_CODING_AGENT_DIR="+ompAgent)}}
+	// Control: the same argv unbound (no transcripts binding) has no series
+	// at all.
 	unbound := core.Harness{Name: "unbound", Adapter: core.AdapterCommand, Argv: hand.Argv, Workdir: filepath.Join(root, "unbound")}
-	omp := core.Harness{Name: "omp-worker", Adapter: core.AdapterOMP, Prompt: "fix the build", Workdir: filepath.Join(root, "omp")}
-	for _, d := range []string{handWork, piWork, unbound.Workdir, omp.Workdir} {
+	for _, d := range []string{handWork, piWork, unbound.Workdir, ompWork} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -124,18 +136,36 @@ func TestTranscriptBindingAndPiThroughTheRealObserver(t *testing.T) {
 	appendFile(t, piPath, fmt.Sprintf(`{"type":"message","id":"e2","parentId":"e1","timestamp":%q,"message":{"role":"assistant","model":"z-ai/glm-5.3-flash","content":[{"type":"toolCall","id":"call_1","name":"read","arguments":{"path":"Makefile"}}]}}`+"\n"+
 		`{"type":"message","id":"e3","parentId":"e2","timestamp":%q,"message":{"role":"toolResult","toolCallId":"call_1","toolName":"read","content":[{"type":"text","text":"all: build"}],"isError":false}}`+"\n",
 		ts(10*time.Second), ts(10*time.Second)))
+	ompPath := filepath.Join(ompAgent, "sessions", "--omp--", "omp-1.jsonl")
+	// The session opens with the real title slot line from the recorded
+	// fixture (256 bytes, v1 shape with source and updatedAt), so the reader
+	// proves it reads real OMP bytes.
+	ompFixture, err := os.ReadFile(filepath.Join("..", "adapter", "testdata", "omp-session.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ompTitle, _, ok := strings.Cut(string(ompFixture), "\n")
+	if !ok {
+		t.Fatal("omp fixture has no title line")
+	}
+	appendFile(t, ompPath, ompTitle+"\n"+
+		fmt.Sprintf(`{"type":"session","version":3,"id":"omp-1","timestamp":%q,"cwd":%q}`+"\n"+
+			`{"type":"message","id":"o1","parentId":null,"timestamp":%q,"message":{"role":"user","content":[{"type":"text","text":"fix the build"}]}}`+"\n",
+			ts(time.Second), ompWork, ts(time.Second)))
 
-	for _, name := range []string{"hand", "pi-worker"} {
+	appendFile(t, ompPath, fmt.Sprintf(`{"type":"message","id":"o2","parentId":"o1","timestamp":%q,"message":{"role":"assistant","model":"z-ai/glm-5.3-flash","content":[{"type":"toolCall","id":"call_o1","name":"read","arguments":{"path":"Makefile"}}]}}`+"\n"+
+		`{"type":"message","id":"o3","parentId":"o2","timestamp":%q,"message":{"role":"toolResult","toolCallId":"call_o1","toolName":"read","content":[{"type":"text","text":"all: build"}],"isError":false}}`+"\n",
+		ts(10*time.Second), ts(10*time.Second)))
+
+	for _, name := range []string{"hand", "pi-worker", "omp-worker"} {
 		eventually(t, name+"'s tool call to count as a success", func() bool {
 			v, _ := scrape(t, m).get("harness_model_calls_total", lbls("harness", name, "outcome", "success"))
 			return v == 1
 		})
 	}
 	fams := scrape(t, m)
-	for _, name := range []string{"unbound", "omp-worker"} {
-		if v, ok := fams.get("harness_model_calls_total", lbls("harness", name, "outcome", "success")); ok {
-			t.Errorf("%s: model calls reported (%v); it is not observable, so the series must be absent", name, v)
-		}
+	if v, ok := fams.get("harness_model_calls_total", lbls("harness", "unbound", "outcome", "success")); ok {
+		t.Errorf("unbound: model calls reported (%v); it is not observable, so the series must be absent", v)
 	}
 	if st := obs.Stats(); len(st.ParseErrors) != 0 {
 		t.Errorf("parse errors: %v", st.ParseErrors)

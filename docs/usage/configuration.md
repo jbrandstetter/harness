@@ -604,20 +604,13 @@ workdir = "~/src/app"
 
 The flags were checked against the source of Pi v0.87.1 and OMP v18.3.0.
 
-**Observation.** A `pi` harness's sessions are read from
-`$PI_CODING_AGENT_DIR/sessions`, or `~/.pi/agent/sessions` when the variable is
-unset, resolved from the harness's own `env_file`. They are attributed to it
-and counted in the model-call metrics.
-
-⚠️ **OMP is not observed yet.** OMP writes its sessions under
-`~/.omp/agent/sessions` (it reads the same `PI_CODING_AGENT_DIR` variable) in a
-layout the session reader Harness uses does not parse yet: each file opens with
-a fixed-width title line before the session header. Until that reader learns
-the layout, an `omp` harness runs and is supervised normally but has no
-trajectory, no attributed tool calls and no model-call series (they are
-absent, not zero), and `harness logs` shows its output log. Binding
-`transcripts = "omp"` on a `command` harness gives the same result for the same
-reason.
+**Observation.** Both are observed. A `pi` or `omp` harness's sessions are read
+from `$PI_CODING_AGENT_DIR/sessions`, or `~/.pi/agent/sessions` /
+`~/.omp/agent/sessions` when the variable is unset, resolved from the harness's
+own `env_file`. They are attributed to it and counted in the model-call
+metrics. OMP's session files open with a fixed-width title line before the
+session header; the session reader accepts it, and labels OMP sessions `omp`
+so an `omp` harness claims exactly its own.
 
 ```toml
 [harness.my-agent]

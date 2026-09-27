@@ -161,10 +161,10 @@ successful model call, because the model answered with work. It counts an
 call is not counted.
 
 Only a harness whose adapter writes a readable transcript (`claude-code`,
-`crush`, `codex`, `pi`, or a `command` harness bound to one of those with
-`transcripts`) **and** that has a `workdir` gets model-call series. A `generic`
-harness, an unbound `command` harness, an `omp` harness (its sessions are not
-readable yet), or an agent harness with no workdir, has none. The daemon
+`crush`, `codex`, `pi`, `omp`, or a `command` harness bound to one of those
+with `transcripts`) **and** that has a `workdir` gets model-call series. A
+`generic` harness, an unbound `command` harness, or an agent harness with no
+workdir, has none. The daemon
 omits values it cannot compute rather than reporting a zero, which would look
 like a healthy, idle agent.
 

@@ -178,8 +178,8 @@ enabled = false
 # argument. `model` is accepted only when an element references {{model}}.
 # This is also how an unlisted agent CLI runs: `transcripts = "claude-code"`
 # (or crush, codex, pi, omp) on a command harness observes its sessions as
-# that agent's. Pi and OMP have adapters of their own ("pi", "omp"); OMP's
-# sessions are not observed yet.
+# that agent's. Pi and OMP have adapters of their own ("pi", "omp"); both
+# are observed.
 # Valid values: "crush", "claude-code", "codex", "pi", "omp", "generic",
 # "command".
 #

@@ -16,9 +16,7 @@ package adapter
 // binary is to hand.
 
 import (
-	"bytes"
 	"context"
-	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -99,16 +97,18 @@ func TestPiFamilySessionRoot(t *testing.T) {
 	}
 }
 
-// Pi is observed through agent-trace's Pi reader; OMP is not (yet).
+// Pi and OMP are both observed through agent-trace's reader, at their own
+// session roots; the OMP adapter labels its sessions HarnessOMP.
 func TestPiFamilyTrajectory(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv(PiAgentDirEnv, "")
 	ta, ok := Pi.TailAdapter().(*tail.PiAdapter)
-	if !ok || ta.Dir != Pi.TrajectoryDir("") || ta.Dir == "" {
-		t.Fatalf("pi TailAdapter = %#v, want a PiAdapter at %q", Pi.TailAdapter(), Pi.TrajectoryDir(""))
+	if !ok || ta.Dir != Pi.TrajectoryDir("") || ta.Dir == "" || ta.OMP {
+		t.Fatalf("pi TailAdapter = %#v, want a PiAdapter (OMP unset) at %q", Pi.TailAdapter(), Pi.TrajectoryDir(""))
 	}
-	if OMP.TailAdapter() != nil || OMP.TrajectoryDir("") != "" {
-		t.Fatalf("omp reports a trajectory (%#v at %q) that agent-trace cannot read", OMP.TailAdapter(), OMP.TrajectoryDir(""))
+	oa, ok := OMP.TailAdapter().(*tail.PiAdapter)
+	if !ok || oa.Dir != OMP.TrajectoryDir("") || oa.Dir == "" || !oa.OMP {
+		t.Fatalf("omp TailAdapter = %#v, want a PiAdapter with OMP set at %q", OMP.TailAdapter(), OMP.TrajectoryDir(""))
 	}
 }
 
@@ -127,42 +127,20 @@ func TestPiSessionFixtureParses(t *testing.T) {
 	}
 }
 
-// TestOMPSessionsAreNotReadByPiReader is why `omp` ships unobserved. OMP opens
-// every session with a 256-byte {"type":"title"} slot line, and the pinned
-// agent-trace recognises a Pi session only by a {"type":"session"} header on
-// the FIRST line, so an OMP session is "not a pi session". The second half
-// shows the slot is the whole difference: without it the same bytes parse.
-//
-// When agent-trace learns OMP's layout this test fails. Then flip
-// PiFamily.observed for OMP (see its comment for the kind match that goes
-// with it), delete this test, and update docs/usage/configuration.md's omp
-// note.
-func TestOMPSessionsAreNotReadByPiReader(t *testing.T) {
+// TestOMPSessionsAreReadByOMPReader pins that agent-trace reads OMP session
+// files as-is: every OMP session opens with a 256-byte {"type":"title"} slot
+// line before the {"type":"session"} header, and the reader (>= v0.6.0)
+// accepts it. If agent-trace regresses and stops parsing the fixture, this
+// fails — flip PiFamily.observed for OMP back to false and update the omp
+// docs until it reads them again.
+func TestOMPSessionsAreReadByOMPReader(t *testing.T) {
 	path := filepath.Join("testdata", "omp-session.jsonl")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, rest, ok := bytes.Cut(raw, []byte("\n"))
-	if !ok || len(first)+1 != 256 || !bytes.HasPrefix(first, []byte(`{"type":"title"`)) {
-		t.Fatalf("fixture's first line is not OMP's 256-byte title slot (%d bytes): %.60s", len(first)+1, first)
-	}
-
-	events, _, _, err := tail.PiAdapter{}.Parse(context.Background(), path)
-	if err == nil {
-		t.Fatalf("agent-trace's Pi reader now parses OMP sessions (%d events): set observed for OMP in PiFamily, delete this test, and update the omp docs", len(events))
-	}
-	if OMP.Observed() {
-		t.Fatal("OMP is marked observed, but agent-trace cannot read its sessions")
-	}
-
-	stripped := filepath.Join(t.TempDir(), "omp-no-slot.jsonl")
-	if err := os.WriteFile(stripped, rest, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	events, _, meta, err := tail.PiAdapter{}.Parse(context.Background(), stripped)
+	events, _, meta, err := tail.PiAdapter{OMP: true}.Parse(context.Background(), path)
 	if err != nil || len(events) != 1 || meta.Cwd != "/work/omp" {
-		t.Fatalf("without the title slot: events %d, cwd %q, err %v; want the slot to be the only divergence", len(events), meta.Cwd, err)
+		t.Fatalf("OMP reader: events %d, cwd %q, err %v; want 1 event at /work/omp", len(events), meta.Cwd, err)
+	}
+	if !OMP.Observed() {
+		t.Fatal("agent-trace reads OMP sessions, but OMP is marked unobserved")
 	}
 }
 

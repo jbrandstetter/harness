@@ -8,7 +8,6 @@ package runtrace
 // names).
 
 import (
-	"errors"
 	"slices"
 	"testing"
 
@@ -39,11 +38,15 @@ func TestSourcesPiFollowsAgentDir(t *testing.T) {
 	}
 }
 
-// OMP ships unobserved: its sessions do not parse with agent-trace's Pi reader
-// yet, so it reports no trajectory — the caller falls back to the log.
-func TestSourcesOMPHasNoTrajectoryYet(t *testing.T) {
-	if _, err := Sources(Scope{Adapter: "omp", Env: map[string]string{"HOME": "/home/agent"}}); !errors.Is(err, ErrNoTrajectory) {
-		t.Fatalf("Sources(omp) err = %v, want ErrNoTrajectory", err)
+// OMP is observed like Pi: its sessions are read from the OMP agent
+// directory, and the reader labels them "omp" so the scope claims its own.
+func TestSourcesOMPHasATrajectory(t *testing.T) {
+	srcs, err := Sources(Scope{Adapter: "omp", Env: map[string]string{"HOME": "/home/agent"}})
+	if err != nil {
+		t.Fatalf("Sources(omp) err = %v", err)
+	}
+	if len(srcs) != 1 {
+		t.Fatalf("Sources(omp) returned %d adapters, want 1", len(srcs))
 	}
 }
 

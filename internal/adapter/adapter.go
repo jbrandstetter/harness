@@ -274,7 +274,8 @@ const PiAgentDirEnv = "PI_CODING_AGENT_DIR"
 // implementation registered twice, because the two CLIs share their
 // print-mode flags, their agent-dir variable and their session directory
 // layout, and differ only in the executable, the default agent directory and
-// whether agent-trace can read the session files.
+// the session-file details the reader needs (OMP opens every session with a
+// 256-byte {"type":"title"} slot line; agent-trace >= v0.6.0 reads both).
 //
 // Flags and directories were verified against the source of Pi v0.87.1
 // (github.com/badlogic/pi-mono packages/coding-agent at 8676a0dc: cli/args.ts,
@@ -293,13 +294,9 @@ type PiFamily struct {
 	// live in its "sessions" subdirectory.
 	agentDir string
 	// observed reports whether agent-trace's Pi session reader parses this
-	// CLI's session files. OMP's do not at the pinned agent-trace: every OMP
-	// session opens with a fixed 256-byte {"type":"title"} slot line before
-	// the {"type":"session"} header, and the reader recognises a session only
-	// by a header on its first line. TestOMPSessionsAreNotReadByPiReader
-	// fails once agent-trace reads them, so this is flipped then — together
-	// with run correlation's kind match, since the reader labels every session
-	// it reads tail.HarnessPi, which an "omp" scope does not claim today
+	// CLI's session files. Both do at agent-trace v0.6.0: the reader accepts
+	// OMP's title slot, and tail.PiAdapter with OMP set labels the sessions
+	// it reads tail.HarnessOMP, so an "omp" scope claims exactly its own
 	// (runtrace.CouldWrite, ClaimantAt).
 	observed bool
 }
@@ -307,7 +304,7 @@ type PiFamily struct {
 // Pi and OMP are the two registered members of the family.
 var (
 	Pi  = &PiFamily{name: core.AdapterPi, exe: "pi", agentDir: filepath.Join(".pi", "agent"), observed: true}
-	OMP = &PiFamily{name: core.AdapterOMP, exe: "omp", agentDir: filepath.Join(".omp", "agent"), observed: false}
+	OMP = &PiFamily{name: core.AdapterOMP, exe: "omp", agentDir: filepath.Join(".omp", "agent"), observed: true}
 )
 
 func (a *PiFamily) Name() string { return a.name }
@@ -323,7 +320,7 @@ func (a *PiFamily) Executable() string { return a.exe }
 // Not modelled (OMP only): a named profile (OMP_PROFILE / PI_PROFILE, which
 // moves the agent directory under ~/.omp/profiles/<name>), PI_CONFIG_DIR, the
 // XDG_DATA_HOME migration on Linux, and PI_CODING_AGENT_SESSION_DIR or
-// --session-dir. None of them matters while OMP is unobserved.
+// --session-dir.
 func (a *PiFamily) SessionRoot(env map[string]string, home string) string {
 	if d := env[PiAgentDirEnv]; d != "" {
 		if d == "~" {
@@ -357,15 +354,15 @@ func (a *PiFamily) TrajectoryDir(_ string) string {
 	return a.SessionRoot(map[string]string{PiAgentDirEnv: os.Getenv(PiAgentDirEnv)}, home)
 }
 
-// TailAdapter is agent-trace's Pi reader at the session root, or nil for a
-// member whose sessions it cannot read (OMP), which then falls back to the
-// scrollback record like Generic (ADR-0007).
+// TailAdapter is agent-trace's Pi reader at the session root. The OMP flag
+// makes it label the sessions it reads tail.HarnessOMP, so an omp scope
+// claims exactly its own.
 func (a *PiFamily) TailAdapter() tail.Adapter {
 	dir := a.TrajectoryDir("")
 	if dir == "" {
 		return nil
 	}
-	return &tail.PiAdapter{Dir: dir}
+	return &tail.PiAdapter{Dir: dir, OMP: a.name == core.AdapterOMP}
 }
 
 // PromptCommand is `<exe> --print [--model M] <prompt>`. --print is the
