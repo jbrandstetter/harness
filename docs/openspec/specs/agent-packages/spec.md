@@ -5,14 +5,14 @@ implements: [ADR-0040]
 extends: [SPEC-0006]
 ---
 
-# SPEC-0026: Agent Package Taps
+# SPEC-0026: Agent Package Stables
 
 ## Overview
 
 This spec adds a package manager for harness definitions:
 
-* A **tap**: a git remote the operator explicitly trusts, declared in a new
-  global-only `[tap.*]` table, holding any number of installable
+* A **stable**: a git remote the operator explicitly trusts, declared in a new
+  global-only `[stable.*]` table, holding any number of installable
   **packages** under a fixed repository layout.
 * A **package manifest**: a narrowed, declarative-only subset of the harness
   schema (ADR-0006/SPEC-0006), plus package metadata and an itemized
@@ -36,85 +36,85 @@ Requirements are numbered. Cite them as `SPEC-0026 REQ-n`.
 
 ## Requirements
 
-### Requirement: REQ-1 — Tap Registration And Global-Only Trust
+### Requirement: REQ-1 — Stable Registration And Global-Only Trust
 
-The global configuration SHALL accept any number of `[tap.<name>]` tables,
+The global configuration SHALL accept any number of `[stable.<name>]` tables,
 each with a required `remote` (a git URL) and an optional `public` boolean
 (unset is treated as `true`, following SPEC-0007's `skill_repo` convention).
 `<name>` SHALL match `^[a-z][a-z0-9-]*$`.
 
-`[tap.*]` SHALL be rejected in a project `harness.toml` and on the
+`[stable.*]` SHALL be rejected in a project `harness.toml` and on the
 project-up wire, joining `[adapter.*]` and `[skill_repo.*]` on the
 global-only list, because a cloned repository must not be able to expand
 what is trusted on the machine that clones it.
 
-A `[tap.*]` table SHALL be created, modified, or removed only by
-`harness agent tap add|remove <name> ...`, which writes the global
-`harness.toml` directly; no other command SHALL add or change a tap
-declaration. `tap add` SHALL clone the remote into
-`$XDG_STATE_HOME/harness/agents/taps/<name>/` before the table is written,
-and SHALL fail without writing the table if the clone fails. `tap remove`
+A `[stable.*]` table SHALL be created, modified, or removed only by
+`harness agent stable add|remove <name> ...`, which writes the global
+`harness.toml` directly; no other command SHALL add or change a stable
+declaration. `stable add` SHALL clone the remote into
+`$XDG_STATE_HOME/harness/agents/stables/<name>/` before the table is written,
+and SHALL fail without writing the table if the clone fails. `stable remove`
 SHALL delete the table and print every currently installed harness whose
-`source` names that tap, without uninstalling them.
+`source` names that stable, without uninstalling them.
 
-`harness agent tap update [name]` SHALL be the only operation that fetches
-an already-added tap's remote. It SHALL fast-forward the local clone and
+`harness agent stable update [name]` SHALL be the only operation that fetches
+an already-added stable's remote. It SHALL fast-forward the local clone and
 SHALL fail, without modifying the clone, on a non-fast-forward state. No
-other command, and no daemon activity of any kind, SHALL fetch a tap's
+other command, and no daemon activity of any kind, SHALL fetch a stable's
 remote.
 
-#### Scenario: A project file cannot add a tap
+#### Scenario: A project file cannot add a stable
 
-- **WHEN** a project `harness.toml` declares `[tap.evil] remote =
-  "https://attacker.example/tap.git"`
-- **THEN** `harness up` fails, naming `[tap.*]` as global-only, and no clone
+- **WHEN** a project `harness.toml` declares `[stable.evil] remote =
+  "https://attacker.example/stable.git"`
+- **THEN** `harness up` fails, naming `[stable.*]` as global-only, and no clone
   is attempted
 
-#### Scenario: Adding a tap clones before trusting
+#### Scenario: Adding a stable clones before trusting
 
-- **WHEN** `harness agent tap add stump-wtf
-  https://gitea.stump.rocks/stump.wtf/harness-tap.git` is run and the clone
+- **WHEN** `harness agent stable add stump-wtf
+  https://gitea.stump.rocks/stump.wtf/harness-stable.git` is run and the clone
   fails (network error, no such repository)
-- **THEN** no `[tap.stump-wtf]` table is written to `harness.toml`
+- **THEN** no `[stable.stump-wtf]` table is written to `harness.toml`
 
-#### Scenario: Removing a tap reports its installed packages
+#### Scenario: Removing a stable reports its installed packages
 
-- **WHEN** `harness agent tap remove stump-wtf` is run while
+- **WHEN** `harness agent stable remove stump-wtf` is run while
   `stump-wtf/pr-reviewer` is installed as harness `pr-reviewer`
 - **THEN** the table is removed, the harness `pr-reviewer` is left exactly as
-  it was, and the output names it as installed from the now-untrusted tap
+  it was, and the output names it as installed from the now-untrusted stable
 
-#### Scenario: Nothing but tap update fetches
+#### Scenario: Nothing but stable update fetches
 
 - **WHEN** `harness agent search`, `info`, `install`, or `upgrade` is run
-  without an intervening `tap update`
-- **THEN** none of them perform a network fetch; they operate on the tap's
-  clone as it was left by the last `tap update`
+  without an intervening `stable update`
+- **THEN** none of them perform a network fetch; they operate on the stable's
+  clone as it was left by the last `stable update`
 
-### Requirement: REQ-2 — Tap Layout And Local Discovery
+### Requirement: REQ-2 — Stable Layout And Local Discovery
 
-A tap's clone SHALL be expected to contain zero or more package directories
+A stable's clone SHALL be expected to contain zero or more package directories
 under `packages/<package-name>/`, each holding exactly one `package.toml`
 manifest and, optionally, a `skills/` directory of skill directories
 (ADR-0011 shape: `skills/<slug>/SKILL.md`) and a `prompts/` directory of
-markdown files. `<package-name>` SHALL match the same pattern as a tap name.
+markdown files. `<package-name>` SHALL match the same pattern as a stable name.
 A `packages/` directory with no valid subdirectories SHALL NOT be an error;
-`harness agent search` on such a tap SHALL report zero packages.
+`harness agent search` on such a stable SHALL report zero packages.
 
-`harness agent search [query] [--tap <name>]` SHALL list, across all
-trusted taps or the named one, every package whose name or
+`harness agent search [query] [--stable <name>]` SHALL list, across all
+trusted stables or the named one, every package whose name or
 `[package].description` matches `query` case-insensitively (or every
 package, when `query` is omitted), reading only local clones.
-`harness agent info <tap>/<package>` SHALL print the package's manifest,
+`harness agent info <stable>/<package>` SHALL print the package's manifest,
 its `[requests]` table, and the list of bundled files, without installing
-it, reading only the local clone. Both commands SHALL fail, naming the tap,
-when the named tap is not registered.
+it, reading only the local clone. Both commands SHALL fail, naming the stable,
+when the named stable is not registered.
 
-#### Scenario: Search across all trusted taps
+#### Scenario: Search across all trusted stables
 
-- **WHEN** two taps are registered and `harness agent search reviewer` is run
-- **THEN** every package from either tap whose name or description contains
-  "reviewer" (case-insensitive) is listed, with its tap prefix
+- **WHEN** two stables are registered and `harness agent search reviewer` is run
+- **THEN** every package from either stable whose name or description contains
+  "reviewer" (case-insensitive) is listed, with its stable prefix
 
 #### Scenario: Info reads without installing
 
@@ -123,11 +123,11 @@ when the named tap is not registered.
 - **THEN** the manifest and bundled file list print, and no entry is created
   under the content-addressed store
 
-#### Scenario: Unknown tap
+#### Scenario: Unknown stable
 
-- **WHEN** `harness agent info ghost/pr-reviewer` is run and no `[tap.ghost]`
+- **WHEN** `harness agent info ghost/pr-reviewer` is run and no `[stable.ghost]`
   is registered
-- **THEN** the command fails, naming `ghost` as not a registered tap
+- **THEN** the command fails, naming `ghost` as not a registered stable
 
 ### Requirement: REQ-3 — Package Manifest Schema
 
@@ -198,7 +198,7 @@ line, and SHALL state explicitly when a request key is absent (for example,
 with a distinct warning stating that the installed harness would be able to
 start, stop, or restart its siblings (ADR-0010), and installing or
 upgrading such a package SHALL require the operator to retype
-`<tap>/<package>` at the confirmation prompt, independent of any content
+`<stable>/<package>` at the confirmation prompt, independent of any content
 scan finding and independent of `--yes`.
 
 #### Scenario: A read-only package needs no extra confirmation
@@ -213,7 +213,7 @@ scan finding and independent of `--yes`.
 - **WHEN** a package requests `mcp_allow = ["read", "write"]`
 - **THEN** install refuses to proceed under `--yes` alone, and an
   interactive install only proceeds once the operator retypes
-  `<tap>/<package>` exactly
+  `<stable>/<package>` exactly
 
 ### Requirement: REQ-5 — Content Scan And Severity
 
@@ -225,7 +225,7 @@ certification: the CLI output and `harness agent info` SHALL both state
 that a clean scan is not a guarantee of safety.
 
 A `high`-severity finding SHALL block `install` and `upgrade` unless
-`--force-unsafe` is given together with a re-typed `<tap>/<package>`; when
+`--force-unsafe` is given together with a re-typed `<stable>/<package>`; when
 given, the install record SHALL retain the finding and the fact that it was
 overridden. `--yes` alone SHALL NOT suppress a `high`-severity block. A
 `low`-severity finding SHALL be shown in the confirmation output and SHALL
@@ -253,7 +253,7 @@ it being called out specifically.
 #### Scenario: force-unsafe requires the typed name
 
 - **WHEN** `--force-unsafe` is given without an interactive retype of
-  `<tap>/<package>` on a non-interactive terminal
+  `<stable>/<package>` on a non-interactive terminal
 - **THEN** the install refuses, stating that an unattended session cannot
   override a high-severity finding
 
@@ -275,35 +275,35 @@ it being called out specifically.
 
 ### Requirement: REQ-6 — Install: Resolution And Pinning
 
-`harness agent install <tap>/<package>[@<version>] [--as <name>]` SHALL
-resolve `<version>` (default: the tap's current default branch tip) to an
-exact, full 40-character commit SHA in the tap's local clone. When
+`harness agent install <stable>/<package>[@<version>] [--as <name>]` SHALL
+resolve `<version>` (default: the stable's current default branch tip) to an
+exact, full 40-character commit SHA in the stable's local clone. When
 `<version>` is already a full 40-character SHA present in the local
 content-addressed store, resolution SHALL use that local copy directly and
-SHALL NOT consult the tap's clone.
+SHALL NOT consult the stable's clone.
 
 After the content scan (REQ-5) and confirmation (REQ-4), a successful
 install SHALL copy the package directory's contents at that commit into
-`$XDG_STATE_HOME/harness/agents/installed/<tap>/<package>/<sha>/`,
+`$XDG_STATE_HOME/harness/agents/installed/<stable>/<package>/<sha>/`,
 immutably; an existing directory at that exact path SHALL be treated as
 already-materialized and SHALL NOT be rewritten. Install SHALL then write
 or update a `[harness.<name>]` table in the target `harness.toml`
 (`<name>` defaults to `<package>`; `--as` overrides it) with `source =
-"<tap>/<package>@<sha>"`, preserving every other key already on that table.
+"<stable>/<package>@<sha>"`, preserving every other key already on that table.
 Installing into a harness name that already has a `source` from a
-*different* tap or package SHALL require an explicit `--replace` flag;
+*different* stable or package SHALL require an explicit `--replace` flag;
 without it, the command SHALL fail, naming the existing source.
 
 #### Scenario: A branch resolves to a pinned SHA
 
 - **WHEN** `harness agent install stump-wtf/pr-reviewer` is run with no
-  `@version` and the tap's default branch tip is commit `abc123...`
+  `@version` and the stable's default branch tip is commit `abc123...`
 - **THEN** the written `source` reads
   `stump-wtf/pr-reviewer@abc123...` (the full SHA), never the branch name
 
 #### Scenario: Repeated install is idempotent
 
-- **WHEN** `install` is run twice in a row with no intervening `tap update`
+- **WHEN** `install` is run twice in a row with no intervening `stable update`
 - **THEN** both resolve to the same commit SHA and the second run reuses
   the existing content-addressed directory without rewriting it
 
@@ -314,30 +314,30 @@ without it, the command SHALL fail, naming the existing source.
 - **THEN** a second harness table, `pr-reviewer-strict`, is created with its
   own `source`, and the first is untouched
 
-#### Scenario: A local SHA install needs no tap clone
+#### Scenario: A local SHA install needs no stable clone
 
 - **WHEN** `harness agent install stump-wtf/pr-reviewer@<sha>` is run for a
-  `<sha>` already present in the content-addressed store, and the tap's
+  `<sha>` already present in the content-addressed store, and the stable's
   clone is unreachable
 - **THEN** the install still succeeds, reading only the local store
 
 #### Scenario: Overwriting a different source requires --replace
 
 - **WHEN** `harness.pr-reviewer` already has `source =
-  "other-tap/other-pkg@..."` and `harness agent install
+  "other-stable/other-pkg@..."` and `harness agent install
   stump-wtf/pr-reviewer --as pr-reviewer` is run without `--replace`
 - **THEN** the command fails, naming the existing source
 
 ### Requirement: REQ-7 — The Source Field And Config-Load Resolution
 
 The harness schema SHALL accept an optional `source` key, a string of the
-form `<tap>/<package>@<sha>` where `<sha>` is a full 40-character commit
+form `<stable>/<package>@<sha>` where `<sha>` is a full 40-character commit
 SHA. `source` SHALL be legal on a `[harness.*]` table in the global
-configuration file and in a project `harness.toml`, unlike `[tap.*]`.
+configuration file and in a project `harness.toml`, unlike `[stable.*]`.
 
 At config load, a harness table declaring `source` SHALL be resolved by
 reading `package.toml` from
-`$XDG_STATE_HOME/harness/agents/installed/<tap>/<package>/<sha>/` on local
+`$XDG_STATE_HOME/harness/agents/installed/<stable>/<package>/<sha>/` on local
 disk only — the daemon SHALL NOT perform a network request or a git
 operation of any kind to resolve `source`. The package's `[harness]` values
 SHALL be applied first, and any key also present directly on the harness
@@ -390,9 +390,9 @@ adapter does.
 
 ### Requirement: REQ-8 — Upgrade
 
-`harness agent upgrade <tap>/<package>|--all [@<version>]` SHALL, for each
-named harness whose `source` names that `<tap>/<package>`, resolve a new
-pin exactly as REQ-6 describes for install (using the tap's
+`harness agent upgrade <stable>/<package>|--all [@<version>]` SHALL, for each
+named harness whose `source` names that `<stable>/<package>`, resolve a new
+pin exactly as REQ-6 describes for install (using the stable's
 already-fetched local clone; `upgrade` SHALL NOT fetch). It SHALL then
 produce a diff against the currently installed pin: every changed manifest
 value, and, for each bundled file under 64 KiB, a unified text diff; a
@@ -416,22 +416,22 @@ deleted by upgrade.
 - **THEN** the diff is shown and confirmation is still required (or `--yes`
   accepted, since no `high` finding exists)
 
-#### Scenario: Upgrade needs a prior tap update
+#### Scenario: Upgrade needs a prior stable update
 
-- **WHEN** `upgrade` is run for a version newer than what the tap's local
-  clone holds, with no intervening `tap update`
+- **WHEN** `upgrade` is run for a version newer than what the stable's local
+  clone holds, with no intervening `stable update`
 - **THEN** the command fails, naming the requested version as not present
-  in the local clone and recommending `harness agent tap update`
+  in the local clone and recommending `harness agent stable update`
 
 #### Scenario: The prior pin survives an upgrade
 
 - **WHEN** a harness is upgraded from `@sha1` to `@sha2`
-- **THEN** `$XDG_STATE_HOME/harness/agents/installed/<tap>/<package>/sha1/`
+- **THEN** `$XDG_STATE_HOME/harness/agents/installed/<stable>/<package>/sha1/`
   still exists on disk after the upgrade completes
 
 #### Scenario: Rollback is a re-install of a retained pin
 
-- **WHEN** `harness agent install <tap>/<package>@sha1 --as <name>
+- **WHEN** `harness agent install <stable>/<package>@sha1 --as <name>
   --replace` is run after an upgrade to `sha2`, and `sha1`'s directory is
   still present
 - **THEN** the harness's `source` is rewritten back to `@sha1` with no
@@ -526,9 +526,9 @@ write to `[mcp.*]`, `[job.*]`, `[server]`, `[profile.*]`, `[adapter.*]`, or
 ### Requirement: REQ-12 — CLI Visibility
 
 `harness agent list` SHALL show every harness whose table carries a
-`source`, its tap, package, pinned SHA (short form for display, full form
-with `--json`), and whether the tap's local clone (as of its last
-`tap update`) has a newer default-branch commit than the installed pin
+`source`, its stable, package, pinned SHA (short form for display, full form
+with `--json`), and whether the stable's local clone (as of its last
+`stable update`) has a newer default-branch commit than the installed pin
 (informational only; it SHALL NOT trigger a fetch or an upgrade).
 `harness describe` on a package-sourced harness SHALL show its `source`
 value and which of its effective keys came from the package versus a local
@@ -540,7 +540,7 @@ failure instead, per existing behavior).
 
 #### Scenario: list shows staleness without fetching
 
-- **WHEN** a tap's local clone (from its last `tap update`) is three commits
+- **WHEN** a stable's local clone (from its last `stable update`) is three commits
   ahead of an installed pin
 - **THEN** `harness agent list` marks that package as having a newer
   version available, without performing any network access
@@ -558,10 +558,10 @@ All error-producing operations in this spec SHALL follow structured error
 handling:
 
 - Errors SHALL be wrapped with context at each layer boundary, naming the
-  tap, the package, and the harness where applicable.
+  stable, the package, and the harness where applicable.
 - Sentinel errors SHALL be defined for the failure modes callers
-  distinguish: unknown tap, unknown package, manifest schema violation,
-  blocked high-severity finding, missing local pin, and diverged tap clone.
+  distinguish: unknown stable, unknown package, manifest schema violation,
+  blocked high-severity finding, missing local pin, and diverged stable clone.
 - An error MUST NOT be swallowed silently. A blocked install or upgrade is
   always a non-zero exit with a message naming the reason, never a partial,
   silent success.
