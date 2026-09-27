@@ -210,12 +210,12 @@ func TestRawLineMatchesTheDurableLogFormat(t *testing.T) {
 		{` WARN run interrupted run_id=7 reason="the daemon exited while this run was in flight"`, ""},
 	}
 	for i, line := range lines {
-		got := st.rawLine(line)
+		got := st.RawLine(line)
 		if got == line {
 			t.Fatalf("durable-log line %q was not recognised", line)
 		}
 		if p := ansi.Strip(got); p != line[:19]+want[i].plain {
-			t.Errorf("rawLine(%q) reads %q", line, p)
+			t.Errorf("RawLine(%q) reads %q", line, p)
 		}
 	}
 }
@@ -230,31 +230,8 @@ func TestRawLineLeavesAgentOutputAlone(t *testing.T) {
 		"2026/09/25 20:14:36 NOTE something",
 		"",
 	} {
-		if got := st.rawLine(line); got != line {
-			t.Errorf("rawLine(%q) = %q, want it untouched", line, got)
-		}
-	}
-}
-
-func TestSplitLogFields(t *testing.T) {
-	for _, c := range []struct {
-		in, msg string
-		kvs     []logKV
-	}{
-		{"state changed from=running to=stopping", "state changed", []logKV{{"from", "running"}, {"to", "stopping"}}},
-		{"run queued", "run queued", nil},
-		{`config auto-reload failed (keeping last-good config) err="line 3: bad = value"`, "config auto-reload failed (keeping last-good config)", []logKV{{"err", `"line 3: bad = value"`}}},
-		{"odd a=b c", "odd a=b c", nil},
-	} {
-		msg, kvs := splitLogFields(c.in)
-		if msg != c.msg || len(kvs) != len(c.kvs) {
-			t.Errorf("splitLogFields(%q) = %q %v, want %q %v", c.in, msg, kvs, c.msg, c.kvs)
-			continue
-		}
-		for i := range kvs {
-			if kvs[i] != c.kvs[i] {
-				t.Errorf("splitLogFields(%q) pair %d = %v, want %v", c.in, i, kvs[i], c.kvs[i])
-			}
+		if got := st.RawLine(line); got != line {
+			t.Errorf("RawLine(%q) = %q, want it untouched", line, got)
 		}
 	}
 }

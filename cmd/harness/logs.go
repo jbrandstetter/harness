@@ -17,26 +17,22 @@ package main
 // Correlation", issue #302.
 //
 // @joestump-agent 09/11/2026 - Added for harness#302.
+//
+// @joestump-agent 09/27/2026 - The entry, run and notice renderers moved to
+// internal/logview, shared with the TUI's one-shot preview and the chatroom.
 
 import (
-	"fmt"
 	"io"
-	"strings"
 	"time"
-	"unicode"
 
 	"github.com/stump-wtf/harness/internal/client"
+	"github.com/stump-wtf/harness/internal/logview"
 	"github.com/stump-wtf/harness/internal/protocol"
 )
 
-const (
-	// activityPoll is the --follow re-fetch interval, matching the agent-trace
-	// watcher's own poll.
-	activityPoll = 2 * time.Second
-	// detailWidth caps one entry's detail. A summary can carry a whole
-	// heredoc; the full value is one --json away.
-	detailWidth = 160
-)
+// activityPoll is the --follow re-fetch interval, matching the agent-trace
+// watcher's own poll.
+const activityPoll = 2 * time.Second
 
 // cmdLogEvents prints one structured logs reply, or follows the run.
 func cmdLogEvents(c *client.Client, o verbOpts, w io.Writer) error {
@@ -140,134 +136,11 @@ func followActivity(v *activityView, first protocol.LogsData, fetch func(lines i
 	return nil
 }
 
-// runFields is a run header's columns, each already made inert.
-type runFields struct {
-	// parsed is false when Start is not a timestamp: start then holds it
-	// verbatim and every other field is empty.
-	parsed bool
-	start  string
-	// end is the end clock, or "" while the run is in flight.
-	end     string
-	exit    *int
-	adapter string
-	workdir string
-}
-
-// runParts splits a run into its header columns.
-func runParts(r protocol.LogRun) runFields {
-	start, err := time.Parse(time.RFC3339Nano, r.Start)
-	if err != nil {
-		return runFields{start: inert(r.Start)}
-	}
-	start = start.Local()
-	f := runFields{parsed: true, start: start.Format("2006-01-02 15:04:05"), exit: r.ExitCode, adapter: inert(r.Adapter), workdir: inert(r.Workdir)}
-	if end, err := time.Parse(time.RFC3339Nano, r.End); err == nil {
-		end = end.Local()
-		layout := "15:04:05"
-		if end.Format("2006-01-02") != start.Format("2006-01-02") {
-			layout = "2006-01-02 15:04:05"
-		}
-		f.end = end.Format(layout)
-	}
-	return f
-}
-
-// runHeader names the run: when, how it ended, which adapter, which directory.
-func runHeader(r protocol.LogRun) string {
-	f := runParts(r)
-	if !f.parsed {
-		return "run " + f.start
-	}
-	parts := []string{"run " + f.start}
-	if f.end != "" {
-		parts[0] += " → " + f.end
-	} else {
-		parts[0] += " → running"
-	}
-	if f.exit != nil {
-		parts = append(parts, fmt.Sprintf("exit %d", *f.exit))
-	}
-	if f.adapter != "" {
-		parts = append(parts, f.adapter)
-	}
-	if f.workdir != "" {
-		parts = append(parts, f.workdir)
-	}
-	return strings.Join(parts, " · ")
-}
-
-// noteLine prints a notice in the label column, under no timestamp.
-func noteLine(n string) string {
-	return fmt.Sprintf("%8s  %-8s  %s", "", "note", inert(n))
-}
-
-// formatEntry is one entry: local clock time, a label, the detail.
-func formatEntry(e protocol.LogEntry) string {
-	p := entryParts(e)
-	return fmt.Sprintf("%s  %-8s  %s%s", p.clock, p.label, p.detail, p.suffix)
-}
-
-// entryFields is one entry's columns, each already made inert. The plain and
-// the styled renderers both print these, so they differ only in styling.
-type entryFields struct {
-	clock, label, detail, suffix string
-}
-
-// entryParts splits an entry into its columns: local clock time, a label, the
-// detail, and a failure suffix.
-func entryParts(e protocol.LogEntry) entryFields {
-	clock := "--:--:--"
-	if t, err := time.Parse(time.RFC3339Nano, e.Time); err == nil {
-		clock = t.Local().Format("15:04:05")
-	}
-	label, detail, suffix := e.Action, e.Summary, ""
-	switch e.Kind {
-	case protocol.LogEntryTool:
-		// A read or an edit is about the file; everything else is about the
-		// command.
-		if (e.Action == "read" || e.Action == "edit") && e.Target != "" {
-			detail = e.Target
-		}
-		if detail == "" {
-			detail = e.Tool
-		}
-		if e.Error {
-			suffix = "  (failed)"
-		}
-	case protocol.LogEntryMark:
-		switch e.Action {
-		case "error":
-			label = "ERROR"
-		case "user-message", "user":
-			label = "prompt"
-		}
-	}
-	if e.Ambiguous {
-		label = "?" + label
-	}
-	return entryFields{clock: clock, label: inert(label), detail: clip(inert(detail), detailWidth), suffix: suffix}
-}
-
-// inert flattens s onto one line and drops every control character, so no
-// escape sequence from a transcript reaches the terminal as one.
-func inert(s string) string {
-	s = strings.Map(func(r rune) rune {
-		if unicode.IsSpace(r) {
-			return ' '
-		}
-		if unicode.IsControl(r) {
-			return -1
-		}
-		return r
-	}, s)
-	return strings.Join(strings.Fields(s), " ")
-}
-
-// clip cuts s to n runes, marking the cut.
-func clip(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n-1]) + "…"
-}
+// The renderer itself is shared with the TUI (internal/logview); these names
+// keep this file and its tests reading as they always have.
+var (
+	runHeader   = logview.RunHeader
+	noteLine    = logview.NoteLine
+	formatEntry = logview.FormatEntry
+	inert       = logview.Inert
+)
