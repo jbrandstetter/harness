@@ -45,10 +45,13 @@ const defaultLivenessTimeout = 4 * defaultPingInterval
 
 // Server serves the protocol on a Unix socket.
 type Server struct {
-	mgr        *supervisor.Manager
-	reg        *attach.Registry
-	sched      *scheduler.Scheduler
-	notifier   Notifier
+	mgr      *supervisor.Manager
+	reg      *attach.Registry
+	sched    *scheduler.Scheduler
+	notifier Notifier
+	// triggers is the trigger source manager, nil when the daemon runs none
+	// (triggers.go).
+	triggers   TriggerSources
 	socketPath string
 	configPath string
 	version    string
@@ -89,6 +92,10 @@ type Server struct {
 	remoteMu   sync.Mutex
 	remoteAddr string
 	remoteKeys int
+	// webhookAddr / webhookTLS are the running webhook listener, recorded by
+	// SetWebhook (triggers.go) under remoteMu for the same reason.
+	webhookAddr string
+	webhookTLS  bool
 
 	// connMu guards the set of live client connections and the closing flag.
 	// Close() closes each raw socket to unblock its ReadFrame loop; without this
@@ -105,7 +112,11 @@ type Options struct {
 	Registry *attach.Registry
 	// Scheduler exposes next-fire times for scheduled harnesses in list and
 	// describe (ADR-0013). Optional: nil leaves NextRun empty.
-	Scheduler  *scheduler.Scheduler
+	Scheduler *scheduler.Scheduler
+	// Triggers is the trigger source manager the triggers op, the harness
+	// projection and jobs read source states from (SPEC-0014 REQ "Trigger
+	// Visibility"). Optional: nil reports every source with no state.
+	Triggers   TriggerSources
 	SocketPath string
 	ConfigPath string // for the reload op
 	Version    string
@@ -146,6 +157,7 @@ func NewServer(opts Options) *Server {
 		reg:             opts.Registry,
 		sched:           opts.Scheduler,
 		notifier:        opts.Notifier,
+		triggers:        opts.Triggers,
 		socketPath:      opts.SocketPath,
 		configPath:      opts.ConfigPath,
 		version:         opts.Version,
@@ -390,6 +402,8 @@ func toEventMsg(ev supervisor.Event) protocol.EventMsg {
 		}
 		m.RunID = ev.Run.RunID
 		m.Trigger = string(ev.Run.Trigger)
+		// SPEC-0014 REQ "Trigger Visibility": which source fired the run.
+		m.Source = ev.Run.Source
 		m.Outcome = string(ev.Run.Outcome)
 		m.ExitCode = ev.Run.ExitCode
 		if ev.Run.EndedAt != nil {
