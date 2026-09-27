@@ -1,12 +1,13 @@
 // Package chatroom implements the unified chatroom TUI view (ADR-0015, SPEC-0009).
 //
 // A full-screen chronological stream of all agent activity across every harness
-// (Claude Code, Codex, Crush, OpenCode, Pi). Each event renders as a chat-style
-// line: timestamp, harness username (colored), action badge, tool name, summary.
-// Tool results, user marks, and file targets render as follow-up lines.
+// (Claude Code, Codex, Crush, OpenCode, Pi). Each mark and each tool call
+// renders as one line in the language of `harness logs` (internal/logview):
+// clock, harness username (coloured), label, detail, and a failure suffix.
 //
 // The view consumes events from agent-trace's tail.Watcher, which discovers and
-// parses native session transcripts from all five harness formats.
+// parses native session transcripts from all five harness formats, and merges
+// each harness's latest run from the daemon (history.go).
 package chatroom
 
 import (
@@ -19,7 +20,10 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stump-wtf/agent-trace/classify"
 	"github.com/stump-wtf/agent-trace/tail"
+	"github.com/stump-wtf/harness/internal/logview"
+	"github.com/stump-wtf/harness/internal/protocol"
 	"github.com/stump-wtf/harness/internal/redact"
+	"github.com/stump-wtf/harness/internal/runtrace"
 	"github.com/stump-wtf/harness/internal/tui/theme"
 )
 
@@ -74,6 +78,11 @@ func MarkBadge(markType string) string {
 		return "[COMPACTION]"
 	case "subagent":
 		return "[SUBAGENT]"
+	case "turn-end":
+		// agent-trace v0.6.0. Like every mark it rides the session's next
+		// event, so it appears with the next turn's first line, stamped
+		// with the time the turn ended.
+		return "[TURN-END]"
 	default:
 		return "[" + strings.ToUpper(markType) + "]"
 	}
@@ -208,44 +217,48 @@ func MakeRenderable(ev tail.Event) RenderableEvent {
 	return re
 }
 
-// RenderLines produces the chat-style lines for a single event.
+// RenderLines produces the lines for a single event: one per mark, then one
+// for the tool call, each in the visual language of `harness logs` — a faint
+// local clock, the speaker, a coloured label column, the detail, and a
+// "failed" suffix (internal/logview). The chatroom used to speak its own
+// dialect of the same activity ([EXEC] badges, a follow-up row per target, a
+// separate error row), so the one stream read differently in each place it
+// appeared.
 func (re RenderableEvent) RenderLines(s *Styles) []string {
 	var lines []string
-
-	if re.HasMarks {
-		for _, mark := range re.Marks {
-			badge := s.BadgeUser.Render(MarkBadge(mark.Type))
-			username := s.Username[string(re.Identity.Harness)].Render(re.Identity.Username)
-			ts := s.Timestamp.Render(FormatTime(mark.Timestamp))
-			note := truncateShort(mark.Note, 200)
-			lines = append(lines, fmt.Sprintf("%s %s %s %s %s", ts, username, badge, s.Dim.Render("—"), note))
-		}
+	who := s.who(re.Identity)
+	for _, e := range re.Entries() {
+		lines = append(lines, s.Log.GroupLineWho(logview.NewGroup(e), who))
 	}
-
-	if re.Tool != "" {
-		username := s.Username[string(re.Identity.Harness)].Render(re.Identity.Username)
-		ts := s.Timestamp.Render(re.Time)
-		badge := s.BadgeStyle(re.Event.Classified.Action).Render(re.Badge)
-		tool := s.Tool.Render(re.Tool)
-		lines = append(lines, fmt.Sprintf("%s %s %s %s %s", ts, username, badge, tool, re.Summary))
-
-		for _, t := range re.Event.Classified.Targets {
-			rank := "•"
-			switch t.Touch {
-			case "edit":
-				rank = "✎"
-			case "read":
-				rank = "👁"
-			}
-			lines = append(lines, fmt.Sprintf("    %s %s", rank, s.Target.Render(t.Path)))
-		}
-
-		if re.IsError {
-			lines = append(lines, fmt.Sprintf("    %s %s", s.BadgeError.Render("[ERROR]"), truncateShort(re.Event.Classified.Summary, 120)))
-		}
-	}
-
 	return lines
+}
+
+// Entries is the event as activity entries — the shape `harness logs`
+// renders — marks first, as they happened before the call they ride on.
+func (re RenderableEvent) Entries() []protocol.LogEntry {
+	var out []protocol.LogEntry
+	for _, mark := range re.Marks {
+		out = append(out, protocol.LogEntry{
+			Time:    mark.Timestamp,
+			Kind:    protocol.LogEntryMark,
+			Action:  mark.Type,
+			Summary: truncateShort(mark.Note, 200),
+			Error:   mark.Type == "error",
+		})
+	}
+	if re.Tool != "" {
+		c := re.Event.Classified
+		out = append(out, protocol.LogEntry{
+			Time:    c.Timestamp,
+			Kind:    protocol.LogEntryTool,
+			Action:  c.Action,
+			Tool:    c.Tool,
+			Target:  runtrace.PrimaryTarget(c),
+			Summary: runtrace.ToolSummary(c.Summary),
+			Error:   c.IsError,
+		})
+	}
+	return out
 }
 
 // LastAction returns a compact one-line summary of the most recent event for
@@ -526,6 +539,15 @@ type Model struct {
 	// harness can be credited with it (SPEC-0006 REQ "Run Correlation"). Nil
 	// labels every session with its tool.
 	attribute func(tail.SessionMeta) string
+
+	// owners names the harness each session merged from daemon history
+	// belongs to (history.go). The daemon attributed it with the harness's
+	// real stores, which is better evidence than the attributor has, so it
+	// wins for the session's live events too.
+	owners map[string]string
+	// seen holds the key of every row buffered, so history and the watcher
+	// never show one row twice (history.go).
+	seen map[string]struct{}
 }
 
 func New(t *theme.Theme, logger *slog.Logger) *Model {
@@ -542,10 +564,18 @@ func New(t *theme.Theme, logger *slog.Logger) *Model {
 // stream is paused. Cheap enough to call for every event whether or not the
 // view is on screen: rendering is deferred to Lines, which nobody calls while
 // the chatroom is closed.
-func (m *Model) Add(ev tail.Event) {
+//
+// A row already buffered — the watcher and the daemon's history both deliver
+// anything recent (history.go) — is dropped; Add reports whether anything was
+// left to file.
+func (m *Model) Add(ev tail.Event) bool {
+	if !m.dedupe(&ev) {
+		return false
+	}
 	re := MakeRenderable(ev)
 	re.Identity = m.identity(ev.Session)
 	m.buffer.Insert(re, m.styles)
+	return true
 }
 
 // SetAttributor installs the function that names a session's harness and
@@ -570,6 +600,10 @@ func (m *Model) Reattribute() {
 // the session is attributable to exactly one harness.
 func (m *Model) identity(meta tail.SessionMeta) HarnessIdentity {
 	id := IdentityFor(meta.Harness)
+	if name := m.owners[meta.ID]; name != "" && meta.ID != "" {
+		id.Username = "@" + name
+		return id
+	}
 	if m.attribute != nil {
 		if name := m.attribute(meta); name != "" {
 			id.Username = "@" + name

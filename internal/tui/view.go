@@ -675,7 +675,13 @@ func (m *Model) viewPeek(w, h int) string {
 		screenStr string
 		cropNote  bool
 	)
-	if m.peekLive() {
+	if lines, ok := m.peekActivityLines(sel); ok {
+		// A one-shot renders as `harness logs` prints it (peek_activity.go).
+		// The lines are already one per row, so they skip the emulator.
+		head = m.theme.Header().Render(sel.Name) + " " +
+			m.theme.Faint().Render("run activity · read-only")
+		screenStr = strings.Join(lines, "\n")
+	} else if m.peekLive() {
 		screenStr = m.peekView.renderNoCursor()
 	} else {
 		knownViewport := peekCols > 0 && peekRows > 0
