@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/stump-wtf/harness/internal/client"
 	"github.com/stump-wtf/harness/internal/core"
 	"github.com/stump-wtf/harness/internal/protocol"
 	"github.com/stump-wtf/harness/internal/schedfmt"
@@ -31,6 +32,10 @@ type fakeController struct {
 	// attach session is streaming the same screen (#200), and a counter is the
 	// only way to see traffic that is supposed to STOP.
 	logCalls int
+	// eventCalls records structured `logs` fetches by harness; events, when
+	// set, answers them. Unset, the reply is a daemon with no activity view.
+	eventCalls []string
+	events     func(name string) protocol.LogsData
 }
 
 func (f *fakeController) List() ([]protocol.HarnessInfo, error) { return f.harnesses, nil }
@@ -71,6 +76,15 @@ func (f *fakeController) Logs(n string, lines int) (protocol.LogsData, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.logCalls++
+	return protocol.LogsData{Name: n, Text: "log line\n"}, nil
+}
+func (f *fakeController) LogEvents(n string, o client.LogOptions) (protocol.LogsData, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.eventCalls = append(f.eventCalls, n)
+	if f.events != nil {
+		return f.events(n), nil
+	}
 	return protocol.LogsData{Name: n, Text: "log line\n"}, nil
 }
 func (f *fakeController) Profiles() ([]protocol.ProfileInfo, error) { return f.profiles, nil }
@@ -967,6 +981,15 @@ func TestRenderRowLabelsDisabledAndScheduled(t *testing.T) {
 	}
 	if strings.Contains(sched, "(scheduled)") {
 		t.Errorf("scheduled row = %q, still carries the redundant suffix", sched)
+	}
+
+	// An event-only harness is disabled by config exactly as a cron job is,
+	// and must not read that way either (SPEC-0014 REQ "Trigger
+	// Visibility", #476).
+	evented := m.renderRow(protocol.HarnessInfo{Name: "pr-review", State: "stopped",
+		Triggers: []protocol.TriggerBinding{{Source: "webhook.ci", State: "listening"}}}, false)
+	if strings.Contains(evented, "(disabled)") || !strings.Contains(evented, "armed") {
+		t.Errorf("event-only row = %q, want armed and not disabled", evented)
 	}
 }
 

@@ -135,19 +135,27 @@ func cmdJobs(c *client.Client, o verbOpts) error {
 	return printJobsTable(os.Stdout, jobs, time.Now())
 }
 
-// printJobsTable renders the jobs listing against now.
+// printJobsTable renders the jobs listing against now: every triggered
+// harness, scheduled or event-fired (SPEC-0014 REQ "Trigger Visibility").
+// TRIGGERS carries each source with its state, so "why didn't my webhook job
+// run?" starts from a `no_listener` in the row rather than a blank.
 func printJobsTable(w io.Writer, jobs []protocol.JobInfo, now time.Time) error {
 	if len(jobs) == 0 {
-		_, err := fmt.Fprintln(w, "no scheduled harnesses (give a prompt harness a schedule in harness.toml)")
+		_, err := fmt.Fprintln(w, "no triggered harnesses (give a prompt harness a schedule or triggers in harness.toml)")
 		return err
 	}
-	t := NewTable(w, "NAME", "STATE", "SCHEDULE", "NEXT", "LAST RUN", "FAILS")
+	t := NewTable(w, "NAME", "STATE", "SCHEDULE", "TRIGGERS", "NEXT", "LAST RUN", "FAILS")
 	for _, j := range jobs {
+		schedule := "—"
+		if j.Schedule != "" {
+			schedule = schedfmt.LabelOrRaw(j.Schedule)
+		}
 		t.Row(
 			j.Name,
-			// A scheduled one-shot is never gated (ADR-0019 exclusions).
-			t.stateCell(j.State, j.Schedule, false, false),
-			schedfmt.LabelOrRaw(j.Schedule),
+			// A triggered one-shot is never gated (ADR-0019 exclusions).
+			t.stateCell(j.State, schedfmt.Firing(j.Schedule, len(j.Triggers) > 0), false, false),
+			schedule,
+			jobTriggersCell(j),
 			jobNextCell(j, now),
 			jobLastCell(j, now),
 			strconv.Itoa(j.ConsecutiveFailures),
@@ -156,10 +164,37 @@ func printJobsTable(w io.Writer, jobs []protocol.JobInfo, now time.Time) error {
 	return t.Flush()
 }
 
-// jobNextCell is the run in flight, or the countdown to the next window.
+// jobTriggersCell lists a job's sources with their states:
+// "webhook.ci listening, channel.sb backoff".
+func jobTriggersCell(j protocol.JobInfo) string {
+	if len(j.Triggers) == 0 {
+		return "—"
+	}
+	parts := make([]string, 0, len(j.Triggers))
+	for _, b := range j.Triggers {
+		parts = append(parts, bindingLabel(b))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// bindingLabel is one trigger with its source's state, "webhook.ci
+// listening", or the bare reference when the daemon reported no state.
+func bindingLabel(b protocol.TriggerBinding) string {
+	if b.State == "" {
+		return b.Source
+	}
+	return b.Source + " " + b.State
+}
+
+// jobNextCell is the run in flight, or the countdown to the next window, or —
+// for a harness with no schedule — "on event": there is no window to count
+// down to.
 func jobNextCell(j protocol.JobInfo, now time.Time) string {
 	if j.Running != nil {
 		return fmt.Sprintf("running #%d", j.Running.RunID)
+	}
+	if j.Schedule == "" && len(j.Triggers) > 0 {
+		return triggeredNext
 	}
 	next, err := time.Parse(time.RFC3339, j.NextRun)
 	if err != nil {
@@ -212,7 +247,15 @@ func printRunsTable(w io.Writer, rd protocol.RunsData) error {
 	for _, r := range rd.Runs {
 		t.Row(strconv.Itoa(r.RunID), r.Trigger, runOutcomeCell(r), runStartedCell(r), runDurationCell(r), runExitCell(r))
 	}
-	return t.Flush()
+	if err := t.Flush(); err != nil {
+		return err
+	}
+	for _, n := range runSkipNotes(rd.Runs) {
+		if _, err := fmt.Fprintln(w, n); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // runOutcomeCell is the outcome, with the window count a missed record covers
@@ -222,6 +265,21 @@ func runOutcomeCell(r protocol.RunInfo) string {
 		return fmt.Sprintf("missed ×%d", r.Windows)
 	}
 	return r.Outcome
+}
+
+// runSkipNotes are the lines printed under the runs table for skips an
+// operator has to act on: a template_unresolved skip names the template path
+// the run lacked, because which value was missing is the whole of what fixing
+// it needs, and it does not fit a table cell. The path is a name, never a
+// value (SPEC-0017 REQ-11).
+func runSkipNotes(runs []protocol.RunInfo) []string {
+	var notes []string
+	for _, r := range runs {
+		if r.Outcome == "skipped" && r.Reason == "template_unresolved" {
+			notes = append(notes, fmt.Sprintf("run #%d skipped: template_unresolved ({{%s}} has no value for a %s run)", r.RunID, r.MissingPath, r.Trigger))
+		}
+	}
+	return notes
 }
 
 func runStartedCell(r protocol.RunInfo) string {
@@ -313,12 +371,12 @@ func cmdTrigger(c *client.Client, o verbOpts) error {
 		if o.json {
 			return printJSON(td)
 		}
-		fmt.Println(triggerLine(td))
+		emit(os.Stdout, triggerLine(td)+"\n", func(s lifecycleStyle) string { return s.renderTrigger(td) })
 		return nil
 	}
 
 	if !o.json {
-		fmt.Fprintln(os.Stderr, triggerLine(td))
+		emit(os.Stderr, triggerLine(td)+"\n", func(s lifecycleStyle) string { return s.renderTrigger(td) })
 	}
 	if td.Decision == protocol.TriggerSkipped {
 		if o.json {
@@ -341,7 +399,7 @@ func cmdTrigger(c *client.Client, o verbOpts) error {
 			return err
 		}
 	} else {
-		fmt.Fprintln(os.Stderr, finishLine(o.name, final))
+		emit(os.Stderr, finishLine(o.name, final)+"\n", func(s lifecycleStyle) string { return s.renderFinish(o.name, final) })
 	}
 	if code := waitExitCode(final); code != 0 {
 		return exitCodeError{code: code}

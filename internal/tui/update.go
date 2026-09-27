@@ -83,6 +83,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case peekActivityMsg:
+		m.onPeekActivity(msg)
+		return m, nil
+
+	case chatHistoryMsg:
+		m.onChatHistory(msg)
+		return m, nil
+
 	case opResultMsg:
 		return m.onOpResult(msg)
 
@@ -107,7 +115,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// connection (#200), so route by id — ids are unique across both, and
 		// a frame still in flight from a closed session matches neither.
 		if m.peekView != nil && m.peekSess != 0 && msg.sessionID == m.peekSess {
-			m.peekView.write(msg.data)
+			// The backend's peek formatter (claude-code's stream-json, issue
+			// #13) renders the guest's bytes readably; nil keeps the
+			// byte-faithful mirror.
+			if m.peekFmt != nil {
+				m.peekView.write(m.peekFmt.FormatPTY(msg.data))
+			} else {
+				m.peekView.write(msg.data)
+			}
 			// Latch the moment the guest's screen holds something (#290). The
 			// scan costs a grid walk per frame only while the answer is still
 			// no — once it flips, and for a guest that never paints at all,
@@ -348,6 +363,9 @@ func (m *Model) onTick() (tea.Model, tea.Cmd) {
 		// Retry the connection while disconnected.
 		cmds = append(cmds, m.connectCmd())
 	}
+	if m.chatHistoryDue() {
+		cmds = append(cmds, m.chatHistoryCmd())
+	}
 	if m.att != nil && m.att.animate() {
 		// keep ticking to finish the hop animation (tick already re-armed)
 	}
@@ -386,5 +404,8 @@ func (m *Model) peekCmd() tea.Cmd {
 	if !ok {
 		return nil
 	}
-	return fetchLogs(m.ctrl, sel.Name, peekLines)
+	// A one-shot's preview is its activity (peek_activity.go). The raw tail is
+	// still fetched: it is the fallback when the daemon cannot build the
+	// activity view, and the history attached scrollback opens on.
+	return tea.Batch(fetchLogs(m.ctrl, sel.Name, peekLines), m.peekActivityCmd(sel))
 }

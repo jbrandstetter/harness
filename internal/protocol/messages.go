@@ -83,7 +83,40 @@ const (
 	// than 12 refuses a project_up or scratchpad definition naming "command"
 	// as an unknown harness kind, so the new field is never silently dropped
 	// into a harness that runs something else.
-	ProtoMinor = 12
+	// ProtoMinor 13 added the claude-code one-shot persona keys (SPEC-0018
+	// REQ-11): SystemPromptFile, MCPConfig and AllowedTools on ProjectHarness
+	// and HarnessInfo — additive only. A daemon older than 13 ignores them,
+	// and two of them are restrictions (allowed_tools, --strict-mcp-config),
+	// so the client refuses to send them to one rather than run a persona
+	// with more authority than it declared (see client.ProjectUp).
+	// ProtoMinor 14 added EnvFiles on ProjectHarness, the env_file list form
+	// (SPEC-0018 REQ-12) — additive only. The single-path EnvFile stays and
+	// an older daemon that ignores env_files still serves a one-element list
+	// through it, because the client sets both for that case. A longer list
+	// has no single-path spelling, so the client refuses to send one to a
+	// daemon older than 14 rather than start the harness with no env file
+	// (see client.ProjectUp).
+	// ProtoMinor 15 added operator notification (SPEC-0003 REQ "Operator
+	// Notification", #725): Notify on DaemonInfo and the notify_test op —
+	// additive only. A daemon older than 15 omits Notify, which a client
+	// reports as "unknown" rather than "off", and would answer notify_test
+	// with unknown_op, so the client refuses to send it (see
+	// client.SupportsNotify).
+	// ProtoMinor 16 added MissingPath on RunInfo and the template_unresolved
+	// value of Reason (SPEC-0017 REQ-11: a template_unresolved skip names the
+	// path it lacked) — additive only. A daemon older than 16 never sends
+	// either; a client older than 16 shows the reason without the path.
+	// ProtoMinor 17 added trigger visibility (SPEC-0014 REQ "Trigger
+	// Visibility", #476): the triggers op and TriggerSourceInfo; Triggers on
+	// HarnessInfo and JobInfo; the trigger_source_changed event with Source,
+	// SourceKind, State and Error on EventMsg, and Source on job_run_*;
+	// WebhookAddr and WebhookTLS on DaemonInfo. jobs now lists every
+	// TRIGGERED harness, so an entry may have an empty Schedule and no
+	// NextRun — additive only, since an older client renders an unknown
+	// empty schedule as a harness with no next window. A daemon older than
+	// 17 answers triggers with unknown_op, which the client reports as
+	// "restart the daemon" rather than an empty table.
+	ProtoMinor = 17
 )
 
 // ProtoVersion is the "major.minor" string carried in HELLO.
@@ -157,6 +190,15 @@ const (
 	OpJobs    Op = "jobs"
 	OpTrigger Op = "trigger"
 	OpRuns    Op = "runs"
+
+	// OpNotifyTest runs the daemon's [notify] hook once with a `test` event
+	// and answers with the NotifyDelivery. Governing: SPEC-0003 REQ
+	// "Operator Notification".
+	OpNotifyTest Op = "notify_test"
+	// OpTriggers lists every declared trigger source with its state, its
+	// last event and error, its counters and the harnesses it fires.
+	// Governing: ADR-0021, SPEC-0014 REQ "Trigger Visibility".
+	OpTriggers Op = "triggers"
 )
 
 // ControlReq is a control-plane request. ID correlates the response; Name
@@ -246,6 +288,14 @@ type ProjectHarness struct {
 	// --max-turns into the synthesized argv at spawn (ADR-0011, issue #59).
 	// 0 means unset/unlimited.
 	MaxTurns int `json:"max_turns,omitempty"`
+	// SPEC-0018 REQ-11: the claude-code one-shot persona keys, additive and
+	// omitempty under ProtoMinor 13. Config validation keeps them
+	// claude-code-one-shot-only. An older daemon would ignore the unknown
+	// fields and run the one-shot WITHOUT its tool and MCP restrictions, so
+	// the client refuses to send them to a daemon older than 13.
+	SystemPromptFile string   `json:"system_prompt_file,omitempty"`
+	MCPConfig        string   `json:"mcp_config,omitempty"`
+	AllowedTools     []string `json:"allowed_tools,omitempty"`
 	// Quiet mirrors the schema's agent `quiet` headless switch: a *bool so an
 	// omitted key (nil = the headless one-shot default) is distinguishable from
 	// an explicit false (stream output to an attach). Set only alongside prompt
@@ -255,10 +305,17 @@ type ProjectHarness struct {
 	// PromptFile mirrors the schema's `prompt_file`: the PATH to the file
 	// holding the instruction, never its contents (ADR-0018). Clients show
 	// and round-trip the path; the daemon reads the file at spawn.
-	PromptFile     string `json:"prompt_file,omitempty"`
-	Workdir        string `json:"workdir,omitempty"`
-	EnvFile        string `json:"env_file,omitempty"`
-	RestartDelayMs int64  `json:"restart_delay_ms,omitempty"`
+	PromptFile string `json:"prompt_file,omitempty"`
+	Workdir    string `json:"workdir,omitempty"`
+	// EnvFile is the single-path form; a daemon honors it when EnvFiles is
+	// absent, so an older client that sends only a string still works.
+	EnvFile string `json:"env_file,omitempty"`
+	// EnvFiles is the env_file list in order, later file winning a key
+	// collision (SPEC-0018 REQ-12). Additive and omitempty: an older daemon
+	// ignores it (the client refuses a multi-file list to a daemon older than
+	// 14), and an absent list falls back to EnvFile.
+	EnvFiles       []string `json:"env_files,omitempty"`
+	RestartDelayMs int64    `json:"restart_delay_ms,omitempty"`
 	// Restart mirrors the schema's `restart` policy (core.RestartPolicy);
 	// empty means the always-restart default, matching an omitted key.
 	Restart     string `json:"restart,omitempty"`
@@ -351,6 +408,11 @@ type HarnessInfo struct {
 	// MaxTurns is the agent turn budget for a prompt harness, folded into the
 	// synthesized argv at spawn (issue #59). Always 0 for cmd harnesses.
 	MaxTurns int `json:"max_turns,omitempty"`
+	// SPEC-0018 REQ-11: the claude-code one-shot persona keys, additive and
+	// omitempty. Always empty for cmd harnesses.
+	SystemPromptFile string   `json:"system_prompt_file,omitempty"`
+	MCPConfig        string   `json:"mcp_config,omitempty"`
+	AllowedTools     []string `json:"allowed_tools,omitempty"`
 	// Quiet is the agent headless switch for a prompt harness, folded into the
 	// synthesized argv at spawn (issue #60). Always true for prompt harnesses
 	// unless the config set quiet = false.
@@ -369,6 +431,12 @@ type HarnessInfo struct {
 	// NextRun is when Schedule next fires, RFC 3339 local time. Empty when
 	// there is no schedule or the daemon has not resolved a firing time yet.
 	NextRun string `json:"next_run,omitempty"`
+	// Triggers are the sources that fire this harness, in config order, each
+	// with its source's current state (SPEC-0014 REQ "Trigger Visibility").
+	// Empty for a harness nothing but a schedule or an operator starts. A
+	// harness with Triggers is triggered like one with a Schedule: a listing
+	// shows it as such, not as disabled.
+	Triggers []TriggerBinding `json:"triggers,omitempty"`
 
 	// Operating-hours projection (ADR-0019, SPEC-0012 REQ "Operating Hours
 	// Visibility"). OperatingHours is the raw expression as configured, empty
@@ -589,8 +657,9 @@ type RunInfo struct {
 	// LogPruned reports a run whose log keep_runs has deleted; its record
 	// stays in the run ledger (SPEC-0022 REQ-4, REQ-12).
 	LogPruned bool `json:"log_pruned,omitempty"`
-	// Reason qualifies the outcome: why a skip started no process, why an
-	// interrupted run was (shutdown, daemon_crash). SPEC-0022 REQ-5.
+	// Reason qualifies the outcome: why a skip started no process (overlap,
+	// stopping, outside_hours, template_unresolved), why an interrupted run
+	// was (shutdown, daemon_crash). SPEC-0022 REQ-5, SPEC-0017 REQ-11.
 	Reason string `json:"reason,omitempty"`
 	// TodoID is the Switchboard todo the run worked, when known: an opaque
 	// identifier, never a payload (SPEC-0022 REQ-9).
@@ -602,20 +671,96 @@ type RunInfo struct {
 	// run record carries no byte of an event payload, no header value and no
 	// credential (ADR-0008).
 	EventID string `json:"event_id,omitempty"`
+	// MissingPath names the template path a template_unresolved skip lacked,
+	// e.g. "run.source" — a name, never a value (SPEC-0017 REQ-11).
+	MissingPath string `json:"missing_path,omitempty"`
 }
 
-// JobInfo is one scheduled harness for the jobs op (SPEC-0008 REQ "Protocol
-// Operations"). NextRun is computed daemon-side from the live scheduler, so a
-// client renders "in 6h" without doing cron math.
+// TriggerBinding is one entry of a harness's `triggers`, with the state of
+// the source it names (SPEC-0014 REQ "Trigger Visibility").
+type TriggerBinding struct {
+	// Source is the reference as configured, e.g. "webhook.gitea-pr".
+	Source string `json:"source"`
+	// State is the source's state; see TriggerSourceInfo.State. Empty when
+	// the daemon reports no state for it (no source manager).
+	State string `json:"state,omitempty"`
+}
+
+// TriggerRefs returns the source references of bs, in order — the form a
+// listing renders.
+func TriggerRefs(bs []TriggerBinding) []string {
+	out := make([]string, 0, len(bs))
+	for _, b := range bs {
+		out = append(out, b.Source)
+	}
+	return out
+}
+
+// TriggerSourceInfo is one declared trigger source for the triggers op
+// (SPEC-0014 REQ "Trigger Visibility").
+//
+// It carries no credential in any field: header NAMES, never values; a
+// channel URL with its query removed; a last error the daemon scrubbed of
+// both (REQ "Credential Resolution", REQ "Error Handling Standards").
+type TriggerSourceInfo struct {
+	// Source is the reference, e.g. "channel.sb".
+	Source string `json:"source"`
+	// Kind is "channel" or "webhook".
+	Kind string `json:"kind"`
+	// State is "disabled", "unbound", "connecting", "connected", "backoff",
+	// "error", "listening" or "no_listener".
+	State string `json:"state"`
+	// Since is when State last changed, RFC 3339.
+	Since string `json:"since,omitempty"`
+	// DownSince is when a channel source left connected (or, never having
+	// connected, first tried), RFC 3339. Present only while it is not
+	// connected — the answer to "how long has this been down?", which Since
+	// cannot give because an outage cycles backoff and connecting.
+	DownSince string `json:"down_since,omitempty"`
+	// LastEvent is when the source last fired, RFC 3339; empty for never.
+	LastEvent string `json:"last_event,omitempty"`
+	// Error is why a source is in error or backoff.
+	Error string `json:"error,omitempty"`
+	// Harnesses are the harnesses the source fires, in config order.
+	Harnesses []string `json:"harnesses"`
+	// Counters are the per-outcome counts since the daemon started, keyed by
+	// REQ "Trigger Metrics"'s outcome: fired, ignored, duplicate,
+	// unauthorized, too_large, rate_limited, invalid. Every outcome is
+	// present, zeros included.
+	Counters map[string]int `json:"counters"`
+	// Description is the source table's operator prose.
+	Description string `json:"description,omitempty"`
+
+	// URL is a channel source's endpoint with its query and fragment removed.
+	URL string `json:"url,omitempty"`
+	// Headers are a channel source's header NAMES, sorted. Never values.
+	Headers []string `json:"headers,omitempty"`
+
+	// Path is a webhook source's route, "/hooks/<name>".
+	Path string `json:"path,omitempty"`
+	// Verify is a webhook source's verification scheme.
+	Verify string `json:"verify,omitempty"`
+	// Events is a webhook source's event allowlist; empty passes every event.
+	Events []string `json:"events,omitempty"`
+}
+
+// JobInfo is one triggered harness for the jobs op (SPEC-0008 REQ "Protocol
+// Operations"; SPEC-0014 REQ "Trigger Visibility"). NextRun is computed
+// daemon-side from the live scheduler, so a client renders "in 6h" without
+// doing cron math.
 type JobInfo struct {
-	Name        string `json:"name"`
+	Name string `json:"name"`
+	// Schedule is empty for a harness only trigger sources fire.
 	Schedule    string `json:"schedule"`
 	Description string `json:"description,omitempty"`
 	// State is the harness state, as on HarnessInfo.
 	State string `json:"state"`
-	// NextRun is RFC 3339; empty when the schedule never fires again.
+	// NextRun is RFC 3339; empty when the schedule never fires again, and
+	// always for a harness with no schedule.
 	NextRun string `json:"next_run,omitempty"`
-	CatchUp bool   `json:"catch_up,omitempty"`
+	// Triggers are the harness's trigger sources, each with its state.
+	Triggers []TriggerBinding `json:"triggers,omitempty"`
+	CatchUp  bool             `json:"catch_up,omitempty"`
 	// TimeoutMs bounds each run; 0 means no limit.
 	TimeoutMs int64  `json:"timeout_ms"`
 	OnOverlap string `json:"on_overlap"`
@@ -684,6 +829,39 @@ type DaemonInfo struct {
 	// allowlist, ADR-0008).
 	SshAddr string `json:"ssh_addr,omitempty"`
 	SshKeys int    `json:"ssh_keys,omitempty"`
+	// WebhookAddr is the bound address of the running webhook listener
+	// (SPEC-0014 REQ "Webhook Listener"), empty when none is running; and
+	// WebhookTLS whether it serves HTTPS. Reported from what actually bound,
+	// like SshAddr, so doctor judges the listener rather than a config the
+	// daemon's own flag or environment may have overridden.
+	WebhookAddr string `json:"webhook_addr,omitempty"`
+	WebhookTLS  bool   `json:"webhook_tls,omitempty"`
+	// Notify is the [notify] hook the daemon is running with, nil when none
+	// is configured (ProtoMinor 15). Governing: SPEC-0003 REQ "Operator
+	// Notification".
+	Notify *NotifyInfo `json:"notify,omitempty"`
+}
+
+// NotifyInfo describes the daemon's notify hook. Only argv[0] is reported:
+// the rest of the argv is the operator's and may carry anything.
+type NotifyInfo struct {
+	Command  string          `json:"command"`
+	Events   []string        `json:"events"`
+	Timeout  string          `json:"timeout"`
+	Cooldown string          `json:"cooldown"`
+	Last     *NotifyDelivery `json:"last,omitempty"`
+}
+
+// NotifyDelivery is one run of the notify hook: the last one in NotifyInfo,
+// or the answer to notify_test. Result is ok, error or timeout.
+type NotifyDelivery struct {
+	Event   string `json:"event"`
+	Harness string `json:"harness,omitempty"`
+	Result  string `json:"result"`
+	Error   string `json:"error,omitempty"`
+	// At is when the event happened, RFC 3339.
+	At         string `json:"at"`
+	DurationMs int64  `json:"duration_ms"`
 }
 
 // ---- Structured errors (SPEC-0002 REQ "Control Operations") --------------
@@ -786,6 +964,11 @@ const (
 	// transition (SPEC-0012 REQ "Operating Hours Visibility"). Carries InHours
 	// and HoursNext (empty when the expression covers the entire week).
 	EvHoursChanged EventKind = "harness_hours_changed"
+
+	// EvTriggerSourceChanged is emitted on every trigger source state
+	// transition, in order per source (SPEC-0014 REQ "Trigger Visibility").
+	// Carries Source, SourceKind, State and, for error and backoff, Error.
+	EvTriggerSourceChanged EventKind = "trigger_source_changed"
 )
 
 // EventMsg is a pushed EVENT frame body. Only the fields relevant to Kind are
@@ -816,6 +999,17 @@ type EventMsg struct {
 	// the next flip, empty when OperatingHours covers the entire week.
 	InHours   bool   `json:"in_hours,omitempty"`
 	HoursNext string `json:"hours_next,omitempty"`
+
+	// Source is the trigger source reference: the source that changed on
+	// trigger_source_changed, and the source behind the run on job_run_*
+	// (SPEC-0014 REQ "Trigger Visibility"). SourceKind, State and Error are
+	// trigger_source_changed's. SourceKind is REQ's `kind`, renamed because
+	// Kind above already names the event; Error is scrubbed of credentials
+	// daemon-side.
+	Source     string `json:"source,omitempty"`
+	SourceKind string `json:"source_kind,omitempty"`
+	State      string `json:"state,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 // ---- Attach data plane (SPEC-0002 REQ "Attach Session") ------------------

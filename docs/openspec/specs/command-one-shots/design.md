@@ -89,9 +89,9 @@ payload.
     "action": "opened",
     "repo": "stump.wtf/harness",
     "number": 412,
-    "url": "https://gitea.stump.rocks/stump.wtf/harness/pulls/412",
+    "url": "https://gitea.example.com/stump.wtf/harness/pulls/412",
     "sha": "8febab3c79a7a61c31f69f33a762ef49262b175e",
-    "actor": "joestump"
+    "actor": "alice"
   }
 }
 ```
@@ -214,7 +214,7 @@ followed.
 
 REQ-1 touches `registerHarness`, `validateHarnessDef`, `internal/tui/form.go`,
 `Generic.PromptCommand` and the spawn guard. It needs none of the rest, so it
-ships first (#420). `Generic.PromptCommand` returns `("", nil)`, and
+ships first. `Generic.PromptCommand` returns `("", nil)`, and
 `execArgvWithRegistry` returns `ErrGenericPrompt` when the adapter is `generic`
 and a prompt is set. A test asserts that no `exec.Cmd` is constructed. The test
 fails if the delegation to Crush is restored.
@@ -314,7 +314,7 @@ flowchart TD
 
 ## Migration Plan
 
-1. **#420 (REQ-1)** ships first and alone. A `generic` + `prompt` config fails
+1. **REQ-1** ships first and alone. A `generic` + `prompt` config fails
    to load with a message naming the agent kinds. Our fleet has none. Anyone
    else sees a load error instead of a wrong-agent run, and the release notes
    say so.
@@ -327,26 +327,24 @@ flowchart TD
 Rollback: every new key is opt-in. Removing the keys restores today's
 behaviour, except REQ-1, which is intentionally not reverted.
 
-## Open Questions
+## Settled Questions
 
 Every question below was settled in the Operation Stumply design review. None is
 left open.
 
 - **Should `stdin` and `file` delivery extend to the built-in adapters?**
-  Resolved (design review 2026-09-22): not in this spec, as proposed. The
+  Not in this spec. The
   built-in adapters keep their argv contracts; extending delivery to them is a
   later change.
-- **Should `trusted_actors` also accept an org or team?** Resolved (design
-  review 2026-09-22): no. That needs a forge client in the daemon, which
+- **Should `trusted_actors` also accept an org or team?** No. That needs a forge client in the daemon, which
   ADR-0021 avoided. Switchboard's trusted-actor work (Switchboard ADR-0031) owns
   org and team trust when Switchboard is in front.
-- **`switchboard` and `cairn` extractors.** Resolved (design review 2026-09-22):
-  they wait for their payload contracts, as proposed: Switchboard SPEC-0024
+- **`switchboard` and `cairn` extractors.** They wait for their payload contracts: Switchboard SPEC-0024
   (notify hooks) and Cairn ADR-0022 (annotation events), both accepted in the
   same review. Each extractor follows once its contract is implemented.
-- **Pi and OMP.** Resolved (design review 2026-09-22): keep the built-in `pi`
-  and `omp` adapters (ADR-0023 option 4A), with the `command` kind as the
+- **Pi and OMP.** Keep the built-in `pi`
+  and `omp` adapters (ADR-0023, Decision 4, Option 1), with the `command` kind as the
   fallback for any other CLI.
-- **The untrusted fence.** Resolved (design review 2026-09-22): it ships, off by
+- **The untrusted fence.** It ships, off by
   default and gated by `untrusted_inline`, with a WARN each time it renders
   (REQ-10, already on `main`).

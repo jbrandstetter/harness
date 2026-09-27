@@ -5,6 +5,18 @@ sidebar_position: 5
 
 # Push events with MCP channels
 
+:::tip Paste this to your agent
+
+```text
+Read https://stump-wtf.github.io/harness/llms.txt and
+https://stump-wtf.github.io/harness/guides/push-events. Configure this session
+to receive Switchboard doorbells, then prove it by claiming a real todo: fire
+a webhook at the endpoint's ingest URL and show me the todo reach state
+`done`. A "delivered" log line does not count.
+```
+
+:::
+
 A scheduled sweep wakes on a clock. Much of the work worth automating wakes on an
 **event** instead: a pull request opened, CI went red, someone published a
 handoff. Polling for events wastes model turns, because an agent that asks
@@ -150,6 +162,12 @@ SWITCHBOARD_TOKEN=sbk_...
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
+`ANTHROPIC_API_KEY` here is the Crush worker's model provider key. For a
+**Claude Code** worker on Linux or a headless box, use a subscription token
+from `claude setup-token` (`CLAUDE_CODE_OAUTH_TOKEN=...`) instead: an API key
+bills the API, not your subscription. See
+[Claude Code authentication](./first-agent#claude-code-authentication).
+
 ### 3. Supervise it
 
 ```toml
@@ -278,7 +296,9 @@ and [Routing rules](https://switchboard.stump.wtf/docs/guides/routing-rules).
 ## Claude Code: verified, with one obstacle
 
 Claude Code defines the Channels protocol Switchboard speaks, and it wakes on a
-Switchboard doorbell. Measured against Claude Code 2.1.270 over Switchboard's
+Switchboard doorbell. This section is the evidence; the rules, including the
+trigger-fired one-shot that avoids the confirmation prompt, are collected on
+[Claude Code under Harness](./claude-code#waking-on-switchboard-doorbells). Measured against Claude Code 2.1.270 over Switchboard's
 HTTP endpoint, with a real webhook delivery each time:
 
 | Session | What happened |

@@ -254,11 +254,14 @@ func (m *Model) dispatchDashboardKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // The size is seeded here because the chatroom is reached by keypress, long
 // after the tea.WindowSizeMsg that sized the parent, and View draws nothing
 // without geometry.
+//
+// The watcher only reaches back fifteen minutes, so entering also asks the
+// daemon for every harness's latest run (chatroom_history.go).
 func (m *Model) enterChatroom() tea.Cmd {
 	m.ensureChatroom()
 	m.chatroom.SetSize(m.w, m.h)
 	m.mode = modeChatroom
-	return nil
+	return m.chatHistoryCmd()
 }
 
 // exitChatroom returns to the dashboard, leaving the buffer and the watcher

@@ -26,8 +26,8 @@ REQ-3 defines.
 This spec amends, by reference and without editing them:
 
 * **SPEC-0012 REQ "Gate Enforcement"**: `held` becomes a set of hold reasons
-  (REQ-14). SPEC-0012 is not edited here. #412 has since merged, and story
-  #488 folds this amendment into SPEC-0012 when REQ-14 ships.
+  (REQ-14). SPEC-0012 is not edited here. SPEC-0012's catch-up revision has since merged, and a
+  follow-up story folds this amendment into SPEC-0012 when REQ-14 ships.
 * **SPEC-0012 REQ "Operating Hours Visibility"**: the projection's `held`
   boolean is removed and replaced by `hold_reasons` (REQ-16), with no
   transition period.
@@ -357,7 +357,7 @@ resident harness or for a zero exit.
 
 #### Scenario: A Claude Code usage limit on a one-shot
 
-- **GIVEN** agent-trace does not surface claude-code API errors (stump.wtf/agent-trace#104 open)
+- **GIVEN** agent-trace does not surface claude-code API errors (the pinned version predates those marks)
 - **WHEN** a claude-code `-p` run exits 1 and its run log ends with "Claude AI usage limit reached|1790000000"
 - **THEN** the fallback classifies it `quota` with a reset time of 1790000000
 
@@ -370,7 +370,7 @@ resident harness or for a zero exit.
 
 A harness SHALL be parked when a `quota` error either:
 
-* carries a reset time the daemon can parse (REQ-12 formats in `design.md`),
+* carries a reset time the daemon can parse (REQ-12 formats in the [design notes](./design.md)),
   in which case the harness is parked until that time; or
 * leaves the harness **stuck on quota**: for a resident, at least 3 `quota` errors
   and no successful model call within the last 10 minutes; for a one-shot, a run
@@ -554,7 +554,7 @@ shown firing in a test.
 
 When SPEC-0013's endpoint is enabled, the daemon SHALL export:
 
-```
+```text
 harness_budget_runs_today{harness}                 gauge
 harness_budget_runs_limit{harness}                 gauge    absent when unset
 harness_budget_cost_today_usd{harness}             gauge

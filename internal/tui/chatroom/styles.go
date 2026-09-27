@@ -10,6 +10,8 @@ import (
 	"image/color"
 
 	"charm.land/lipgloss/v2"
+
+	"github.com/stump-wtf/harness/internal/logview"
 	"github.com/stump-wtf/harness/internal/tui/theme"
 )
 
@@ -54,6 +56,9 @@ type Styles struct {
 
 	// Dimmed text for secondary info
 	Dim lipgloss.Style
+
+	// Log renders each row the way `harness logs` does (internal/logview).
+	Log *logview.Style
 }
 
 // NewStyles builds the chatroom style set from a Harness theme.
@@ -114,9 +119,27 @@ func NewStyles(t *theme.Theme) *Styles {
 		Target:           dim.Italic(true),
 		Divider:          lipgloss.NewStyle().Foreground(colors.Border),
 		Dim:              dim,
+		Log:              logview.NewStyle(t),
 	}
 
 	return s
+}
+
+// whoWidth is the speaker column's width. Fixed, so the label column lines up
+// down the whole stream; a longer name is clipped rather than accommodated.
+const whoWidth = 24
+
+// who renders a speaker in its tool's colour, padded to whoWidth.
+func (s *Styles) who(id HarnessIdentity) string {
+	name := id.Username
+	if n := []rune(name); len(n) > whoWidth {
+		name = string(n[:whoWidth-1]) + "…"
+	}
+	st, ok := s.Username[string(id.Harness)]
+	if !ok {
+		st = s.Dim.Bold(true)
+	}
+	return st.Render(name) + logview.Pad(name, whoWidth)
 }
 
 // BadgeStyle returns the style for a given action badge.
