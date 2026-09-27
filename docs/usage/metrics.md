@@ -103,6 +103,9 @@ increase(harness_restarts_total[1h]) > 10
 # The error classifier no longer recognises a provider's errors (the wording probably changed).
 increase(harness_model_call_errors_unclassified_total[1h]) > 0
 
+# The [notify] hook stopped reaching anyone: it errors, times out, or its queue overflows.
+increase(harness_notify_deliveries_total{result=~"error|timeout|dropped"}[1h]) > 0
+
 # The daemon's own collection is broken or losing events.
 increase(harness_metrics_collection_errors_total[15m]) > 0
 
@@ -140,12 +143,14 @@ example with `{source=~"channel.sb|webhook.gitea-pr"}`.
 | `harness_session_active{harness}` | gauge | 1 when the process is up and the agent wrote to a session in the last 10 minutes. |
 | `harness_scheduled_runs_total{harness,outcome}` | counter | Scheduled harnesses only. `success`, or `failure` (a run that failed or timed out). Skipped, missed, cancelled and interrupted runs are not counted. |
 | `harness_scheduled_next_run_timestamp{harness}` | gauge | Scheduled harnesses only. Absent when there is no next window. |
+| `harness_template_render_failures_total{harness,reason}` | counter | `command` harnesses only, both reasons starting at zero. `unresolved`: a required `argv` template value was absent, so the run was recorded skipped (`template_unresolved`) or the start failed. `grammar`: a template did not parse at spawn. Nothing was exec'd either way. |
 | `harness_trigger_source_up{source,kind}` | gauge | Every declared `[channel.*]` and `[webhook.*]` source. 1 while a channel is `connected` or a webhook source is `listening`; 0 in every other state (`connecting`, `backoff`, `error`, `no_listener`, `disabled`, `unbound`). |
 | `harness_trigger_events_total{source,outcome}` | counter | `fired`, `ignored`, `duplicate`, `unauthorized`, `too_large`, `rate_limited`, `invalid`. Every declared source reports all seven, starting at zero. See below. |
 | `harness_trigger_last_event_timestamp{source}` | gauge | Unix seconds of the source's latest firing. **Absent** until it first fires in this daemon's lifetime. |
 | `harness_trigger_reconnects_total{source}` | counter | Channel sources only. Times the stream came back to `connected` after the first connection. |
 | `harness_metrics_collection_errors_total{collector}` | counter | `supervisor`, `schedule`, `observer`, `lifecycle`, `triggers`. `observer` and `lifecycle` also count events the collector lost because it fell behind, so the matching counters read low. |
 | `harness_metrics_harnesses_overflowed` | gauge | How many harnesses were folded into `__other__`. |
+| `harness_notify_deliveries_total{event,result}` | counter | Runs of the [`[notify]` hook](./notify): `ok`, `error`, `timeout`, and notifications that never ran it, `dropped` (queue full) and `suppressed` (inside the cooldown). |
 | `harness_observer_*` | mixed | Health of the transcript reader: delivered and dropped events, ambiguous and unattributed items, parse errors, scan errors, sessions tracked. |
 | `go_*`, `process_*` | | The daemon's own runtime. |
 
@@ -175,7 +180,7 @@ call is not counted.
 
 Only a harness whose adapter writes a readable transcript (`claude-code`,
 `crush`, `codex`) **and** that has a `workdir` gets model-call series. A
-`generic` harness, or an agent harness with no workdir, has none. The daemon
+`generic` or `command` harness, or an agent harness with no workdir, has none. The daemon
 omits values it cannot compute rather than reporting a zero, which would look
 like a healthy, idle agent.
 

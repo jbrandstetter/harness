@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/stump-wtf/harness/internal/client"
 	"github.com/stump-wtf/harness/internal/protocol"
 )
 
@@ -98,6 +99,11 @@ func (r *recordingController) Logs(name string, lines int) (protocol.LogsData, e
 	return protocol.LogsData{Name: name, Text: "tail"}, r.errOut
 }
 
+func (r *recordingController) LogEvents(name string, o client.LogOptions) (protocol.LogsData, error) {
+	r.note("LogEvents:" + name)
+	return protocol.LogsData{Name: name, Source: protocol.LogSourceAgentTrace}, r.errOut
+}
+
 func (r *recordingController) Profiles() ([]protocol.ProfileInfo, error) {
 	r.note("Profiles")
 	return []protocol.ProfileInfo{{Name: "p"}}, r.errOut
@@ -158,6 +164,9 @@ func TestMutexControllerForwardsEveryMethod(t *testing.T) {
 	if _, err := mc.Logs("h", 10); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := mc.LogEvents("h", client.LogOptions{Lines: 10}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := mc.Profiles(); err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +186,7 @@ func TestMutexControllerForwardsEveryMethod(t *testing.T) {
 
 	want := []string{
 		"List", "Describe:h", "Start:h", "Stop:h", "Restart:h", "Logs:h",
-		"Profiles", "UseProfile:p", "Reload", "DaemonInfo", "DaemonVersion", "Close",
+		"LogEvents:h", "Profiles", "UseProfile:p", "Reload", "DaemonInfo", "DaemonVersion", "Close",
 	}
 	got := rec.seen()
 	if len(got) != len(want) {

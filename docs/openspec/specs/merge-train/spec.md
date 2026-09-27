@@ -12,8 +12,8 @@ requires: [SPEC-0010]
 A **merge train** is a deterministic loop inside the Harness daemon that lands
 approved pull requests on one repository, one at a time, so that the tree CI
 tested is the tree that reaches `main`. ADR-0032 records the decision and the
-options; this spec is the behaviour, and `design.md` beside it is the package
-layout and the `Forge` interface.
+options; this spec is the behaviour, and the [design notes](./design.md) beside it
+cover the package layout and the `Forge` interface.
 
 Terms:
 
@@ -174,7 +174,7 @@ On `conflict`, `red`, `timeout`, `merge-refused` and `verify-failed`, the
 driver SHALL post exactly one comment on the PR that @mentions the PR's author,
 states the cause and the train commit or head, and ends with the marker
 
-```
+```text
 <!-- harness-mergetrain v1 pr=<n> head=<head> cause=<cause> -->
 ```
 
@@ -216,7 +216,7 @@ SHALL NOT wait for the lock.
 ### Requirement: REQ-12 Forge access and credentials
 
 Every forge interaction SHALL go through the `forge.Forge` interface
-(`design.md`). The forge token SHALL be read from the environment variable
+(see the [design notes](./design.md)). The forge token SHALL be read from the environment variable
 named by `forge_token_env` and SHALL NOT appear in `harness.toml`, in any log
 line, in any error string, or in any process argv; git SHALL receive it through
 the environment. A non-2xx response SHALL become an error naming the method,
@@ -253,13 +253,32 @@ this driver performed.
 
 ## State machine (one attempt)
 
-```
-          ┌───────────┐ build ok ┌──────────┐ success ┌───────────┐ ok  ┌─────────┐ ok ┌───────────┐ ok ┌────────┐
- queue ─▶ │ building  │─────────▶│ testing  │────────▶│ recheck   │────▶│ merging │───▶│ verifying │───▶│ landed │
-          └───────────┘          └──────────┘         └───────────┘     └─────────┘    └───────────┘    └────────┘
-            │conflict │stale       │failure/error        │moved            │4xx           │mismatch
-            ▼         ▼            │timeout │cancel      ▼                 ▼              ▼
-         conflict   stale         red  timeout  (abort) stale       merge-refused       HALTED
+```mermaid
+stateDiagram-v2
+    direction left-right
+    state building
+    state testing
+    state recheck
+    state merging
+    state verifying
+
+    [*] --> queue
+    queue --> building: next eligible PR
+    building --> testing: build ok
+    building --> conflict:::danger: merge conflict
+    building --> stale: head moved
+    testing --> recheck: CI success
+    testing --> red:::danger: CI failure / error
+    testing --> timeout:::danger: ci_timeout elapsed
+    testing --> testing: poll (backoff)
+    testing --> abort: context cancelled
+    abort --> [*]: train branch deleted
+    recheck --> merging: still eligible
+    recheck --> stale: PR or base moved
+    merging --> verifying: merged
+    merging --> mergeRefused:::danger: forge refuses (4xx)
+    verifying --> landed: tree + content match
+    verifying --> halted:::danger: mismatch (HALT)
 ```
 
 `report` mode ends at `recheck` with `would merge`. The train branch is deleted
@@ -267,7 +286,7 @@ on every exit from `testing`.
 
 ## Forge calls per transition
 
-| Transition | Call | Gitea endpoint (see `design.md`) |
+| Transition | Call | Gitea endpoint (see the [design notes](./design.md)) |
 |---|---|---|
 | queue | `ListOpenPRs` | `GET /repos/{r}/pulls?state=open`, `GET …/pulls/{n}/reviews`, `GET …/commits/{head}/status` |
 | queue → building | `BranchHead` | `GET /repos/{r}/branches/{base}` |
@@ -286,5 +305,41 @@ on every exit from `testing`.
   whatever ran on the train commit. Pinning the list to branch protection's
   `status_check_contexts` would catch a workflow that silently stopped
   triggering on `train/**`.
-- **Batching.** Several PRs per train commit, bisecting on red, if one CI run
-  per PR limits throughput.
+
+## Requirement: REQ-17 Batching — several PRs share one CI run
+
+The driver SHALL support a per-repo `batch` size (default 1, meaning the v1
+one-PR-per-train behaviour). With `batch = N` > 1, a tick SHALL take up to N
+eligible PRs in merge order, build **one** train commit whose tree is the
+merge of `base` and every head in order, and wait for CI on that commit.
+
+- On green, the driver SHALL squash-merge each PR in order, each with its
+  `head_commit_id` pinned and the REQ-7 preconditions re-checked per PR, and
+  SHALL run the REQ-8 verification after each merge as usual.
+- On red, the driver SHALL bisect the batch: it splits the batch's PRs in
+  half, retries each half as its own train commit, and recurses until a single
+  PR fails red — that PR then gets the normal REQ-9 comment with cause `red`
+  and REQ-10 memory. PRs in halves that went green land as usual.
+- A conflict building the batch SHALL be reported against the first PR the
+  three-way merge rejects.
+- Every REQ-6, REQ-7, REQ-8 and REQ-9 guarantee SHALL hold per PR exactly as
+  in the unbatched train; batching changes only how many PRs share a train
+  commit, not any safety property.
+
+#### Scenario: A batch goes green
+
+- **WHEN** a train commit carrying three PRs' heads is green
+- **THEN** all three PRs merge in order, each verified, and one CI run served
+  three landings
+
+#### Scenario: A batch goes red
+
+- **WHEN** a train commit of four PRs is red and its second half is also red
+- **THEN** the driver lands the first half's PRs, and the PR bisected to as
+  the red one gets one `red` comment; the other half-2 PRs are retried on the
+  next tick against the new base
+
+#### Scenario: Batch of one
+
+- **WHEN** `batch` is unset or 1
+- **THEN** behaviour is identical to REQ-1 through REQ-16 as written

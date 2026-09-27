@@ -557,7 +557,8 @@ const (
 	// other).
 	KindTool EntryKind = "tool"
 	// KindMark is a non-tool annotation: a user message, a compaction, a
-	// subagent launch, or an agent error.
+	// subagent launch, an agent error, or (agent-trace v0.6.0) a turn end.
+	// Only an agent error sets Entry.Error.
 	KindMark EntryKind = "mark"
 )
 
@@ -670,8 +671,8 @@ func sessionEntries(ctx context.Context, s Session, w Window, now time.Time) ([]
 			Kind:    KindTool,
 			Action:  ev.Action,
 			Tool:    ev.Tool,
-			Target:  redact.String(primaryTarget(ev)),
-			Summary: redact.String(tallySuffix.ReplaceAllString(ev.Summary, "")),
+			Target:  redact.String(PrimaryTarget(ev)),
+			Summary: redact.String(ToolSummary(ev.Summary)),
 			Error:   ev.IsError,
 		})
 	}
@@ -722,12 +723,17 @@ func sessionSummary(listed, parsed tail.SessionMeta) string {
 // already carried by Entry.Error.
 var tallySuffix = regexp.MustCompile(` -> \d+ targets, \d+ outside( error)?$`)
 
-// primaryTarget is the most deeply touched in-repo target (edit > read > hit,
+// ToolSummary is a classified summary as an activity entry carries it: the
+// command or the path, without the classification tally. The chatroom renders
+// live events through it so they read as `harness logs` does.
+func ToolSummary(s string) string { return tallySuffix.ReplaceAllString(s, "") }
+
+// PrimaryTarget is the most deeply touched in-repo target (edit > read > hit,
 // first on a tie), else the first file the call touched outside the workdir.
 // A sweep that runs in a scratch directory and reads its prompt from
 // ~/.config does all of its reading "outside", and without the fallback every
 // one of those reads rendered as a bare tool name.
-func primaryTarget(ev classify.Event) string {
+func PrimaryTarget(ev classify.Event) string {
 	best, rank := "", 0
 	for _, t := range ev.Targets {
 		if r := classify.RankTouch(t.Touch); r > rank {

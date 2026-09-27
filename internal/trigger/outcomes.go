@@ -20,44 +20,16 @@ package trigger
 //
 // @joestump 09/24/2026 - Introduced with de-duplication and rate limits (#460).
 // @joestump 09/24/2026 - Every REQ "Trigger Metrics" outcome, the last firing,
-// channel reconnects, and Retain for sources a reload removed (#480).
+//   channel reconnects, and Retain for sources a reload removed (#480); the
+//   Outcome vocabulary itself lives in state.go (#476).
+// @joestump 09/25/2026 - Outcome and its values now live in state.go, the
+//   one vocabulary `harness triggers` also reports (#476); only the
+//   counters stay here.
 
 import (
 	"sync"
 	"time"
 )
-
-// Outcome is how one delivery or doorbell ended. The set is closed: it is the
-// `outcome` label of harness_trigger_events_total, and a label value that
-// could come from anywhere else would be unbounded cardinality.
-type Outcome string
-
-const (
-	// OutcomeFired: the event reached the fan-out to the bound harnesses.
-	OutcomeFired Outcome = "fired"
-	// OutcomeIgnored: the `events` allowlist did not list the event, or no
-	// harness binds the source any more (a reload landed mid-delivery).
-	OutcomeIgnored Outcome = "ignored"
-	// OutcomeDuplicate: the delivery ID fired on this route already.
-	OutcomeDuplicate Outcome = "duplicate"
-	// OutcomeUnauthorized: the delivery failed verification (a 401).
-	OutcomeUnauthorized Outcome = "unauthorized"
-	// OutcomeTooLarge: the body was over the route's max_body (a 413).
-	OutcomeTooLarge Outcome = "too_large"
-	// OutcomeRateLimited: the route's rate_limit had no token left.
-	OutcomeRateLimited Outcome = "rate_limited"
-	// OutcomeInvalid: a channel message that violates REQ "Channel
-	// Notification Handling", or a webhook body that could not be read to
-	// the end. Neither fires.
-	OutcomeInvalid Outcome = "invalid"
-)
-
-// Outcomes is every outcome, in REQ "Trigger Metrics" order, for renderers
-// that want a stable column order and for the zero-initialized metric set.
-var Outcomes = []Outcome{
-	OutcomeFired, OutcomeIgnored, OutcomeDuplicate, OutcomeUnauthorized,
-	OutcomeTooLarge, OutcomeRateLimited, OutcomeInvalid,
-}
 
 // SourceCounts is one source's counters, as a copy safe to keep.
 type SourceCounts struct {
@@ -77,8 +49,9 @@ type perSource struct {
 	reconnects uint64
 }
 
-// OutcomeCounters counts per source reference. The zero value is ready to use
-// and safe for concurrent use.
+// OutcomeCounters counts per source reference — how each delivery or doorbell
+// ended, when it last fired, how often a channel came back. The zero value is
+// ready to use and safe for concurrent use.
 type OutcomeCounters struct {
 	mu sync.Mutex
 	m  map[string]*perSource

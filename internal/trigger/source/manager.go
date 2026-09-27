@@ -161,6 +161,15 @@ type Manager struct {
 	// decides between `listening` and `no_listener` for a bound, enabled
 	// webhook source (webhooks.go). Guarded by mu.
 	webhookListening bool
+
+	// stats are each source's counters and last event, keyed by reference
+	// and kept apart from sources so a reload that replaces a source's
+	// record does not zero them (visibility.go). Guarded by mu.
+	stats map[string]*sourceStats
+	// pending and draining are the ordered OnState queue (visibility.go).
+	// Guarded by mu.
+	pending  []Status
+	draining bool
 }
 
 // New builds a Manager. It does nothing until Start.
@@ -202,6 +211,7 @@ func New(opts Options) *Manager {
 		sleep:    sleep,
 		rand:     opts.Rand,
 		sources:  map[string]*sourceState{},
+		stats:    map[string]*sourceStats{},
 	}
 }
 
@@ -292,6 +302,8 @@ func (m *Manager) Fire(ev *trigger.Envelope) []Decision {
 	}
 	if err := ev.Validate(); err != nil {
 		m.log.Warn("trigger event dropped: invalid envelope", "source", ev.Source, "err", err.Error())
+		m.NoteOutcome(ev.Source, trigger.OutcomeInvalid)
+		m.counters.Inc(ev.Source, trigger.OutcomeInvalid)
 		return nil
 	}
 
@@ -310,21 +322,24 @@ func (m *Manager) Fire(ev *trigger.Envelope) []Decision {
 		m.log.Debug("trigger event dropped: shutting down", "source", ev.Source)
 		return nil
 	}
-
 	cfg := m.config()
 	bound := cfg.BoundHarnesses(ev.Source)
 	if len(bound) == 0 {
 		// Not an error: a reload can unbind a source between a doorbell
 		// arriving and this read. Counted as ignored — heard and dropped —
 		// rather than fired, so `fired` never counts an event nothing ran for.
+		m.NoteOutcome(ev.Source, trigger.OutcomeIgnored)
 		m.counters.Inc(ev.Source, trigger.OutcomeIgnored)
 		m.log.Debug("trigger event fired nothing: no harness binds the source", "source", ev.Source)
 		return nil
 	}
-	// Counted here, the one place both kinds pass through, before the
-	// fan-out: `fired` is "reached the harnesses", whatever each one then
-	// decides (a skip on overlap is a run record, not a lost event).
+	// Counted here, once the event is valid, the manager is taking firings
+	// and something is bound: `fired` is "reached the harnesses", whatever
+	// each one then decides (a skip on overlap is a run record, not a lost
+	// event). The stats feed the manager's own status; the shared counters
+	// feed `harness_trigger_events_total` and its last-event stamp.
 	// Governing: SPEC-0014 REQ "Trigger Metrics".
+	m.NoteOutcome(ev.Source, trigger.OutcomeFired)
 	m.counters.Fired(ev.Source, ev.ReceivedAt)
 
 	runTrigger := supervisor.TriggerWebhook

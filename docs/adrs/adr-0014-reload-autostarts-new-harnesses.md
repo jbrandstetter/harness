@@ -1,8 +1,11 @@
+---
+status: accepted
+date: 2026-08-12
+decision-makers: [joestump]
+related: [ADR-0005]
+---
+
 # ADR-0014: Reload Autostarts Newly-Introduced Harnesses
-
-## Status
-
-Accepted
 
 ## Context
 

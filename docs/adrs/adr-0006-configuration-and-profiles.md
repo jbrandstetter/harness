@@ -1,7 +1,11 @@
-# ADR-0006 — Configuration & profiles ("configurations of harnesses")
+---
+status: accepted
+date: 2026-07-18
+decision-makers: [joestump]
+related: [ADR-0002, ADR-0005, ADR-0007, ADR-0008]
+---
 
-- **Status:** Proposed
-- **Date:** 2026-07-18
+# ADR-0006 — Configuration & profiles ("configurations of harnesses")
 
 ## Context and problem statement
 

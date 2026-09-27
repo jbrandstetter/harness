@@ -1,7 +1,11 @@
-# ADR-0002 — Process model: long-lived daemon + thin TUI client
+---
+status: accepted
+date: 2026-07-18
+decision-makers: [joestump]
+related: [ADR-0003, ADR-0004, ADR-0005, ADR-0007]
+---
 
-- **Status:** Proposed
-- **Date:** 2026-07-18
+# ADR-0002 — Process model: long-lived daemon + thin TUI client
 
 ## Context and problem statement
 

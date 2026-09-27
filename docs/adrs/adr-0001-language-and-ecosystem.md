@@ -1,8 +1,14 @@
+---
+status: accepted
+date: 2026-07-18
+decision-makers: [joestump]
+enables: [ADR-0003, ADR-0004]
+related: [ADR-0002]
+---
+
 # ADR-0001 — Language & ecosystem: Go + Charmbracelet
 
-- **Status:** Proposed
-- **Date:** 2026-07-18
-- **Deciders:** Joe (with Claude Design on the UX surface)
+Decided by Joe, with Claude Design on the UX surface.
 
 ## Context and problem statement
 

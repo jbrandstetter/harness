@@ -19,7 +19,7 @@ observer attributes to a harness — as three independent, opt-in signals:
 * **A local JSONL events file**: one JSON object per observed item, for
   file-tailing shippers. No network.
 
-The source is the observer in `internal/observe` (issue #390). This spec
+The source is the observer in `internal/observe`. This spec
 consumes its `Event` stream and its guarantees — marks delivered on their own,
 per-session sequence order, at most once per daemon lifetime, no history
 replay, ambiguous sessions withheld — and does not restate them.
@@ -34,7 +34,7 @@ the opposite audience, and it MUST stay exactly as it is today.
 
 Export requires both a **destination** and a **contributing harness**. Neither
 implies the other, and reading a transcript locally (`harness logs`, the TUI,
-`harvest_trajectory`) implies neither (issue #94).
+`harvest_trajectory`) implies neither.
 
 A destination is configured when, in the global `harness.toml`, at least one of
 `[telemetry] logs = true`, `[telemetry] traces = true`, or a non-empty
@@ -171,7 +171,7 @@ daemon's process environment and from `[telemetry] env_file`:
 
 Precedence for each OTLP setting, per signal, highest first:
 
-```
+```text
 signal-specific env var  >  generic env var  >  harness.toml [telemetry]  >  default
 ```
 
@@ -325,7 +325,7 @@ and a test MUST pin the two derivations equal.
 **Item and span IDs.** Every item's ID MUST be the first 8 bytes, as 16
 lowercase hex characters, of
 
-```
+```text
 SHA-256("harness-item:" + traceID + ":" + kind + ":" + seq + ":" + content)
 ```
 
@@ -532,7 +532,7 @@ concurrently without blocking export.
 
 Once SPEC-0013's `/metrics` endpoint exists, it SHOULD publish them as:
 
-```
+```text
 harness_telemetry_items_total{signal,outcome}              counter  outcome: exported|rejected|failed|dropped_queue|dropped_observer
 harness_telemetry_requests_total{signal,result}            counter  result: success|retryable|permanent
 harness_telemetry_queue_items{signal}                      gauge

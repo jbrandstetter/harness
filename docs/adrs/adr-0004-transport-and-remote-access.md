@@ -1,7 +1,11 @@
-# ADR-0004 — Transport: Unix-socket control plane + Wish/SSH data plane
+---
+status: superseded
+date: 2026-07-18
+decision-makers: [joestump]
+related: [ADR-0003, ADR-0008]
+---
 
-- **Status:** Proposed
-- **Date:** 2026-07-18
+# ADR-0004 — Transport: Unix-socket control plane + Wish/SSH data plane
 
 ## Context and problem statement
 
