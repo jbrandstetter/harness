@@ -417,9 +417,9 @@ func runDaemon(o daemonOpts) {
 	// Issue #98: watch the config directory for changes and auto-reload.
 	// Chezmoi (and czu on its timer) rewrite harness.toml via temp file +
 	// rename, so the watcher monitors the directory, not the inode. The
-	// opt-out is [daemon] watch_config = false.
+	// opt-out is [daemon] watch_config = false or HARNESS_WATCH_CONFIG=false.
 	var cfgWatcher *supervisor.ConfigWatcher
-	if cfg.Daemon.WatchConfigEnabled() {
+	if daemonWatchesConfig(cfg.Daemon, o) {
 		cw, err := supervisor.NewConfigWatcher(mgr, o.configPath)
 		if err != nil {
 			log.Warn("config watcher disabled (could not start)", "err", err)
@@ -537,6 +537,20 @@ func runDaemon(o daemonOpts) {
 	mgr.Close()
 	stopDaemonPprof(pprofSrv)
 	<-telemetryDone
+}
+
+// daemonWatchesConfig reports whether the daemon watches its config file:
+// HARNESS_WATCH_CONFIG when set, else [daemon] watch_config, else on. A
+// function, like daemonMergeTrainOptions, so the wiring test checks the
+// decision runDaemon makes (#315).
+//
+// Governing: ADR-0016; SPEC-0010 REQ "Precedence Order" (scenario
+// "Environment beats file").
+func daemonWatchesConfig(dc core.DaemonConfig, o daemonOpts) bool {
+	if o.watchConfig != nil {
+		return *o.watchConfig
+	}
+	return dc.WatchConfigEnabled()
 }
 
 // daemonMergeTrainOptions is the merge train configuration the daemon runs

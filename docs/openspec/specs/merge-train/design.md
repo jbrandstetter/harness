@@ -240,6 +240,11 @@ forge_token_env = "HARNESS_MERGETRAIN_TOKEN"   # the variable's NAME
 A change to `[mergetrain]` takes effect at the next daemon restart, like
 `[telemetry]`.
 
+`batch` is parsed and validated (a whole number, at least 1) before REQ-17's
+batching is built, so this table loads as written. Until then the driver
+builds one PR per train whatever the value, and the daemon logs a warning at
+start when `batch` is above 1.
+
 ## Risks / Trade-offs
 
 - **An untested tree can land in a race** (a bypass in the milliseconds

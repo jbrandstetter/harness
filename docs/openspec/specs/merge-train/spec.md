@@ -233,10 +233,12 @@ push to a PR's head branch. The only writes are: creating and deleting
 Every transition SHALL produce one structured log line whose message is
 `mergetrain <event>` with keys `repo` and, where they apply, `pr`, `head`,
 `base`, `train`, `tree`, `cause`, `err`. Events: `started`, `queue`,
-`building`, `built`, `ci`, `green`, `red`, `conflict`, `timeout`, `stale`,
+`building`, `built`, `green`, `red`, `conflict`, `timeout`, `stale`,
 `deleted`, `delete failed`, `would merge`, `would comment`, `merged`, `verified`,
 `merge refused`, `commented`, `tick failed`, `bypass detected`, `halted`,
-`stopped`.
+`shutting down`, `stopped`. `shutting down` is logged at warn when the
+driver's context is cancelled between a merge and its REQ-8 verification: the
+driver returns without halting, because a stop is not a verification failure.
 
 ### Requirement: REQ-15 Shutdown
 

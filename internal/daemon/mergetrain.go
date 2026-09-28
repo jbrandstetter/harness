@@ -18,7 +18,13 @@ package daemon
 // branch on a detached, bounded context (REQ-6), then the driver releases its
 // lock (REQ-15).
 //
-// Governing: ADR-0032; SPEC-0025 REQ-1, REQ-11, REQ-12, REQ-15.
+// `batch` above 1 is accepted by the loader but not yet built (REQ-17): the
+// start logs a warn-level line saying each train still carries one PR, so a
+// configured batch never reads as throughput the daemon is not delivering.
+//
+// Governing: ADR-0032; SPEC-0025 REQ-1, REQ-11, REQ-12, REQ-15, REQ-17.
+//
+// @joestump-agent 09/28/2026 - Warn on an unimplemented batch size.
 
 import (
 	"context"
@@ -140,6 +146,10 @@ func StartMergeTrain(ctx context.Context, o MergeTrainOptions) (*MergeTrain, err
 
 	log.Warn("merge train enabled", "mode", c.Mode, "repos", strings.Join(c.Repos, ","), "as", as,
 		"running", len(m.drivers), "base_branch", c.BaseBranch)
+	if c.Batch > 1 {
+		log.Warn("merge train: batch is not implemented yet; each train carries one PR",
+			"batch", c.Batch, "spec", "SPEC-0025 REQ-17")
+	}
 
 	rctx, cancel := context.WithCancel(ctx)
 	m.cancel = cancel

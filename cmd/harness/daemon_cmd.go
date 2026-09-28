@@ -66,6 +66,11 @@ type daemonOpts struct {
 	memoryLimitSource settings.Source
 	// pprofAddr is the loopback pprof listener address; empty is off.
 	pprofAddr string
+	// watchConfig is HARNESS_WATCH_CONFIG ONLY, nil when the environment
+	// leaves it unset — never the file's [daemon] watch_config, which
+	// internal/config reads with the rest of the table. It has no flag, and a
+	// --detach child inherits the environment, so it needs no child arg.
+	watchConfig *bool
 }
 
 func newDaemonCmd(g *globalOpts) *cobra.Command {
