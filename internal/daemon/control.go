@@ -6,6 +6,10 @@ package daemon
 // structured ERROR frames carrying a machine code + human message. ADR-0002
 // (control is the same set of verbs the CLI and TUI expose). ADR-0006 (reload
 // keeps last-good config on a parse error).
+//
+// @joestump-agent 09/27/2026 - Added the skills_synced and skills_status ops
+// (SPEC-0007 REQ "Default-Branch Gate") and the skills refresh after a
+// successful reload.
 
 import (
 	"encoding/json"
@@ -65,6 +69,10 @@ func (c *conn) handleControl(payload []byte) {
 		c.opNotifyTest(req)
 	case protocol.OpTriggers:
 		c.respond(req, c.opTriggers())
+	case protocol.OpSkillsSynced:
+		c.opSkillsSynced(req)
+	case protocol.OpSkillsStatus:
+		c.respond(req, c.opSkillsStatus())
 	default:
 		_ = c.pc.WriteError(req.ID, protocol.ErrUnknownOp, "unknown op %q", req.Op)
 	}
@@ -391,6 +399,11 @@ func (c *conn) opReload(req protocol.ControlReq) {
 		return
 	}
 	c.srv.broadcast(protocol.EventMsg{Kind: protocol.EvConfigReload})
+	// Skill repos and their serving settings live in the same config of
+	// record; refresh the serving manager so the index tracks the reload
+	// (SPEC-0007 REQ "Skill Repos"). Best-effort: a refresh failure keeps the
+	// previous index.
+	go c.srv.SyncSkillsManager()
 	c.respond(req, c.opList())
 }
 

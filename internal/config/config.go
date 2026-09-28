@@ -150,12 +150,12 @@ type rawProfile struct {
 
 // rawDaemon mirrors the [daemon] table before validation.
 //
-// Socket, LogLevel, LogFile, Scrollback, MemoryLimit and PprofAddr are process
-// settings: their value is owned by internal/settings, which resolves them
-// flag > env > file > default (ADR-0016). They are decoded here only so
-// checkUndecoded accepts them and a bad value fails with its line number.
-// Without these fields the strict decode refused every one of them as an
-// unknown key, so the file layer the settings registry promises for them
+// Socket, LogLevel, LogFile, Scrollback, ScrollbackBytes, MemoryLimit and
+// PprofAddr are process settings: their value is owned by internal/settings,
+// which resolves them flag > env > file > default (ADR-0016). They are decoded
+// here only so checkUndecoded accepts them and a bad value fails with its line
+// number. Without these fields the strict decode refused every one of them as
+// an unknown key, so the file layer the settings registry promises for them
 // could never be reached (GitHub stump-wtf/harness#19).
 type rawDaemon struct {
 	WatchConfig *bool   `toml:"watch_config"`
@@ -163,6 +163,8 @@ type rawDaemon struct {
 	LogLevel    *string `toml:"log_level"`
 	LogFile     *string `toml:"log_file"`
 	Scrollback  *int    `toml:"scrollback"`
+	// ScrollbackBytes is a TOML integer (bytes) or a size string ("4MiB").
+	ScrollbackBytes any `toml:"scrollback_bytes"`
 	// RemovedOTelEndpoint is decoded only so its presence can be REJECTED
 	// with a migration error (SPEC-0015 REQ-13), like rawHarness's removed
 	// keys: unknown keys fail anyway, but this one deserves the way forward.
@@ -279,7 +281,7 @@ func Parse(data []byte, filename string) (*core.Config, error) {
 
 	// Decode the [harness.*], [profile.*] and trigger-source namespaces
 	// lazily.
-	var harnessNS, profileNS, channelNS, webhookNS map[string]toml.Primitive
+	var harnessNS, profileNS, channelNS, webhookNS, skillRepoNS map[string]toml.Primitive
 	if p, ok := top["harness"]; ok {
 		if err := md.PrimitiveDecode(p, &harnessNS); err != nil {
 			return nil, newError(filename, lineOf(headers, "harness"), "[harness]: %v", err)
@@ -300,6 +302,11 @@ func Parse(data []byte, filename string) (*core.Config, error) {
 			return nil, newError(filename, lineOf(headers, "webhook"), "[webhook]: %v", err)
 		}
 	}
+	if p, ok := top["skill_repo"]; ok {
+		if err := md.PrimitiveDecode(p, &skillRepoNS); err != nil {
+			return nil, newError(filename, lineOf(headers, "skill_repo"), "[skill_repo]: %v", err)
+		}
+	}
 
 	cfg := &core.Config{
 		Harnesses:  map[string]core.Harness{},
@@ -314,7 +321,7 @@ func Parse(data []byte, filename string) (*core.Config, error) {
 		line    int
 	}
 	var pending []pendingProfile
-	var serverSeen, daemonSeen, telemetrySeen, mergeTrainSeen, notifySeen bool
+	var serverSeen, daemonSeen, telemetrySeen, mergeTrainSeen, notifySeen, skillsSeen bool
 	var harnessDPath string
 
 	// Sources and the harnesses that bind them form one config view across
@@ -427,6 +434,33 @@ func Parse(data []byte, filename string) (*core.Config, error) {
 				return nil, err
 			}
 			cfg.Notify = nc
+
+		case len(h.parts) == 2 && h.parts[0] == "skill_repo":
+			// A declared skill repo (SPEC-0007 REQ "Skill Repos").
+			name := h.parts[1]
+			var rr rawSkillRepo
+			if err := md.PrimitiveDecode(skillRepoNS[name], &rr); err != nil {
+				return nil, newError(filename, h.line, "[skill_repo.%s]: %v", name, err)
+			}
+			if err := addSkillRepo(cfg, filename, name, h.line, rr); err != nil {
+				return nil, err
+			}
+
+		case len(h.parts) == 1 && h.parts[0] == "skills":
+			// The global skill serving table (SPEC-0007 REQ "Skill Repos").
+			if skillsSeen {
+				return nil, newError(filename, h.line, "duplicate [skills] table")
+			}
+			skillsSeen = true
+			var rs rawSkills
+			if err := md.PrimitiveDecode(top["skills"], &rs); err != nil {
+				return nil, newError(filename, h.line, "[skills]: %v", err)
+			}
+			sc, err := buildSkills(filename, h.line, rs)
+			if err != nil {
+				return nil, err
+			}
+			cfg.Skills = sc
 
 		case len(h.parts) == 1 && h.parts[0] == "server":
 			// The optional remote-access front door (ADR-0004/0008).

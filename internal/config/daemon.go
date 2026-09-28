@@ -69,5 +69,5 @@ func checkDaemonSettings(filename string, data []byte, rd rawDaemon) error {
 			return fail("pprof_addr", "%v", err)
 		}
 	}
-	return nil
+	return checkScrollbackBytes(filename, data, rd.ScrollbackBytes)
 }

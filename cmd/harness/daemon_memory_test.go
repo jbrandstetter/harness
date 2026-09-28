@@ -35,23 +35,16 @@ import (
 	"github.com/stump-wtf/harness/internal/settings"
 )
 
-// resolveDaemonFor runs the daemon command's own settings resolution over a
-// harness.toml holding cfgBody and the given flags.
-func resolveDaemonFor(t *testing.T, cfgBody string, args ...string) (daemonOpts, error) {
+// resolveDaemonWithConfig is resolveDaemonFor (scrollback_settings_test.go)
+// over a harness.toml holding cfgBody.
+func resolveDaemonWithConfig(t *testing.T, cfgBody string, args ...string) (daemonOpts, error) {
 	t.Helper()
 	cfgPath := filepath.Join(t.TempDir(), "harness.toml")
 	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HARNESS_CONFIG", cfgPath)
-	g := &globalOpts{}
-	cmd := newDaemonCmd(g)
-	if err := cmd.ParseFlags(args); err != nil {
-		t.Fatal(err)
-	}
-	d := daemonOpts{}
-	err := resolveDaemonSettings(cmd, g, &d)
-	return d, err
+	return resolveDaemonFor(t, args...)
 }
 
 // keepRuntimeMemoryLimit restores the test process's limit afterwards.
@@ -84,7 +77,7 @@ func TestDaemonMemoryLimitResolvesAndApplies(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HARNESS_MEMORY_LIMIT", tc.env)
-			d, err := resolveDaemonFor(t, file, tc.args...)
+			d, err := resolveDaemonWithConfig(t, file, tc.args...)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -113,7 +106,7 @@ func TestDaemonMemoryLimitResolvesAndApplies(t *testing.T) {
 func TestDaemonMemoryLimitUnsetLeavesGOMEMLIMIT(t *testing.T) {
 	keepRuntimeMemoryLimit(t)
 	t.Setenv("HARNESS_MEMORY_LIMIT", "")
-	d, err := resolveDaemonFor(t, "")
+	d, err := resolveDaemonWithConfig(t, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +184,7 @@ func TestApplyDaemonMemoryLimitLogs(t *testing.T) {
 // A bad size fails the start, naming its source (SPEC-0010).
 func TestDaemonMemoryLimitInvalidIsFatal(t *testing.T) {
 	t.Setenv("HARNESS_MEMORY_LIMIT", "lots")
-	_, err := resolveDaemonFor(t, "")
+	_, err := resolveDaemonWithConfig(t, "")
 	if err == nil || !strings.Contains(err.Error(), "HARNESS_MEMORY_LIMIT") || !strings.Contains(err.Error(), "lots") {
 		t.Fatalf("HARNESS_MEMORY_LIMIT=lots: err = %v, want one naming the variable and value", err)
 	}
@@ -212,7 +205,7 @@ func TestDaemonPprofAddrRefusedOffLoopback(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HARNESS_PPROF_ADDR", tc.env)
-			_, err := resolveDaemonFor(t, tc.cfg, tc.args...)
+			_, err := resolveDaemonWithConfig(t, tc.cfg, tc.args...)
 			if err == nil {
 				t.Fatal("resolved without error; want a refusal")
 			}
@@ -223,7 +216,7 @@ func TestDaemonPprofAddrRefusedOffLoopback(t *testing.T) {
 	}
 
 	t.Setenv("HARNESS_PPROF_ADDR", "127.0.0.1:6060")
-	d, err := resolveDaemonFor(t, "")
+	d, err := resolveDaemonWithConfig(t, "")
 	if err != nil {
 		t.Fatal(err)
 	}

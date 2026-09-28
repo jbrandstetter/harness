@@ -41,6 +41,15 @@ import (
 	"github.com/stump-wtf/harness/internal/trigger/source"
 )
 
+// daemonAttachRegistry is the attach data plane the daemon actually runs with:
+// each harness's scrollback ring bounded by the resolved --scrollback lines and
+// --scrollback-bytes budget (ADR-0007). A function, like daemonManagerOptions
+// below, so a test can check the limits the daemon builds rather than ones it
+// constructs itself.
+func daemonAttachRegistry(o daemonOpts) *attach.Registry {
+	return attach.NewRegistryLimits(attach.RingLimits{Lines: o.ringLines, Bytes: int(o.ringBytes)})
+}
+
 // daemonManagerOptions is the ManagerOptions the daemon actually runs with.
 //
 // It is a function rather than a literal at the call site so a test can assert
@@ -285,7 +294,7 @@ func runDaemon(o daemonOpts) {
 	// into its Mux via the ExtraOut hook, alongside the durable log (ADR-0003/
 	// ADR-0007). The Registry's controller (the Manager) applies the
 	// smallest-attached-wins resize and delivers read-write keystrokes.
-	reg := attach.NewRegistry(o.ringLines)
+	reg := daemonAttachRegistry(o)
 	mgr := supervisor.NewManager(cfg, daemonManagerOptions(reg))
 	reg.SetController(mgr)
 
@@ -374,6 +383,15 @@ func runDaemon(o daemonOpts) {
 	// REQ "Trigger Visibility"). Here, not at startDaemonSources: the
 	// server that broadcasts them does not exist until now.
 	wireTriggerVisibility(srv, sources, webhooks)
+
+	// SPEC-0007: index the serving clones of declared skill repos. Created or
+	// fast-forwarded only by `harness skills sync`; the daemon never writes a
+	// clone. Also refreshed on every config reload (skills.go).
+	go func() {
+		if err := srv.SyncSkillsManager(); err != nil {
+			log.Warn("skill serving index unavailable; searches stay empty until it is rebuilt", "err", err)
+		}
+	}()
 
 	log.Info("serving",
 		"socket", srv.SocketPath(),

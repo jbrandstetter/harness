@@ -718,7 +718,8 @@ exporting to a collector is a different audience, gated by `export_telemetry`
 ```toml
 [daemon]
 watch_config = true                      # auto-reload on config file changes (default true)
-scrollback   = 10000                     # per-harness scrollback ring depth, in lines
+scrollback_bytes = "1MiB"                # per-harness scrollback ring storage (64KiB–1GiB)
+scrollback   = 10000                     # and at most this many lines of it
 log_level    = "info"                    # debug, info, warn, error
 log_file     = "/var/log/harness.log"    # absent = stderr
 socket       = "/run/harness/harness.sock"  # absent = $XDG_RUNTIME_DIR/harness.sock
@@ -732,15 +733,28 @@ either one beats the file. Setting them here is how you tune a daemon you do not
 launch yourself — a Homebrew `brew services` daemon, a launchd agent, a
 container entrypoint — without editing the service definition.
 
-- `scrollback` must be at least 1. Each running harness keeps this many lines of
-  output in memory, so lowering it is the lever for daemon memory use.
+- `scrollback_bytes` is the memory each running harness's scrollback ring may
+  use: its recent raw output, which an attach replays after the screen
+  snapshot. It is the lever for daemon memory use. Write a size (`"512KiB"`,
+  `"4MiB"`, `"1GiB"`; every unit is 1024-based) or a whole number of bytes. It
+  must be between 64 KiB and 1 GiB. The default, 1 MiB, is about 13,000 lines
+  of ordinary terminal output. Raising it makes every attach, and every
+  dashboard preview, replay more before going live.
+- `scrollback` must be at least 1. It caps the lines the ring keeps, whatever
+  their size; the byte budget usually binds first.
+- A line longer than the per-line cap (64 KiB, or a quarter of
+  `scrollback_bytes` if that is smaller) keeps only its head, followed by
+  `…[harness: truncated N bytes]`, where N counts what was cut. Only the replay
+  is truncated: live output and `harness logs` are not.
+- In-TUI scroll and search read the durable log, not this ring, so neither
+  setting changes how far back they reach.
 - `socket` and `log_file` must be absolute paths; `~` is not expanded. The CLI
   reads `socket` from this file too, so `harness ls` finds a daemon on a
   non-default socket without a `--socket` flag.
-- `scrollback`, `log_level`, `log_file`, `socket`, `memory_limit` and
-  `pprof_addr` are read when the daemon starts. Changing them needs a daemon
-  restart, not a reload. Until you restart, a changed `socket` points the CLI at
-  a socket the running daemon is not on.
+- `scrollback_bytes`, `scrollback`, `log_level`, `log_file`, `socket`,
+  `memory_limit` and `pprof_addr` are read when the daemon starts. Changing them
+  needs a daemon restart, not a reload. Until you restart, a changed `socket`
+  points the CLI at a socket the running daemon is not on.
 - `harness doctor` shows which source supplied each value.
 
 ### Memory limit and profiler
@@ -753,11 +767,11 @@ for the agents it runs.
 runs harder so the daemon stays under it, instead of growing to about twice its
 live heap, which is the default (`GOGC=100`).
 
-- Write a size: `"2GiB"`, `"512MiB"`, `"1536MiB"`. The units are 1024-based,
-  and `K`/`M`/`G`/`T` and `KB`/`MB`/`GB`/`TB` mean the same as
-  `KiB`/`MiB`/`GiB`/`TiB`, as they do in systemd's `MemoryMax=`. A bare number,
-  or a TOML integer, is **bytes**, so `memory_limit = 2048` is 2 KiB and the
-  daemon warns. `"0"` or `0` means no limit.
+- Write a size, such as `"2GiB"` or `"1536MiB"` (see
+  [sizes](#environment-variables); the units are 1024-based, as in systemd's
+  `MemoryMax=`). A bare number, or a TOML integer, is **bytes**, so
+  `memory_limit = 2048` is 2 KiB and the daemon warns. `"0"` or `0` means no
+  limit.
 - It cannot free memory the daemon is still holding. A leak still grows, only
   with less headroom on top of it. Set below the live heap, it keeps the GC
   running almost continuously. Keep the hard cap in the init system (systemd
@@ -1231,6 +1245,7 @@ without baking in a config file.
 | `HARNESS_LOG_LEVEL` | `--log-level` | `[daemon] log_level` | `debug`/`info`/`warn`/`error` | `info` |
 | `HARNESS_LOG_FILE` | `--log-file` | `[daemon] log_file` | path | stderr |
 | `HARNESS_SCROLLBACK` | `--scrollback` | `[daemon] scrollback` | int | 10000 |
+| `HARNESS_SCROLLBACK_BYTES` | `--scrollback-bytes` | `[daemon] scrollback_bytes` | size (`4MiB`, bytes) | `1MiB` |
 | `HARNESS_SSH` | `--ssh` | `[server] enabled` | bool | `false` |
 | `HARNESS_SSH_LISTEN` | `--ssh-listen` | `[server] listen` | `host:port` | unset |
 | `HARNESS_WEBHOOK_LISTEN` | `--webhook-listen` | `[server] webhook_listen` | `host:port` | unset (no webhook listener) |
@@ -1246,6 +1261,10 @@ is an output choice for one invocation: a file default would change what every
 script parsing Harness's output receives.
 
 Booleans accept `1`, `0`, `true`, `false`, `yes`, `no`, `on`, `off`.
+
+Sizes accept a whole number of bytes or a number with a unit: `B`, `KiB`,
+`MiB`, `GiB`, `TiB`, with `K`/`KB`, `M`/`MB`, `G`/`GB`, `T`/`TB` as the same
+1024-based units. Case does not matter.
 
 ### Precedence
 
@@ -1269,6 +1288,9 @@ A bad value is a hard failure, never a silent fallback:
 ```
 HARNESS_SCROLLBACK=lots harness daemon run
 # HARNESS_SCROLLBACK: invalid value "lots": expected an integer
+
+HARNESS_SCROLLBACK_BYTES=16GiB harness daemon run
+# HARNESS_SCROLLBACK_BYTES: must be between 64KiB and 1GiB, got 16GiB
 ```
 
 ### Which source won?
