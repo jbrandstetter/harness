@@ -9,9 +9,11 @@ related: [ADR-0003, ADR-0008, ADR-0012, ADR-0013, ADR-0017, ADR-0020, ADR-0021, 
 
 # ADR-0033: The agent trace is the run record; scrollback is a terminal view
 
-> **Not yet implemented.** Design stage. The records live in the store of
-> ADR-0037. Normalizing a one-shot's output depends on agent-trace's stream
-> normalizer and its `agent-trace` CLI, neither of which exists yet.
+> **Partially implemented.** "Structured one-shots run on pipes" has shipped;
+> see its implementation notes below. Everything else is design stage. The
+> records live in the store of ADR-0037, which is not built. Normalizing a
+> one-shot's output depends on agent-trace's stream normalizer and its
+> `agent-trace` CLI, neither of which exists yet.
 
 ## Context and Problem Statement
 
@@ -313,6 +315,72 @@ a pipe to the normalizer and stderr on a pipe to the per-run log. It gets no
 PTY and no emulator. The raw stream, redacted line by line, is kept as
 `jobs/<name>/<id>.stream.jsonl` beside the per-run log and pruned with it by
 `keep_runs`. Every other harness keeps its PTY.
+
+#### Implementation notes (2026-09-28)
+
+Implemented ahead of the rest of this ADR, because the PTY path cost memory the
+daemon could not afford: a three-stage pipeline of triggered claude-code
+one-shots drove it to 12 GB, every line rendered by two x/vt emulators with
+10,000-row scrollbacks nobody reads
+(https://github.com/stump-wtf/harness/issues/18). SPEC-0017 REQ-18 and SPEC-0006
+REQ "Structured Prompt Stream" hold the requirements. What was built, and where
+it departs from the text above:
+
+* **The declaration.** `internal/adapter` has an optional `StructuredStreamer`
+  extension; claude-code's `PromptStream()` is `stream-json`, and a test pins
+  it to the `--output-format` its argv passes. A harness runs on pipes when it
+  has a prompt (`prompt` or `prompt_file`), is not a `command` harness, and its
+  adapter declares a stream (`supervisor.RunsOnPipes`). That includes a prompt
+  harness with no triggers, such as a scratchpad, not only a triggered one.
+* **No normalizer yet.** agent-trace's stream normalizer does not exist, so
+  nothing reads stdout but the capture below. The trace, usage and cost of a
+  pipe run still come from transcript tailing, as before. Wiring the
+  normalizer onto the stdout pipe is the next step and changes nothing here.
+* **The process.** stdout and stderr are pipes made with `os.Pipe` and handed
+  to the child as its own descriptors, and stdin is `/dev/null`. It is a
+  session leader (`Setsid`) with no controlling terminal, so stop, kill,
+  timeout, replace and `SignalGroup` reach its group as they do a PTY child's.
+  When the leader exits on its own, what is left of its group gets `SIGHUP`,
+  the hangup a terminal would have delivered.
+* **Redaction point.** Each stdout line is masked once, as it is read, before
+  it reaches the stream file or attach. Masking is JSON-aware
+  (`redact.Lines.JSONLine`): each string literal is decoded, masked a line at a
+  time and re-encoded only if it changed, and a string value under a
+  secret-named key is masked whole. Plain-text masking breaks a JSON line: the
+  rules end a value at a quote, and inside a JSON string that quote is
+  escaped. A rule prefilter skips text no rule can match, which makes a 4 MiB
+  tool result take 44 ms to mask instead of 3.5 s. Both stay behind
+  `internal/redact`'s API, so the shared betterleaks redactor below replaces
+  them without touching callers.
+* **Line cap.** Lines are read with a 64 KiB buffer that grows to hold one line
+  at a time, up to 16 MiB. A longer line is read to its end, dropped, and
+  replaced by `{"harness":"line_dropped","stream":"stdout","bytes":N,"limit":M}`,
+  which keeps the file JSON line by line and cannot pass for an agent event.
+  The final line is kept even without a newline, and gets one in the file.
+  `[trace] max_stream_mb` is not built: `keep_runs` bounds the number of files,
+  not the size of one.
+* **stderr** is stripped of escape sequences, masked, and written to the
+  per-run log and the harness's durable log. It never reaches the stream file.
+* **Runs with no per-run log.** A prompt harness with no triggers has no
+  per-run log, and a run's log can fail to open. Such a run writes its masked
+  stdout lines to the durable log instead.
+* **Attach and peek.** Both streams reach the attach sessions as
+  CRLF-terminated lines, the bytes a terminal would have shown, so
+  claude-code's stream-json peek formatter and `harness attach` read them
+  unchanged. In this first cut the lines still go through the per-harness
+  attach mux and its emulator. An emulator-less line mode for pipe runs
+  follows separately.
+* **Exit ordering.** The exit path waits for the readers while they make
+  progress: a reader masking a multi-megabyte line is slow, not stuck. It gives
+  up after a two-second bound with no read returning and every reader waiting,
+  and after one minute in all. The stream file is closed before the run's
+  record is closed, so the stream is whole when the record says the run ended.
+* **Reading it.** `harness logs NAME --run N --raw` prints the stream's tail,
+  each line cut at 64 KiB and the whole at 8 MiB, and, once the run has ended,
+  its run log after it, each under a `==> path <==` header. While the run is
+  live its text is the stream alone, so each poll of `harness trigger --wait`
+  extends the last. `harness logs NAME --raw` carries a notice that each run's
+  stdout is in its stream file.
 
 ### The run view in the TUI
 
