@@ -30,6 +30,10 @@ import "regexp"
 // Mask is what a redacted value is replaced with.
 const Mask = "[REDACTED]"
 
+// secretWords are the words a credential's name ends in, shared by the
+// assignment rule below and by JSONLine's secret-named keys.
+const secretWords = `token|secret|password|passwd|passphrase|api[_-]?key|access[_-]?key|private[_-]?key`
+
 // rules run in order. Each keeps the label that identified the secret and swaps
 // only the value. No value rule starts on "[" or "$", so a Mask already in
 // place, or a reference to a secret, is never re-matched — String is
@@ -57,7 +61,7 @@ var rules = []struct {
 	// The name must END in the secret word (max_tokens= is not a secret) and
 	// not sit inside ${…} (a default, not a value); a value starting with "="
 	// is Go's := and one starting with "-" is the next flag.
-	{regexp.MustCompile(`(?i)(^|[^\w.${-])([a-z0-9_.-]*(?:token|secret|password|passwd|passphrase|api[_-]?key|access[_-]?key|private[_-]?key)"?\s*[=:]\s*)("[^"$][^"]*"|'[^'$][^']*'|[^\s"',;&=\[$-][^\s"',;&]*)`), "${1}${2}" + Mask},
+	{regexp.MustCompile(`(?i)(^|[^\w.${-])([a-z0-9_.-]*(?:` + secretWords + `)"?\s*[=:]\s*)("[^"$][^"]*"|'[^'$][^']*'|[^\s"',;&=\[$-][^\s"',;&]*)`), "${1}${2}" + Mask},
 	// A secret-named flag given its value as the next word.
 	{regexp.MustCompile(`(?i)(\s--?(?:password|passwd|token|api-key|secret|client-secret)\s+)("[^"$][^"]*"|'[^'$][^']*'|[^\s"'\[$-]\S*)`), "${1}" + Mask},
 	// Basic auth handed to curl or wget through their -u and --user flags.

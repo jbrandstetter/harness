@@ -147,6 +147,12 @@ Two launchd specifics worth knowing:
   crash-looping, is stopped by the loop guard, or has its session rotated —
   and again when it recovers. Without one, all of the above reaches only the
   logs.
+- **Restarts don't accumulate memory**: each spawn gets its own terminal
+  emulator, which cleans up the output for the durable log. The daemon
+  releases that emulator when the spawn's output ends. A harness that restarts
+  all day holds no more memory than one that never restarts. Before this, every
+  spawn left about 100 MiB behind
+  ([stump-wtf/harness#18](https://github.com/stump-wtf/harness/issues/18)).
 - **State persistence (ADR-0007)**: the daemon persists intent to `state.json`,
   restores it on boot, and re-attaches to intended running set regardless of how
   it restarted.
@@ -159,6 +165,12 @@ Two launchd specifics worth knowing:
   `--scrollback N`). An attach replays the ring after the screen snapshot; a
   line over 64 KiB replays as its head and a `…[harness: truncated N bytes]`
   marker. See [Daemon settings](./configuration#daemon-settings-daemon).
+- **Stream-json one-shots have no PTY (ADR-0033)**: a `claude-code` one-shot
+  runs on pipes. Its stdout is kept per run as
+  `jobs/<name>/<run_id>.stream.jsonl`, its stderr goes to the run log and the
+  durable log, and it has no controlling terminal. Stop, timeout and replace
+  still reach its whole process group. See
+  [Configuration → Stream-json one-shots](./configuration#stream-json-one-shots-run-without-a-terminal).
 
 ## Flapping a.k.a. crash-loop protection
 

@@ -61,7 +61,7 @@ var helpText = struct {
 		{"use-profile NAME", "activate a profile"},
 		{"reload", "re-read the daemon config"},
 		{"doctor [--notify-test]", "run health checks (config, daemon, harnesses, notify); --notify-test fires a test notification"},
-		{"attach NAME [--ro]", "attach to a harness's terminal"},
+		{"attach NAME [--ro]", "attach to a harness's terminal (a stream-json one-shot: its output lines)"},
 	},
 	projectHead: "project commands (repo-root harness.toml, discovered by walking up from cwd):",
 	projectCmds: [][2]string{

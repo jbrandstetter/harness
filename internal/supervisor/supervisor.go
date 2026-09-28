@@ -223,7 +223,11 @@ type Supervisor struct {
 	restartTimer *time.Timer
 	log          *rotatingLog
 	hist         *ptyHistory   // sanitizer between the PTY stream and log (#279)
+	stream       *streamSink   // a pipe run's .stream.jsonl; nil for a PTY spawn (pipes.go)
 	readerDone   chan struct{} // closed by readOutput when the final flush has landed
+	// readerProgress is a pipe run's reader progress, which awaitReader's
+	// drain watches; nil for a PTY spawn (pipes.go).
+	readerProgress *pipeProgress
 	// readerWait overrides closeLog's reader-drain bound for tests; zero derives
 	// the bound from Policy.StopGrace (#368). Never set outside tests.
 	readerWait    time.Duration
@@ -563,7 +567,7 @@ func (s *Supervisor) handleCommand(c command) (shutdown bool) {
 		// resize the authoritative PTY). Best-effort: a resize with no live
 		// process is a no-op.
 		if s.hasProcess() {
-			_ = s.proc.pty.Resize(c.cols, c.rows)
+			s.proc.resize(c.cols, c.rows)
 		}
 	case cmdWriteInput:
 		// Governing: SPEC-0002 REQ "Attach Session" (read-write attach delivers
@@ -571,7 +575,7 @@ func (s *Supervisor) handleCommand(c command) (shutdown bool) {
 		// layer so those bytes never reach here). Best-effort: input with no
 		// live process is dropped.
 		if s.hasProcess() {
-			_, _ = s.proc.pty.Write(c.input)
+			s.proc.writeInput(c.input)
 		}
 	case cmdHold:
 		s.hold(c.enable, c.mode, c.closeAt)
@@ -717,26 +721,33 @@ func (s *Supervisor) beginStart() {
 	// scrolled-off screen lines only, never raw repaint bytes (#279; amended
 	// ADR-0007). The raw stream still reaches the attach mux (extraOut).
 	s.ensureLog()
-	var sink io.Writer
 	readerDone := make(chan struct{})
 	s.readerDone = readerDone
-	// A scheduled run's history also goes to its own log (runs.go).
-	if out := s.historyOut(); out != nil {
-		s.hist = newPtyHistory(out, cols, rows)
-		sink = s.hist
-	}
-	if s.extraOut != nil {
-		if sink == nil {
-			sink = s.extraOut
-		} else {
-			sink = io.MultiWriter(sink, s.extraOut)
+	s.readerProgress = proc.progress
+	if proc.pty == nil {
+		// A structured one-shot: its stdout and stderr are pipes, read a
+		// line at a time with no emulator (pipes.go; ADR-0033).
+		s.readPipes(proc, readerDone)
+	} else {
+		var sink io.Writer
+		// A scheduled run's history also goes to its own log (runs.go).
+		if out := s.historyOut(); out != nil {
+			s.hist = newPtyHistory(out, cols, rows)
+			sink = s.hist
 		}
+		if s.extraOut != nil {
+			if sink == nil {
+				sink = s.extraOut
+			} else {
+				sink = io.MultiWriter(sink, s.extraOut)
+			}
+		}
+		var src io.Reader = proc.pty
+		if lagPTYReader != nil {
+			src = lagPTYReader(src)
+		}
+		go s.readOutput(src, sink, s.hist, readerDone)
 	}
-	var src io.Reader = proc.pty
-	if lagPTYReader != nil {
-		src = lagPTYReader(src)
-	}
-	go s.readOutput(src, sink, s.hist, readerDone)
 	go s.wait(proc, gen, readerDone)
 
 	s.transition(core.StateRunning)
@@ -763,11 +774,17 @@ func (s *Supervisor) spawnSize() (int, int) {
 // the last holder of the terminal exiting, or the PTY closing — then flushes
 // the final screenful into the log. A short run's output never scrolls, so
 // EOF is the only moment it can be landed (#279).
+//
+// The stream is then over, so nothing writes to this spawn's sanitizer again:
+// release it here, per spawn, not only in closeLog, which runs once per
+// Supervisor. Every restart otherwise kept its emulator reachable for good
+// (SPEC-0002 REQ "Emulator Memory"; https://github.com/stump-wtf/harness/issues/18).
 func (s *Supervisor) readOutput(src io.Reader, sink io.Writer, hist *ptyHistory, done chan struct{}) {
 	defer close(done)
 	_, _ = io.Copy(sink, src)
 	if hist != nil {
 		hist.Flush()
+		hist.release()
 	}
 }
 
@@ -784,7 +801,8 @@ func (s *Supervisor) wait(proc *process, gen uint64, readerDone <-chan struct{})
 	if proc.cmd.ProcessState != nil {
 		code = proc.cmd.ProcessState.ExitCode()
 	}
-	drainReader(readerDone)
+	proc.hangup() // a pipe run's stand-in for the terminal's hangup (pipes.go)
+	drainOutput(proc.progress, readerDone)
 	select {
 	case s.exitCh <- exitResult{gen: gen, code: code}:
 	case <-s.done:
@@ -1108,12 +1126,12 @@ func (s *Supervisor) gracefulStopKeepEnabled() {
 
 func (s *Supervisor) hasProcess() bool { return s.proc != nil }
 
-// reapProcess closes the PTY and drops the process. Every exit reaches here
-// through wait, which has already given the reader its drain; the close
-// unblocks one that the bound gave up on.
+// reapProcess closes the PTY (or a pipe run's pipes) and drops the process.
+// Every exit reaches here through wait, which has already given the reader its
+// drain; the close unblocks one that the bound gave up on.
 func (s *Supervisor) reapProcess() {
 	if s.proc != nil {
-		_ = s.proc.pty.Close()
+		s.proc.closeIO()
 		s.proc = nil
 	}
 }
@@ -1290,7 +1308,8 @@ func (s *Supervisor) closeLog() {
 		s.readerDone = nil
 	}
 	if s.hist != nil {
-		s.hist.Flush() // land the final screenful before the file goes away
+		s.hist.Flush()   // land the final screenful before the file goes away
+		s.hist.release() // then end its reply pump; see ptyHistory.release
 		s.hist = nil
 	}
 	if s.log != nil {

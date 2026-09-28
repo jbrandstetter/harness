@@ -46,7 +46,9 @@ shell being open, we need to decide *where the long-lived state lives*.
 - **Supervision** — spawns each harness under a PTY, runs the restart loop,
   tracks exit codes, applies `restart_delay` (ADR-0005).
 - **PTYs & terminal emulation** — one `x/xpty` master + one `x/vt` emulator per
-  running harness; the emulator maintains screen + scrollback (ADR-0003, 0007).
+  running harness; the emulator maintains the screen, and a per-harness byte
+  ring the scrollback (ADR-0003, 0007). Emulator scrollback is capped: an
+  emulator is not a history store (ADR-0003 "Memory cost of an x/vt emulator").
 - **The control plane** — a Unix-domain socket serving list/start/stop/status/
   attach RPCs (ADR-0004, spec-daemon-protocol).
 - **The data plane** — bidirectional attach streams (bytes in from a client's

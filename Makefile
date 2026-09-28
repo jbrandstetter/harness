@@ -81,8 +81,10 @@ race:
 # internal/tmpl FuzzParse: SPEC-0017 REQ-6, issue #501.
 # internal/attach FuzzRing: the byte-bounded scrollback ring against a flat
 # model (ADR-0007), https://github.com/stump-wtf/harness/issues/18.
+# internal/redact FuzzMayMatchCoversString: the rule prefilter never passes a
+# line a rule would mask (ADR-0033, ADR-0008).
 FUZZTIME    ?= 30s
-FUZZ_TARGETS := ./internal/tmpl:FuzzParse ./internal/attach:FuzzRing
+FUZZ_TARGETS := ./internal/tmpl:FuzzParse ./internal/attach:FuzzRing ./internal/redact:FuzzMayMatchCoversString
 
 fuzz:
 	@set -e; for t in $(FUZZ_TARGETS); do \

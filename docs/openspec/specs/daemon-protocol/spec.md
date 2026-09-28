@@ -1,7 +1,7 @@
 ---
 status: draft
 date: 2026-07-18
-implements: [ADR-0002, ADR-0004, ADR-0007, ADR-0008]
+implements: [ADR-0002, ADR-0003, ADR-0004, ADR-0007, ADR-0008]
 requires: [SPEC-0003]
 ---
 
@@ -240,6 +240,35 @@ heartbeats SHALL detect dead clients so their sessions get reaped.
   liveness timeout, tears down its attach sessions, and recomputes
   smallest-attached-wins over the survivors so the guest PTY is no longer
   clamped by it — a client that has never answered a `PING` is left alone
+
+### Requirement: Emulator Memory
+
+Every `x/vt` emulator the daemon creates — the attach mux's per harness and
+the log sanitizer's per spawn — MUST keep no scrollback the daemon does not
+read, and MUST have its reply pump released when its owner is done with it:
+the sanitizer's when that spawn's output stream ends, the mux's when its
+harness is removed. Release SHALL close the emulator's input pipe rather than
+call `Emulator.Close`, whose unsynchronised flag races the pump's parked
+`Read` (ADR-0003). After release a query reply SHALL fail rather than block the
+PTY reader, and a session still attached to a removed mux SHALL keep working:
+snapshots still render, and any output still written reaches it. The
+scrollback an attach replays SHALL come from the per-harness ring (ADR-0007),
+never from emulator scrollback.
+
+#### Scenario: A restarting harness does not accumulate memory
+
+- **WHEN** a resident harness prints a long stream, exits and is respawned
+  repeatedly
+- **THEN** once each spawn's output has ended, no reply pump from it remains
+  and none of its emulator stays reachable; after the harness shuts down the
+  daemon is back to its baseline goroutines and heap
+
+#### Scenario: A removed harness releases its mux
+
+- **WHEN** a project harness is deregistered while a client is still attached
+- **THEN** its mux's reply pump exits, the attached client keeps its session
+  (output still written reaches it, a snapshot still renders) until it
+  detaches, and a query in that output does not block the PTY reader
 
 ### Requirement: Transport Bindings
 

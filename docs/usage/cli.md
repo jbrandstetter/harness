@@ -238,6 +238,15 @@ harness logs <name> --run 3       # one run of a scheduled harness (see harness 
 When a log rotates or truncates, `--follow` reprints the current tail so you
 never silently lose context.
 
+A [stream-json one-shot](./configuration#stream-json-one-shots-run-without-a-terminal)
+(a `claude-code` prompt harness) has no terminal, and its stdout is not in its
+durable log. `harness logs <name> --raw` shows that log's lifecycle and stderr
+lines, with a note saying where the output went. `harness logs <name> --run N
+--raw` prints run N's `.stream.jsonl` tail, each line cut at 64 KiB, and once
+the run has ended, its run log after it, each under a `==> path <==` header.
+`harness trigger <name> --wait` streams the same text as the run goes. The file
+itself is whole: read it with `jq` for anything longer.
+
 ## Profiles
 
 ```sh
@@ -270,6 +279,11 @@ harness attach <name> --ro    # read-only: attach but ignore keystrokes
 
 `attach` reuses the same full-window terminal the dashboard uses, with the
 1-line status bar and tmux-style detach chords. See [Cockpit TUI](./tui).
+
+A stream-json one-shot has no terminal to attach to. Attaching shows its
+output as lines: stdout's JSON lines, masked, with its stderr lines between
+them as they arrive. Keystrokes go nowhere, since its stdin is `/dev/null`, and
+resizing the window changes nothing for it.
 
 ## Scratchpads (`harness run`)
 

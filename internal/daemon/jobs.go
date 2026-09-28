@@ -218,8 +218,19 @@ func (c *conn) opLogsRun(req protocol.ControlReq, snap supervisor.Snapshot, line
 			"harness %q has no run %d in its history (never run, or past the ledger's retention)", req.Name, req.Run)
 		return
 	}
-	text, hasLog := readRunLogTail(runLogOf(c.srv.mgr, req.Name, rec), lines)
+	logPath := runLogOf(c.srv.mgr, req.Name, rec)
+	text, hasLog := readRunLogTail(logPath, lines)
 	var notices []string
+	// A pipe run's output is its stream file; its run log follows once the
+	// run has ended (streamlog.go; ADR-0033).
+	streamPath := supervisor.StreamPathFor(logPath)
+	if stream, ok := readStreamTail(streamPath, lines); ok {
+		ended := rec.Outcome != supervisor.OutcomeRunning
+		text, hasLog = pipeRunText(streamPath, stream, logPath, text, ended), true
+		if !ended {
+			notices = append(notices, fmt.Sprintf("run %d runs on pipes: this is its stdout stream; its stderr and lifecycle lines are in %s, shown here once it ends", rec.RunID, logPath))
+		}
+	}
 	if !hasLog {
 		notices = append(notices, noRunLogNotice(rec))
 	}
