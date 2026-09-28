@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-09-27
 decision-makers: [joestump]
 extends: [ADR-0006, ADR-0009, ADR-0030]
@@ -8,6 +8,10 @@ related: [ADR-0008, ADR-0011, ADR-0023, ADR-0024, ADR-0029, ADR-0038, ADR-0039]
 ---
 
 # ADR-0040: Agent package stables — installable, trust-gated harness definitions shared as git repositories
+
+> **Not yet implemented.** Design stage. No `harness agent` command, `[stable.*]`
+> table or `source` key exists in the tree. Tracked by the SPEC-0026 epic in the
+> Harness issue tracker.
 
 ## Context and Problem Statement
 
@@ -165,7 +169,7 @@ mechanism is still the Homebrew tap model, so the rest of this record says
 # [skill_repo.*].
 
 [stable.stump-wtf]
-remote = "https://gitea.stump.rocks/stump.wtf/harness-stable.git"
+remote = "https://forge.example/your-org/harness-stable.git"
 public = true            # declared visibility, as ADR-0030; unset is treated as public
 ```
 
