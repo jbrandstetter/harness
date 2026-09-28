@@ -337,8 +337,10 @@ harness daemon status         # one-shot: daemon info
 harness daemon --detach       # fork into the background (dev convenience)
 ```
 
-Daemon flags: `--config`, `--socket`, `--scrollback N` (per-harness ring depth),
-`--ssh`, `--ssh-listen`, `--webhook-listen`, `--log-level`, `--log-file`, `--detach`.
+Daemon flags: `--config`, `--socket`, `--scrollback-bytes SIZE` (per-harness
+scrollback ring storage, default `1MiB`), `--scrollback N` (and at most N lines
+of it), `--ssh`, `--ssh-listen`, `--webhook-listen`, `--log-level`, `--log-file`,
+`--detach`.
 All but `--config` and `--detach` can also be set in `harness.toml`
 (`[daemon]` / `[server]`) or a `HARNESS_*` variable; see
 [Configuration → Environment variables](./configuration#environment-variables).

@@ -132,6 +132,10 @@ mode, enter scrollback with `^b [` or `PgUp`:
   what the process produced, not a replay of its repaint traffic.
 - `harness scrollback` isn't a separate surface: scroll back in-place, then
   `q` returns you to the live stream.
+- The history comes from the harness's durable log, so it reaches back the same
+  distance whatever `[daemon] scrollback_bytes` is set to. That setting sizes
+  what an attach (and the dashboard preview) replays on open, not what you can
+  scroll to.
 
 ## Read-only attach
 

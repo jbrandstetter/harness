@@ -11,7 +11,7 @@ requires: [SPEC-0002]
 ## Overview
 
 Harness resolves its **process settings** — socket path, config path, log level,
-log file, scrollback depth, SSH server enable and listen address, config
+log file, scrollback budget and depth, SSH server enable and listen address, config
 watching, and JSON output — from four sources ranked in one fixed order:
 an explicit command-line flag, a `HARNESS_*` environment variable, the TOML
 file, then the compiled default.
@@ -47,6 +47,7 @@ The following variables SHALL be recognized:
 | `HARNESS_LOG_LEVEL` | `--log-level` | `[daemon]` `log_level` | enum | `info` |
 | `HARNESS_LOG_FILE` | `--log-file` | `[daemon]` `log_file` | path | *(stderr)* |
 | `HARNESS_SCROLLBACK` | `--scrollback` | `[daemon]` `scrollback` | int | `attach.DefaultRingLines` |
+| `HARNESS_SCROLLBACK_BYTES` | `--scrollback-bytes` | `[daemon]` `scrollback_bytes` | size | `attach.DefaultRingBytes` (1 MiB) |
 | `HARNESS_SSH` | `--ssh` | `[server]` `enabled` | bool | `false` |
 | `HARNESS_SSH_LISTEN` | `--ssh-listen` | `[server]` `listen` | host:port | *(unset)* |
 | `HARNESS_WEBHOOK_LISTEN` | `--webhook-listen` | `[server]` `webhook_listen` | host:port | *(unset)* |
@@ -57,6 +58,10 @@ that the settings layer reads but the loader rejects as unknown makes the whole
 file fail to load, so the file source it names can never be used. In the file,
 `socket` and `log_file` SHALL be absolute paths and `scrollback` SHALL be at
 least 1. The loader SHALL reject any other value with the key's line number.
+`scrollback_bytes` SHALL be between 64 KiB and 1 GiB from every source: the
+loader SHALL reject a file value outside that range with its line number, and
+the daemon SHALL refuse to start on a flag, environment or file value outside
+it, naming the source.
 `config` has no file key because it names the file. `json` has none because it
 selects the output format for one invocation.
 
@@ -140,6 +145,13 @@ environment variable.
 - **THEN** the daemon SHALL start, and each harness's scrollback ring SHALL hold
   2000 lines
 
+#### Scenario: Daemon table supplies the scrollback budget
+
+- **WHEN** the config file sets `[daemon]` `scrollback_bytes = "4MiB"`, no
+  `HARNESS_SCROLLBACK_BYTES` is set, and no `--scrollback-bytes` flag is given
+- **THEN** the daemon SHALL start, and each harness's scrollback ring SHALL use
+  at most 4 MiB of storage
+
 #### Scenario: Daemon table supplies the socket to daemon and client
 
 - **WHEN** the config file sets `[daemon]` `socket = "/run/harness/h.sock"` and
@@ -187,6 +199,17 @@ with the default.
 
 Booleans SHALL accept `1`, `0`, `true`, `false`, `yes`, `no`, `on`, and `off`,
 case-insensitively.
+
+Sizes SHALL accept a whole number of bytes, optionally followed by a unit:
+`B`, `KiB`, `MiB`, `GiB` or `TiB`, with `K`/`KB`/`Ki`, `M`/`MB`/`Mi`,
+`G`/`GB`/`Gi` and `T`/`TB`/`Ti` meaning the same 1024-based units,
+case-insensitively. A TOML integer in the file counts bytes.
+
+#### Scenario: Scrollback budget out of range
+
+- **WHEN** `HARNESS_SCROLLBACK_BYTES=16GiB` is set
+- **THEN** startup SHALL fail with an error naming `HARNESS_SCROLLBACK_BYTES`,
+  the value, and the accepted range of 64 KiB to 1 GiB
 
 #### Scenario: Non-numeric scrollback
 
