@@ -115,6 +115,10 @@ var Registry = []Setting{
 	// On by default (ADR-0007 as amended): a sealed log — a rotated backup, a
 	// closed run's log or raw stream — is compressed to <file>.zst.
 	{Name: "compress-logs", Env: "HARNESS_COMPRESS_LOGS", FileKey: "daemon.compress_logs", Kind: KindBool, Default: true, Desc: "compress sealed logs with zstd"},
+	// No Default: unset must stay distinguishable from an explicit "0", which
+	// turns off a limit GOMEMLIMIT set (SPEC-0010 REQ "Go Memory Limit").
+	{Name: "memory-limit", Env: "HARNESS_MEMORY_LIMIT", FileKey: "daemon.memory_limit", Kind: KindBytes, Desc: "Go soft memory limit (0 = off; unset = GOMEMLIMIT, else off)"},
+	{Name: "pprof-addr", Env: "HARNESS_PPROF_ADDR", FileKey: "daemon.pprof_addr", Kind: KindString, Default: "", Desc: "pprof listener, loopback only (empty = off)"},
 }
 
 // logLevels is the accepted set for log-level, listed in errors so a typo tells

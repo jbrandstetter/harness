@@ -93,6 +93,8 @@ func TestPlainDaemonUsageContent(t *testing.T) {
 		"--ssh-listen H:P",
 		"--webhook-listen H:P",
 		"--compress-logs=false",
+		"--memory-limit SIZE",
+		"--pprof-addr H:P",
 		"--version",
 		"examples:",
 		"harness daemon start --detach",

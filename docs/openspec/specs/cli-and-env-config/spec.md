@@ -53,12 +53,16 @@ The following variables SHALL be recognized:
 | `HARNESS_WEBHOOK_LISTEN` | `--webhook-listen` | `[server]` `webhook_listen` | host:port | *(unset)* |
 | `HARNESS_WATCH_CONFIG` | *(none)* | `[daemon]` `watch_config` | bool | `true` |
 | `HARNESS_COMPRESS_LOGS` | `--compress-logs` | `[daemon]` `compress_logs` | bool | `true` |
+| `HARNESS_MEMORY_LIMIT` | `--memory-limit` | `[daemon]` `memory_limit` | size | *(unset: `GOMEMLIMIT`, else off)* |
+| `HARNESS_PPROF_ADDR` | `--pprof-addr` | `[daemon]` `pprof_addr` | loopback host:port | *(unset: off)* |
 
 Every file key in this table SHALL be accepted by the config file loader. A key
 that the settings layer reads but the loader rejects as unknown makes the whole
 file fail to load, so the file source it names can never be used. In the file,
 `socket` and `log_file` SHALL be absolute paths and `scrollback` SHALL be at
-least 1. The loader SHALL reject any other value with the key's line number.
+least 1, `memory_limit` SHALL be a size (REQ "Go Memory Limit"), and
+`pprof_addr` SHALL be empty or a loopback `host:port` (SPEC-0013 REQ-8). The
+loader SHALL reject any other value with the key's line number.
 `scrollback_bytes` SHALL be between 64 KiB and 1 GiB from every source: the
 loader SHALL reject a file value outside that range with its line number, and
 the daemon SHALL refuse to start on a flag, environment or file value outside
@@ -302,6 +306,64 @@ SHALL behave as `harness daemon run`.
 - **THEN** the CLI SHALL exit non-zero with an error naming the unknown verb and
   pointing at `harness --help`
 
+### Requirement: Go Memory Limit
+
+The daemon SHALL apply a Go soft memory limit (`runtime/debug.SetMemoryLimit`)
+from `--memory-limit`, `HARNESS_MEMORY_LIMIT`, or `[daemon] memory_limit`,
+resolved by the Precedence Order above. It SHALL be applied at daemon start and
+SHALL take effect again only on a restart, like every process setting.
+
+The value is a size, in the form REQ "Environment Value Validation" defines
+(the 1024-based units match systemd's `MemoryMax=`), so a bare number is
+bytes. `0` SHALL mean no limit.
+
+`GOMEMLIMIT` is not in the `HARNESS_` namespace. The Go runtime applies it
+before the daemon's code runs. It SHALL rank **below** every source above and
+above the default:
+
+1. an explicit `--memory-limit`, `HARNESS_MEMORY_LIMIT`, or `[daemon]
+   memory_limit` SHALL replace whatever limit `GOMEMLIMIT` set, and an explicit
+   `0` SHALL remove it;
+2. with none of them set, the daemon SHALL leave the runtime's limit, and so
+   `GOMEMLIMIT`'s, untouched;
+3. with neither, there SHALL be no limit.
+
+The harness settings win because they are addressed to the daemon.
+`GOMEMLIMIT` is Go-wide. A shell profile or a platform may set it, and the
+daemon's environment is inherited by every harness it spawns.
+
+The default SHALL be off. A soft limit cannot free a live leak, and set below
+the live heap it keeps the GC running near-continuously. The right value
+depends on the host, which the daemon cannot see.
+
+The daemon SHALL log, at startup, the limit in effect (read back from the
+runtime) and its source: `flag`, `env`, `file`, `GOMEMLIMIT`, or `default`.
+
+#### Scenario: File limit applied
+
+- **WHEN** `[daemon] memory_limit = "2GiB"` is set and no flag or
+  `HARNESS_MEMORY_LIMIT` is given
+- **THEN** the daemon's Go memory limit SHALL be 2 GiB, and
+  `go_gc_gomemlimit_bytes` SHALL report 2147483648
+
+#### Scenario: Harness setting beats GOMEMLIMIT
+
+- **WHEN** `GOMEMLIMIT=512MiB` is in the daemon's environment and
+  `[daemon] memory_limit = "1GiB"` is set
+- **THEN** the limit SHALL be 1 GiB, and the startup log SHALL say that it
+  overrides `GOMEMLIMIT`
+
+#### Scenario: GOMEMLIMIT beats the default
+
+- **WHEN** `GOMEMLIMIT=512MiB` is set and no harness source names a limit
+- **THEN** the limit SHALL stay 512 MiB, logged with source `GOMEMLIMIT`
+
+#### Scenario: A bare number is bytes
+
+- **WHEN** `HARNESS_MEMORY_LIMIT=2048` is set
+- **THEN** the limit SHALL be 2048 bytes, and the daemon SHALL warn that the
+  limit is very small
+
 ### Requirement: Secrets Exclusion
 
 The `HARNESS_*` namespace SHALL NOT carry credentials. No variable in this spec
@@ -313,8 +375,8 @@ requires. Documentation for this capability SHALL state this explicitly.
 #### Scenario: No credential variables exist
 
 - **WHEN** the recognized-variable table is enumerated
-- **THEN** every entry SHALL be a path, boolean, integer, enum, or host:port,
-  and none SHALL be a credential
+- **THEN** every entry SHALL be a path, boolean, integer, size, enum, or
+  host:port, and none SHALL be a credential
 
 ### Requirement: Error Handling Standards
 

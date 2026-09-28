@@ -17,16 +17,22 @@ package main
 // Operation".
 //
 // @joestump-agent 08/19/2026 - Introduced with the ADR-0016 environment layer.
+//
+// @joestump-agent 09/28/2026 - memory-limit and pprof-addr (GitHub
+// https://github.com/stump-wtf/harness/issues/18); a non-loopback pprof
+// address is refused here, named by its source.
 
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/stump-wtf/harness/internal/attach"
 	"github.com/stump-wtf/harness/internal/cliui"
 	"github.com/stump-wtf/harness/internal/config"
+	"github.com/stump-wtf/harness/internal/diag"
 	"github.com/stump-wtf/harness/internal/protocol"
 	"github.com/stump-wtf/harness/internal/settings"
 )
@@ -137,15 +143,48 @@ func resolveDaemonSettings(cmd *cobra.Command, g *globalOpts, d *daemonOpts) err
 	if err != nil {
 		return err
 	}
+	// The source is kept with the value: an unset limit leaves GOMEMLIMIT in
+	// charge, where an explicit one (even "0") overrides it (daemon_memory.go).
+	memLimit, err := r.Resolve("memory-limit")
+	if err != nil {
+		return err
+	}
+	pprof, err := r.Resolve("pprof-addr")
+	if err != nil {
+		return err
+	}
+	pprofAddr, _ := pprof.Value.(string)
+	if err := diag.CheckPprofAddr(pprofAddr); err != nil {
+		// Named by source, like every other bad value (SPEC-0010 REQ "Error
+		// Handling Standards"), and refused before anything starts.
+		return fmt.Errorf("%s: %w", settingOrigin(pprof), err)
+	}
 
 	d.configPath, d.socketPath = configPath, socket
 	d.ringLines, d.ringBytes, d.sshEnable, d.sshListen = ring, ringBytes, sshEnable, sshListen
 	d.webhookListen = webhookListen
 	d.logLevel, d.logFile = logLevel, logFile
 	d.compressLogs = compressLogs
+	d.memoryLimit, _ = memLimit.Value.(int64)
+	d.memoryLimitSource = memLimit.Source
+	d.pprofAddr = strings.TrimSpace(pprofAddr)
 
 	g.configPath, g.socket = configPath, socket
 	return nil
+}
+
+// settingOrigin names where a resolved value came from, spelled the way the
+// operator wrote it: --flag, HARNESS_VAR, or the file key.
+func settingOrigin(r settings.Resolved) string {
+	switch r.Source {
+	case settings.SourceFlag:
+		return "--" + r.Setting.Name
+	case settings.SourceEnv:
+		return r.Setting.Env
+	case settings.SourceFile:
+		return r.Setting.FileKey
+	}
+	return r.Setting.Name
 }
 
 // resolveScrollbackBytes resolves the scrollback ring's byte budget and holds it

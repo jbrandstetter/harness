@@ -44,6 +44,10 @@ var fileKeySamples = map[string]any{
 	"webhook-listen":   "127.0.0.1:9000",
 	"watch-config":     false,
 	"compress-logs":    false,
+	// An int64 because the resolver hands back a byte count; the sample is
+	// written as a bare TOML integer, one of the two forms the key takes.
+	"memory-limit": int64(1 << 30),
+	"pprof-addr":   "127.0.0.1:6060",
 }
 
 func TestRegistryFileKeysLoad(t *testing.T) {
@@ -112,6 +116,15 @@ func TestDaemonSettingsRejected(t *testing.T) {
 		{"scrollback not an integer", `scrollback = "lots"`, "[daemon]"},
 		{"relative socket", `socket = "harness.sock"`, "socket: must be an absolute path"},
 		{"tilde log file", `log_file = "~/harness.log"`, "log_file: must be an absolute path"},
+		{"memory limit not a size", `memory_limit = "lots"`, `daemon.memory_limit: invalid size "lots"`},
+		{"fractional memory limit", `memory_limit = "1.5GiB"`, `daemon.memory_limit: invalid size "1.5GiB"`},
+		{"negative memory limit", `memory_limit = -1`, `daemon.memory_limit: invalid size "-1"`},
+		{"float memory limit", `memory_limit = 1.5`, `daemon.memory_limit: invalid size "1.5"`},
+		{"bool memory limit", `memory_limit = true`, `daemon.memory_limit: invalid size "true"`},
+		{"pprof on every interface", `pprof_addr = "0.0.0.0:6060"`, "pprof_addr: \"0.0.0.0:6060\": pprof binds loopback only"},
+		{"pprof with no host", `pprof_addr = ":6060"`, "pprof binds loopback only"},
+		{"pprof on a LAN address", `pprof_addr = "10.1.2.3:6060"`, "pprof binds loopback only"},
+		{"pprof without a port", `pprof_addr = "127.0.0.1"`, "pprof_addr: \"127.0.0.1\" is not host:port"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -127,5 +140,28 @@ func TestDaemonSettingsRejected(t *testing.T) {
 				t.Errorf("error %q does not point at line 3", err)
 			}
 		})
+	}
+}
+
+// memory_limit takes either form, and pprof_addr any loopback address or
+// empty (off).
+//
+// @joestump-agent 09/28/2026 - Added for GitHub
+// https://github.com/stump-wtf/harness/issues/18.
+func TestDaemonMemoryGuardrailKeysAccepted(t *testing.T) {
+	for _, line := range []string{
+		`memory_limit = "2GiB"`,
+		`memory_limit = "512MiB"`,
+		`memory_limit = "0"`,
+		`memory_limit = 0`,
+		`memory_limit = 2147483648`,
+		`pprof_addr = "127.0.0.1:6060"`,
+		`pprof_addr = "localhost:6060"`,
+		`pprof_addr = "[::1]:6060"`,
+		`pprof_addr = ""`,
+	} {
+		if _, err := Parse([]byte("[daemon]\nwatch_config = true\n"+line+"\n"), "harness.toml"); err != nil {
+			t.Errorf("%s: rejected: %v", line, err)
+		}
 	}
 }
