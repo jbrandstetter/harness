@@ -11,6 +11,7 @@ require (
 	github.com/charmbracelet/x/vt v0.0.0-20260920004010-53e2afe73ae5
 	github.com/charmbracelet/x/xpty v0.1.4
 	github.com/fsnotify/fsnotify v1.10.1
+	github.com/klauspost/compress v1.19.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.3
 	github.com/prometheus/common v0.71.0

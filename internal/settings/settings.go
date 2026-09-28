@@ -112,6 +112,9 @@ var Registry = []Setting{
 	{Name: "ssh-listen", Env: "HARNESS_SSH_LISTEN", FileKey: "server.listen", Kind: KindString, Default: "", Desc: "SSH bind address"},
 	{Name: "webhook-listen", Env: "HARNESS_WEBHOOK_LISTEN", FileKey: "server.webhook_listen", Kind: KindString, Default: "", Desc: "webhook listener bind address (empty = off)"},
 	{Name: "watch-config", Env: "HARNESS_WATCH_CONFIG", FileKey: "daemon.watch_config", Kind: KindBool, Default: true, Desc: "watch the config file for changes"},
+	// On by default (ADR-0007 as amended): a sealed log — a rotated backup, a
+	// closed run's log or raw stream — is compressed to <file>.zst.
+	{Name: "compress-logs", Env: "HARNESS_COMPRESS_LOGS", FileKey: "daemon.compress_logs", Kind: KindBool, Default: true, Desc: "compress sealed logs with zstd"},
 	// No Default: unset must stay distinguishable from an explicit "0", which
 	// turns off a limit GOMEMLIMIT set (SPEC-0010 REQ "Go Memory Limit").
 	{Name: "memory-limit", Env: "HARNESS_MEMORY_LIMIT", FileKey: "daemon.memory_limit", Kind: KindBytes, Desc: "Go soft memory limit (0 = off; unset = GOMEMLIMIT, else off)"},

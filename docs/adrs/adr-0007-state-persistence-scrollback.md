@@ -143,6 +143,50 @@ configuration (ADR-0006); this file is runtime state only. TOML is intent;
   daemon writes (ADR-0008). A program that prints its own secret is covered only
   by best-effort masking.
 
+### Durable logs on disk: rotation and sealed compression
+
+*Amended 2026-09-28 for
+[stump-wtf/harness#18](https://github.com/stump-wtf/harness/issues/18).*
+Retained history belongs on disk, not in memory, and raw output stays out of
+SQLite. The disk cost of keeping it is cut by compressing each log once it is
+**sealed**, meaning nothing will ever write to it again:
+
+* a **rotated backup** of a harness's durable log,
+  `logs/<name>-<stamp>.log`, as soon as rotation renames it aside;
+* a **closed run's** per-run log, `jobs/<name>/<run id>.log`, and the raw
+  structured stream of a pipe-run one-shot, `jobs/<name>/<run id>.stream.jsonl`
+  (ADR-0033), as soon as the run closes.
+
+A sealed file becomes `<file>.zst` (zstd). The active log is never compressed,
+and neither is the log of a run still in flight, because both are still being
+appended to. A run's `<run id>.event.json` stays plain. It is small, and an
+operator replays a delivery by pointing `harness trigger --event` at it.
+
+* **Format.** zstd, through the pure-Go `github.com/klauspost/compress`. On 12.3
+  MB of real rotated Claude harness logs it gives about 14x. On the raw Claude
+  transcript in the bug report it gave 3.0x where gzip gave 2.5x. It also
+  decodes faster than gzip, and `zstd -dc FILE.zst` reads a file by hand.
+* **Off the hot path.** One background goroutine and one reused encoder
+  compress one file at a time. Neither the PTY reader nor the supervisor's actor
+  loop waits on it. The encoder runs single-threaded with a 1 MiB window.
+  Readers decode in low-memory mode, streaming, with the window they accept
+  capped, so reading a compressed log costs about 2 MiB whatever its size.
+* **Crash-safe.** A file is compressed into a temp file beside it, fsynced,
+  renamed to `<file>.zst`, and the directory is fsynced. Only then is the plain
+  file removed. A file that changed while it was being compressed was not
+  sealed after all, and is left alone. The two forms can coexist for a moment,
+  and after a crash between the rename and the removal. When they do, the plain
+  file wins, because it is whole and cheaper to read. The daemon's boot, and
+  every `keep_runs` prune and rotation, re-queue any sealed file left plain.
+* **Transparent to readers.** Everything that reads a durable or per-run log
+  (`harness logs`, including `--run`; the lifecycle lines behind run
+  correlation; the last-output line in a notification; `log_pruned` and
+  `has_log` on a run record) reads either form. Rotation and `keep_runs` count a
+  backup or a run once, whatever form it is in, and pruning removes every form.
+* **Opt out.** `[daemon] compress_logs = false`, `HARNESS_COMPRESS_LOGS=0`, or
+  `harness daemon --compress-logs=false` stop compressing new logs. Files
+  already compressed stay readable.
+
 ### Consequences
 
 * Good, because attach, detach and reattach are lossless while the daemon
@@ -158,7 +202,11 @@ configuration (ADR-0006); this file is runtime state only. TOML is intent;
 * Good, because the intent/state split keeps the config file hand-editable and
   git-friendly (ADR-0006).
 * Bad, because logs cost disk, bounded by rotation to six files per harness.
-  There is no per-harness switch to turn the durable log off.
+  There is no per-harness switch to turn the durable log off. Compressing sealed
+  files cuts the five backups, and every closed run's log, by roughly an order
+  of magnitude on agent output.
+* Bad, because a sealed log on disk is `<file>.zst`, so plain `grep` and `tail`
+  no longer read it. `zstdgrep`, `zstd -dcf`, or `harness logs` do.
 * Bad, because `state.json` is a second persistence concern, with its own
   atomic-write and schema-version discipline, and every feature that adds a key
   to it must keep older files loadable.
@@ -178,6 +226,11 @@ configuration (ADR-0006); this file is runtime state only. TOML is intent;
 
 * Rotation tests pin rotation by size and age, backup pruning that never
   touches a sibling harness, and the project-namespaced log path.
+* Sealed-log tests (`internal/sealedlog`, `internal/supervisor`
+  `sealed_logs_test.go`) pin byte-for-byte round trips, every reader in both
+  forms and with both present, compressed backups and runs counted once by
+  pruning without touching a sibling harness, crash leftovers compressed at
+  boot, a still-growing file left alone, and the opt-out.
 * Sanitizer tests pin the sanitized-log behavior: a repaint-in-place stream writes no
   lines and no escape codes, printed rows land verbatim, the final screen is
   flushed once, lifecycle events are recorded, and credentials are masked
@@ -261,6 +314,6 @@ flowchart LR
   credential-shaped spans in the durable log.
 * **Related ADR-0013** — scheduled runs write a log per run beside this one, at
   `$XDG_STATE_HOME/harness/jobs/<name>/<run id>.log`, with the same sanitized
-  text.
+  text, compressed to `<run id>.log.zst` once the run closes.
 * **Governs SPEC-0002** (attach snapshot and backpressure), **SPEC-0003**
   (restore and lifecycle events), and **SPEC-0001** (scrollback in the TUI).

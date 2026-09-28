@@ -354,14 +354,18 @@ stream file. `--raw` without `--run` shows the harness's durable log.
 `--run N` can't be combined with `--follow`; to watch a run as it happens, use
 `harness trigger NAME --wait` or `harness logs NAME --follow`.
 
-Each run's log and stream are also plain files, which makes history easy to
-grep:
+Each run's log and stream are also files on disk, which makes history easy to
+grep. Once a run closes, both are zstd-compressed, so search with `zstdgrep`,
+which reads plain and compressed files alike:
 
 ```sh
-ls ~/.local/state/harness/jobs/pr-sweep/          # 11.log 11.stream.jsonl 12.log 12.stream.jsonl …
-grep -h 'run finished' ~/.local/state/harness/jobs/pr-sweep/*.log
-jq -c 'select(.type == "result") | {subtype, num_turns, total_cost_usd}' ~/.local/state/harness/jobs/pr-sweep/12.stream.jsonl
+ls ~/.local/state/harness/jobs/pr-sweep/          # 11.log.zst 11.stream.jsonl.zst 12.log.zst … (13.log while it runs)
+zstdgrep -h 'run finished' ~/.local/state/harness/jobs/pr-sweep/*.log*
+zstdgrep -h '"type":"result"' ~/.local/state/harness/jobs/pr-sweep/12.stream.jsonl*
 ```
+
+See [Supervision → Logs on disk](/usage/supervision#logs-on-disk) for what is
+compressed and the `compress_logs` opt-out.
 
 The outcome on each `run finished` line is one of:
 
@@ -453,8 +457,8 @@ Then a run that exited 0 **without** the line is the one to look at:
 
 ```sh
 # runs that finished but never emitted the contract line
-grep -L 'SWEEP_RESULT:' ~/.local/state/harness/jobs/pr-sweep/*.stream.jsonl
-grep -h 'SWEEP_RESULT: blocked' ~/.local/state/harness/jobs/pr-sweep/*.stream.jsonl
+zstdgrep -L 'SWEEP_RESULT:' ~/.local/state/harness/jobs/pr-sweep/*.stream.jsonl*
+zstdgrep -h 'SWEEP_RESULT: blocked' ~/.local/state/harness/jobs/pr-sweep/*.stream.jsonl*
 ```
 
 A `claude-code` sweep's output is in its `.stream.jsonl`, as above; for a

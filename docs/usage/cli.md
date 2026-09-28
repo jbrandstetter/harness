@@ -247,6 +247,14 @@ the run has ended, its run log after it, each under a `==> path <==` header.
 `harness trigger <name> --wait` streams the same text as the run goes. The file
 itself is whole: read it with `jq` for anything longer.
 
+`harness logs` reads the daemon's files for you, compressed or not. A rotated
+backup and a closed run's log and stream are stored zstd-compressed
+(`.log.zst`, `.stream.jsonl.zst`) by default. Read one by hand with
+`zstd -dc FILE.zst`, or search plain and compressed logs together with
+`zstdgrep`. See
+[Supervision → Logs on disk](./supervision#logs-on-disk) for which files are
+compressed and when, and for the `compress_logs` opt-out.
+
 ## Profiles
 
 ```sh

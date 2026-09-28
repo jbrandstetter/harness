@@ -47,6 +47,8 @@ func redactTail(b []byte) string {
 
 // readLogTail returns the last `lines` lines of the harness's active log file,
 // or "" if the log does not exist yet. Best-effort: a read error yields "".
+// The active file is never compressed — only a rotated backup is sealed
+// (ADR-0007 as amended) — so it is read as plain text.
 func readLogTail(dir, name string, lines int) string {
 	if dir == "" {
 		return ""

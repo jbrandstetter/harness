@@ -20,6 +20,10 @@ package supervisor
 // interrupted, reason daemon_crash, with ended_at unset because the real end is
 // unknown, and a line saying so is appended to its log.
 //
+// A closed run's log and raw stream are sealed, and compressed in the
+// background to <id>.log.zst and <id>.stream.jsonl.zst (ADR-0007 as amended);
+// keep_runs counts and prunes a run by its id in either form.
+//
 // Governing: ADR-0007, ADR-0008, ADR-0013, ADR-0028; SPEC-0008 REQ "Run
 // History", REQ "Per-Run Logs"; SPEC-0022 REQ-3, REQ-6, REQ-7, REQ-13.
 //
@@ -31,6 +35,9 @@ package supervisor
 //
 // @joestump 09/24/2026 - Records moved from state.json to the run ledger
 // (harness#444); keep_runs now bounds logs only.
+//
+// @joestump-agent 09/28/2026 - Sealed run artifacts are compressed, for
+// https://github.com/stump-wtf/harness/issues/18.
 
 import (
 	"encoding/json"
@@ -48,6 +55,7 @@ import (
 
 	"github.com/stump-wtf/harness/internal/core"
 	"github.com/stump-wtf/harness/internal/ledger"
+	"github.com/stump-wtf/harness/internal/sealedlog"
 )
 
 // runHistory is one harness's run id allocator: the only part of run history
@@ -171,7 +179,31 @@ func (m *Manager) CloseRun(name string, rec RunRecord) error {
 	_, err := m.ledger.Append(ledger.Line{
 		Type: ledger.TypeClosed, At: at, Harness: name, RunID: rec.RunID, Record: fields,
 	}, true)
+	if rec.Kind != KindResident {
+		m.sealRun(name, rec)
+	}
 	return err
+}
+
+// sealRun queues a closed one-shot run's sealed artifacts for compression:
+// its log and, for a pipe-run one-shot, its raw structured stream (ADR-0033).
+// The event file stays as it is. It is small, and an operator replays a
+// delivery by pointing `harness trigger --event` straight at it.
+//
+// "Sealed" is a promise the supervisor keeps: finishRunWith closes every file
+// a run writes before it calls CloseRun, and a run id is never reused, so
+// nothing opens these files for writing again. A resident's record names its
+// durable log instead — the active file, which is never sealed — so residents
+// are skipped by the caller.
+//
+// Governing: SPEC-0008 REQ "Per-Run Logs"; ADR-0007 (as amended for sealed
+// compression); ADR-0033.
+func (m *Manager) sealRun(name string, rec RunRecord) {
+	path := m.RunLogPath(name, rec.RunID)
+	if path == "" || (rec.Log != "" && rec.Log != path) {
+		return
+	}
+	m.sealer.Seal(path, strings.TrimSuffix(path, ".log")+".stream.jsonl")
 }
 
 // StartRun is a scheduled firing for name (SPEC-0008 REQ "Overlap Policy").
@@ -390,6 +422,14 @@ func (m *Manager) keepRuns(name string) int {
 // ledger holds open is never pruned: its log is still being written. opening
 // is the run whose record was just opened; its log is created next, and it
 // counts toward keep_runs already.
+//
+// A run's artifacts may be compressed (ADR-0007 as amended), so a run counts
+// once by its id whichever forms of its files are on disk, and pruning it
+// removes every form. The prune is also the second chance for compression:
+// every kept run other than the one opening, and any the ledger holds open, is
+// sealed — one harness runs one run at a time, so when a run opens, every
+// earlier one has closed — and a sealed artifact still in plain form is queued
+// again. That catches a compression a crash or a full disk interrupted.
 func (m *Manager) pruneRunLogs(name string, opening int) {
 	dir := m.runLogDir(name)
 	if dir == "" {
@@ -427,13 +467,96 @@ func (m *Manager) pruneRunLogs(name string, opening int) {
 		}
 	}
 	for _, e := range entries {
-		if id, ok := runArtifactID(e.Name()); ok && drop[id] {
-			_ = os.Remove(filepath.Join(dir, e.Name()))
+		file := e.Name()
+		if orig, ok := sealedlog.TempOf(file); ok {
+			// A compression temp goes with its run.
+			if id, ok := runArtifactID(orig); ok && drop[id] {
+				_ = os.Remove(filepath.Join(dir, file))
+			}
+			continue
+		}
+		id, ok := runArtifactID(file)
+		switch {
+		case !ok:
+		case drop[id]:
+			_ = os.Remove(filepath.Join(dir, file))
+		case id != opening && id <= upTo && !open[id] && sealableRunArtifact(file):
+			m.sealer.Seal(filepath.Join(dir, file))
 		}
 	}
 }
 
-// highestRunLog is the largest run id with a log file in dir, or 0.
+// sealableRunArtifact reports a run artifact that compression applies to, in
+// its plain form: a log or a raw stream. Not the event file (sealRun).
+func sealableRunArtifact(file string) bool {
+	return strings.HasSuffix(file, ".log") || strings.HasSuffix(file, ".stream.jsonl")
+}
+
+// sealLeftovers queues for compression every sealed file an earlier daemon
+// left in plain form: it crashed between a run's close and its compression,
+// was shut down with compressions queued (the queue is dropped, not drained),
+// or ran with compress_logs off. It runs at the end of bootLedger, when the
+// ledger holds no record open and before any start is admitted, and covers
+// the rotated backups of every harness this daemon supervises and the run
+// artifacts of every harness with a directory under jobs/. A temp whose plain
+// file is gone belonged to a compression that can never finish; it is
+// removed.
+//
+// Governing: ADR-0007 (as amended for sealed compression); SPEC-0003 REQ
+// "Durable Log Rotation And Compression"; SPEC-0008 REQ "Per-Run Logs".
+func (m *Manager) sealLeftovers() {
+	if m.sealer == nil {
+		return
+	}
+	m.mu.Lock()
+	names := slices.Collect(maps.Keys(m.supervisors))
+	m.mu.Unlock()
+	for _, name := range names {
+		for _, b := range listBackups(m.logCfg.Dir, name) {
+			if b.plain {
+				m.sealer.Seal(b.path)
+			}
+		}
+	}
+	dirs, err := os.ReadDir(m.jobsDir)
+	if err != nil {
+		return
+	}
+	for _, d := range dirs {
+		dir := m.runLogDir(d.Name())
+		if !d.IsDir() || dir == "" {
+			continue
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		// Read AFTER the listing: a file listed above whose run is open now
+		// was opened before the listing, so it shows up here; a run opened
+		// after this read created its file after the listing too.
+		open := map[int]bool{}
+		for _, f := range m.ledger.OpenRecords() {
+			if f.Harness == d.Name() {
+				open[f.RunID] = true
+			}
+		}
+		for _, e := range entries {
+			file := e.Name()
+			if orig, ok := sealedlog.TempOf(file); ok {
+				if _, err := os.Stat(filepath.Join(dir, orig)); errors.Is(err, os.ErrNotExist) {
+					_ = os.Remove(filepath.Join(dir, file))
+				}
+				continue
+			}
+			if id, ok := runArtifactID(file); ok && !open[id] && sealableRunArtifact(file) {
+				m.sealer.Seal(filepath.Join(dir, file))
+			}
+		}
+	}
+}
+
+// highestRunLog is the largest run id with a log file in dir, or 0. A
+// compressed log counts: it is the same run's log.
 func highestRunLog(dir string) int {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -448,11 +571,15 @@ func highestRunLog(dir string) int {
 	return highest
 }
 
-// runLogID parses "<id>.log". It is deliberately narrower than
-// runArtifactID: highestRunLog floors the next run id from it, and a run id
-// must be floored by a run that actually produced a log.
+// runLogID parses "<id>.log", plain or compressed ("<id>.log.zst"). It is
+// deliberately narrower than runArtifactID: highestRunLog floors the next run
+// id from it, and a run id must be floored by a run that actually produced a
+// log.
 func runLogID(file string) (int, bool) {
-	return runIDWithSuffix(file, ".log")
+	if id, ok := runIDWithSuffix(file, ".log"); ok {
+		return id, true
+	}
+	return runIDWithSuffix(file, ".log"+sealedlog.Ext)
 }
 
 // runArtifactSuffixes are the file names a run's artifacts end in: its log,
@@ -516,7 +643,9 @@ func (m *Manager) restoreRunsLocked(raw json.RawMessage) {
 //     run opened before the in-memory window is still found;
 //  3. reconciliation closes every record a dead daemon left open as
 //     interrupted, reason daemon_crash, with no end, and says so in its log
-//     (REQ-7).
+//     (REQ-7);
+//  4. every sealed log still in plain form is queued for compression
+//     (sealLeftovers).
 //
 // Errors are logged, not returned: a daemon that cannot write its ledger must
 // still supervise (REQ-6), and the failure is counted where doctor reads it.
@@ -576,6 +705,10 @@ func (m *Manager) bootLedger() {
 		interrupted = append(interrupted, runRef{name: f.Harness, id: f.RunID, log: f.Log})
 	}
 	m.noteInterrupted(interrupted)
+
+	// Last: every run is closed now, the interrupted ones' logs included, so
+	// whatever a dead daemon left uncompressed is sealed.
+	m.sealLeftovers()
 }
 
 // importLines turns one state.json record into ledger lines: a `decided` line

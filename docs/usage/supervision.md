@@ -178,6 +178,42 @@ Under repeated quick restarts, the daemon escalates backoff so a crash-looping
 harness can't burn the CPU. `harness describe <name>` surfaces this with a
 `flapping` field and, when applicable, a `restart to apply` config prompt.
 
+## Logs on disk
+
+Retained output lives on disk under `$XDG_STATE_HOME/harness` (default
+`~/.local/state/harness`), not in the daemon's memory:
+
+| File | Holds | Compressed |
+|------|-------|------------|
+| `logs/NAME.log` | the active durable log: everything the harness printed, plus lifecycle lines | never; it is still being written |
+| `logs/NAME-STAMP.log.zst` | a rotated backup: the active log rotates at 8 MiB or 24 hours, and five backups are kept | as soon as it rotates |
+| `jobs/NAME/RUN_ID.log` | the log of a run still going | not while the run is open |
+| `jobs/NAME/RUN_ID.log.zst` | one closed run's output and lifecycle lines, pruned by `keep_runs` | as soon as the run closes |
+| `jobs/NAME/RUN_ID.stream.jsonl.zst` | the raw structured stream of a pipe-run one-shot | as soon as the run closes |
+| `jobs/NAME/RUN_ID.event.json` | the event a triggered run was fired with | never; replay it with `harness trigger NAME --event FILE` |
+
+A project harness's logs sit one directory down, `logs/PROJECT/NAME.log`.
+
+Compression is zstd and happens in the background. `harness logs NAME` and
+`harness logs NAME --run N` read either form, so nothing changes at the CLI. To
+read a compressed file by hand:
+
+```sh
+zstd -dc ~/.local/state/harness/jobs/nightly/12.log.zst | less
+zstdgrep 'run finished' ~/.local/state/harness/jobs/nightly/*.log*
+zstd -dcf ~/.local/state/harness/jobs/nightly/*.log* | grep SWEEP_RESULT   # plain and compressed alike
+```
+
+For a moment after a run closes, and after a crash at the wrong instant, a log
+can exist as both `X.log` and `X.log.zst`. Both are complete, and Harness reads
+the plain one. The daemon re-queues any sealed file it finds still plain at
+boot, at each `keep_runs` prune, and at each rotation.
+
+To keep every log plain, set `compress_logs = false` in
+[`[daemon]`](./configuration#daemon-settings-daemon), export
+`HARNESS_COMPRESS_LOGS=0`, or run `harness daemon --compress-logs=false`. Then
+restart the daemon. Files already compressed stay readable either way.
+
 ## One-shot vs. supervised
 
 For a quick session, run `harness daemon` in a terminal or `--detach` into the

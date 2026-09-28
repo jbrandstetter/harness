@@ -456,6 +456,28 @@ When a record falls out of the history its log SHALL be deleted, and a run log
 no record refers to SHALL be removed, so records and logs cannot drift apart. A
 record with no process (`skipped`, `missed`) has no log.
 
+Once a run has closed, its log is **sealed**, and so is the raw structured
+stream of a pipe-run one-shot (`<run_id>.stream.jsonl`, ADR-0033). Unless
+`[daemon] compress_logs` is false (SPEC-0010), the daemon SHALL compress each
+sealed file to `<file>.zst` (zstd) in the background, off the PTY reader and the
+supervisor's actor loop. It SHALL NOT compress the log of a run still in flight.
+It SHALL NOT compress the run's event file (`<run_id>.event.json`), which an
+operator may replay by path.
+
+A compression SHALL NOT be able to lose a log. The compressed file SHALL appear
+only by an atomic rename after its contents are synced, and the plain file SHALL
+be removed only after that. A file that changes while it is compressed SHALL be
+left plain. When a crash or a failure leaves a sealed file plain, the next
+daemon boot and the next `keep_runs` prune SHALL compress it.
+
+Every reader of a run log SHALL read either form. When both forms exist, it
+SHALL read the plain file. The readers include `harness logs --run`, the `runs`
+operation's `has_log`, the run ledger's `log_pruned`, and the notifier's last
+output line. A compressed log SHALL NOT read as pruned. `keep_runs` SHALL count
+a run once by its id, whatever form its files are in, and SHALL delete every
+form of a dropped run's artifacts. The run-id floor SHALL count a compressed log
+as a log.
+
 #### Scenario: Output lands in the run log
 
 - **WHEN** a run prints a line and exits
@@ -467,6 +489,36 @@ record with no process (`skipped`, `missed`) has no log.
 - **WHEN** runs end by success, failure, timeout, replace, stop, and daemon
   shutdown
 - **THEN** every run log that was opened has been closed
+
+#### Scenario: A closed run's log is compressed
+
+- **WHEN** run 7 exits and compression is on
+- **THEN** `jobs/<harness>/7.log` becomes `7.log.zst`, which decodes to the
+  same bytes, and `harness logs <harness> --run 7` shows the same text as before
+- **AND** run 7's record reads `has_log` and not `log_pruned`
+
+#### Scenario: The log of a run in flight stays plain
+
+- **WHEN** a run is still going while a prune runs for another firing
+- **THEN** its log is neither compressed nor deleted
+
+#### Scenario: keep_runs counts compressed runs
+
+- **WHEN** `keep_runs = 3` and runs 1–4 left `1.log.zst`, `1.event.json`,
+  `2.log.zst`, `2.stream.jsonl.zst`, `3.log` and `4.log.zst`, and run 5 finishes
+- **THEN** only `3.log.zst`, `4.log.zst` and `5.log.zst` remain
+
+#### Scenario: A crash leftover is compressed at boot
+
+- **WHEN** the daemon died after renaming `2.log.zst` into place but before
+  removing `2.log`, and left `3.log` uncompressed
+- **THEN** the next boot leaves only `2.log.zst` and `3.log.zst`, each whole
+
+#### Scenario: Compression off
+
+- **WHEN** `compress_logs = false`
+- **THEN** a closed run's log stays `<run_id>.log`, and logs an earlier daemon
+  compressed are still read, counted and pruned
 
 ### Requirement: Run Timeout
 

@@ -11,10 +11,10 @@ requires: [SPEC-0002]
 ## Overview
 
 Harness resolves its **process settings** — socket path, config path, log level,
-log file, scrollback budget and depth, SSH server enable and listen address, config
-watching, and JSON output — from four sources ranked in one fixed order:
-an explicit command-line flag, a `HARNESS_*` environment variable, the TOML
-file, then the compiled default.
+log file, scrollback budget and depth, SSH server enable and listen address,
+config watching, sealed-log compression, and JSON output — from four sources
+ranked in one fixed order: an explicit command-line flag, a `HARNESS_*`
+environment variable, the TOML file, then the compiled default.
 
 The command tree is built with Cobra; the precedence ladder is resolved by Viper
 bound to Cobra's flags. The **domain tables** (`[harness.*]`, `[profile.*]`)
@@ -52,6 +52,7 @@ The following variables SHALL be recognized:
 | `HARNESS_SSH_LISTEN` | `--ssh-listen` | `[server]` `listen` | host:port | *(unset)* |
 | `HARNESS_WEBHOOK_LISTEN` | `--webhook-listen` | `[server]` `webhook_listen` | host:port | *(unset)* |
 | `HARNESS_WATCH_CONFIG` | *(none)* | `[daemon]` `watch_config` | bool | `true` |
+| `HARNESS_COMPRESS_LOGS` | `--compress-logs` | `[daemon]` `compress_logs` | bool | `true` |
 | `HARNESS_MEMORY_LIMIT` | `--memory-limit` | `[daemon]` `memory_limit` | size | *(unset: `GOMEMLIMIT`, else off)* |
 | `HARNESS_PPROF_ADDR` | `--pprof-addr` | `[daemon]` `pprof_addr` | loopback host:port | *(unset: off)* |
 
@@ -68,6 +69,12 @@ the daemon SHALL refuse to start on a flag, environment or file value outside
 it, naming the source.
 `config` has no file key because it names the file. `json` has none because it
 selects the output format for one invocation.
+
+`compress_logs` controls whether the daemon compresses sealed logs to
+`<file>.zst`: rotated backups of each durable log, and each closed run's log
+and raw stream (SPEC-0003 REQ "Durable Log Rotation And Compression", SPEC-0008
+REQ "Per-Run Logs"). Setting it false stops new compressions. Files already
+compressed stay readable.
 
 Harness MUST NOT read harness or profile definitions from the environment. No
 `HARNESS_*` variable SHALL define, modify, or remove a `[harness.*]` or

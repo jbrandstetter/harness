@@ -43,6 +43,7 @@ var fileKeySamples = map[string]any{
 	"ssh-listen":       "127.0.0.1:2222",
 	"webhook-listen":   "127.0.0.1:9000",
 	"watch-config":     false,
+	"compress-logs":    false,
 	// An int64 because the resolver hands back a byte count; the sample is
 	// written as a bare TOML integer, one of the two forms the key takes.
 	"memory-limit": int64(1 << 30),

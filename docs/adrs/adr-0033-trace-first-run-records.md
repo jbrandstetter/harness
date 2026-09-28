@@ -434,7 +434,10 @@ The normalized events do not depend on it.
   at most 10,000 events. Beyond that, events are counted and dropped, and the
   session reads `events_complete = false`. The raw stream file is capped by
   `[trace] max_stream_mb` (default 64), after which it is truncated with a
-  marker line.
+  marker line. Once the run closes the stream is sealed, and by default it is
+  compressed to `<id>.stream.jsonl.zst` with the run's log (ADR-0007 as
+  amended; `[daemon] compress_logs`). Readers open either form through
+  `internal/sealedlog`.
 * `[trace] retention = "30d"` and `max_mb = 1024` bound the tables. Pruning
   deletes whole sessions, oldest first, and never a session whose run is still
   open.

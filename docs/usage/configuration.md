@@ -249,15 +249,18 @@ keep_runs = 30         # default 20
   `daemon_crash`) on the next boot; one a clean shutdown stopped reads
   `interrupted` (reason `shutdown`).
 - **Logs** are at `$XDG_STATE_HOME/harness/jobs/<name>/<run_id>.log` — the run's
-  output history and lifecycle lines, alongside the usual harness log.
-  `keep_runs` bounds these log files only: the oldest logs are deleted, and
-  their records stay in the ledger, marked `log_pruned`.
+  output history and lifecycle lines, alongside the usual harness log. Once the
+  run closes, its log is compressed to `<run_id>.log.zst` (unless
+  [`compress_logs = false`](#daemon-settings-daemon)); `harness logs <name> --run
+  N` reads either. `keep_runs` bounds these log files only: the oldest logs are
+  deleted, and their records stay in the ledger, marked `log_pruned`.
 - **Streams.** A [stream-json one-shot](#stream-json-one-shots-run-without-a-terminal)
   also writes `jobs/<name>/<run_id>.stream.jsonl`: its stdout, one masked JSON
   line per line, private to your user. Its `<run_id>.log` then holds the
-  lifecycle lines and the agent's stderr. `keep_runs` deletes a run's stream
-  with its log. `harness logs <name> --run N --raw` prints the stream, then the
-  run log once the run has ended.
+  lifecycle lines and the agent's stderr. The stream is compressed to
+  `<run_id>.stream.jsonl.zst` when the run closes, like the log. `keep_runs`
+  deletes a run's stream with its log. `harness logs <name> --run N --raw`
+  prints the stream, then the run log once the run has ended.
 
 :::note Upgrading from a release before the ledger
 The first daemon that has the ledger copies each harness's run history out of
@@ -752,6 +755,7 @@ scrollback   = 10000                     # and at most this many lines of it
 log_level    = "info"                    # debug, info, warn, error
 log_file     = "/var/log/harness.log"    # absent = stderr
 socket       = "/run/harness/harness.sock"  # absent = $XDG_RUNTIME_DIR/harness.sock
+compress_logs = true                     # zstd-compress sealed logs (default true)
 memory_limit = "2GiB"                    # Go soft memory limit; absent = GOMEMLIMIT or off
 pprof_addr   = "127.0.0.1:6060"          # net/http/pprof, loopback only; absent = off
 ```
@@ -780,10 +784,15 @@ container entrypoint — without editing the service definition.
 - `socket` and `log_file` must be absolute paths; `~` is not expanded. The CLI
   reads `socket` from this file too, so `harness ls` finds a daemon on a
   non-default socket without a `--socket` flag.
+- `compress_logs` compresses a log once nothing will write to it again: each
+  rotated backup of a harness's log, and each closed run's log and raw stream.
+  See [Supervision → Logs on disk](./supervision#logs-on-disk). Set it to
+  `false` to keep every log plain; files already compressed stay readable.
 - `scrollback_bytes`, `scrollback`, `log_level`, `log_file`, `socket`,
-  `memory_limit` and `pprof_addr` are read when the daemon starts. Changing them
-  needs a daemon restart, not a reload. Until you restart, a changed `socket`
-  points the CLI at a socket the running daemon is not on.
+  `compress_logs`, `memory_limit` and `pprof_addr` are read when the daemon
+  starts. Changing them needs a daemon restart, not a reload. Until you
+  restart, a changed `socket` points the CLI at a socket the running daemon is
+  not on.
 - `harness doctor` shows which source supplied each value.
 
 ### Memory limit and profiler
@@ -1279,6 +1288,7 @@ without baking in a config file.
 | `HARNESS_SSH_LISTEN` | `--ssh-listen` | `[server] listen` | `host:port` | unset |
 | `HARNESS_WEBHOOK_LISTEN` | `--webhook-listen` | `[server] webhook_listen` | `host:port` | unset (no webhook listener) |
 | `HARNESS_WATCH_CONFIG` | — | `[daemon] watch_config` | bool | `true` |
+| `HARNESS_COMPRESS_LOGS` | `--compress-logs` | `[daemon] compress_logs` | bool | `true` (zstd-compress sealed logs) |
 | `HARNESS_MEMORY_LIMIT` | `--memory-limit` | `[daemon] memory_limit` | size (`2GiB`; `0` = off) | unset (`GOMEMLIMIT`, else off) |
 | `HARNESS_PPROF_ADDR` | `--pprof-addr` | `[daemon] pprof_addr` | loopback `host:port` | unset (no profiler) |
 

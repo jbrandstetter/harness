@@ -139,6 +139,10 @@ func resolveDaemonSettings(cmd *cobra.Command, g *globalOpts, d *daemonOpts) err
 	if err != nil {
 		return err
 	}
+	compressLogs, err := r.Bool("compress-logs")
+	if err != nil {
+		return err
+	}
 	// The source is kept with the value: an unset limit leaves GOMEMLIMIT in
 	// charge, where an explicit one (even "0") overrides it (daemon_memory.go).
 	memLimit, err := r.Resolve("memory-limit")
@@ -160,6 +164,7 @@ func resolveDaemonSettings(cmd *cobra.Command, g *globalOpts, d *daemonOpts) err
 	d.ringLines, d.ringBytes, d.sshEnable, d.sshListen = ring, ringBytes, sshEnable, sshListen
 	d.webhookListen = webhookListen
 	d.logLevel, d.logFile = logLevel, logFile
+	d.compressLogs = compressLogs
 	d.memoryLimit, _ = memLimit.Value.(int64)
 	d.memoryLimitSource = memLimit.Source
 	d.pprofAddr = strings.TrimSpace(pprofAddr)
