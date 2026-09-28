@@ -523,11 +523,16 @@ func execArgvWithRegistry(h core.Harness, workdir string, run RunEnv, reg *adapt
 }
 
 // process is a live spawned harness: its PTY, the command handle (for signals
-// and reaping), and its OS pid.
+// and reaping), and its OS pid. A structured one-shot has no PTY: pty is nil,
+// stdout and stderr are the read ends of its pipes, and progress is what its
+// exit drain watches (pipes.go).
 type process struct {
 	pty xpty.Pty
 	cmd *exec.Cmd
 	pid int
+
+	stdout, stderr *os.File
+	progress       *pipeProgress
 }
 
 // Workdir is the process working directory the supervisor spawns h into: the
@@ -540,7 +545,9 @@ func Workdir(h core.Harness) string { return expandHome(h.Workdir) }
 // spawn launches h under a fresh PTY of cols×rows in its workdir with env_file
 // loaded. The child is placed in its own session (Setsid) so the whole process
 // group can be signalled on graceful stop (SPEC-0003 REQ "Graceful Stop"). The
-// returned process's PTY is the raw byte stream the caller tees to logs.
+// returned process's PTY is the raw byte stream the caller tees to logs. A
+// structured one-shot (RunsOnPipes) is the exception: it gets pipes and no
+// PTY, and cols and rows are unused.
 //
 // Governing: ADR-0003 (the native backend owns PTY sizing; the attach layer's
 // smallest-attached-wins viewport is authoritative). The size is passed in
@@ -573,6 +580,11 @@ func spawn(h core.Harness, cols, rows int, run RunEnv) (*process, error) {
 	env, err := buildEnv(h, run)
 	if err != nil {
 		return nil, err
+	}
+	// A structured one-shot runs on pipes, with no PTY to allocate or size
+	// (pipes.go; ADR-0033 "Structured one-shots run on pipes").
+	if RunsOnPipes(h) {
+		return startOnPipes(name, args, workdir, env)
 	}
 
 	if cols < 1 {

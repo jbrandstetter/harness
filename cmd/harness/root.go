@@ -131,6 +131,7 @@ func newRootCmd() *cobra.Command {
 		newTriggerCmd(g),
 		newRunsCmd(g),
 		newAttachCmd(g),
+		newSkillsCmd(g),
 		newDoctorCmd(g),
 		newInitCmd(g),
 		newDaemonCmd(g),
@@ -277,7 +278,7 @@ func newLogsCmd(g *globalOpts) *cobra.Command {
 	}
 	cmd.Flags().IntVar(&lines, "lines", 200, "number of trailing lines (entries, for an agent harness)")
 	cmd.Flags().BoolVar(&follow, "follow", false, "stream new output")
-	cmd.Flags().BoolVar(&raw, "raw", false, "print the durable log tail instead of agent activity")
+	cmd.Flags().BoolVar(&raw, "raw", false, "print the durable log tail instead of agent activity (with --run: that run's log, or a stream-json one-shot's stream)")
 	cmd.Flags().BoolVar(&ambiguous, "include-ambiguous", false, "also show sessions another harness could have written")
 	cmd.Flags().IntVar(&runID, "run", 0, "one run of a scheduled harness, by id (see harness runs)")
 	return cmd
@@ -287,7 +288,7 @@ func newAttachCmd(g *globalOpts) *cobra.Command {
 	var ro bool
 	cmd := &cobra.Command{
 		Use:           "attach",
-		Short:         "attach to a harness's terminal",
+		Short:         "attach to a harness's terminal (a stream-json one-shot: its output lines)",
 		Args:          cobra.MaximumNArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,

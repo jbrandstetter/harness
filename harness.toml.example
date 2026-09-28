@@ -403,3 +403,22 @@ autostart = true
 #
 # metrics_listen = "127.0.0.1:10229"
 # metrics_token_file = "~/.config/harness/metrics.token"
+
+# Skill serving (SPEC-0007, ADR-0030). Global-only tables: a project
+# harness.toml is refused them. With no [skill_repo.*] declared, the skill
+# tools are not registered and no index file is created.
+#
+# `harness skills sync` creates and fast-forwards each serving clone at
+# $XDG_STATE_HOME/harness/skills/<name>; the daemon indexes only the clone's
+# default branch and never writes a clone itself.
+#
+# [skills]
+# summary_max_chars  = 1000
+# retire_grace_days  = 30
+# retire_window_days = 60
+#
+# [skill_repo.go-stack]
+# remote   = "https://git.example.com/your-org/go-skills.git"
+# public   = false                    # unset is treated as public
+# path     = "skills"                 # where skills live inside the repo
+# serve_to = ["*"]                    # the bare star matches every harness

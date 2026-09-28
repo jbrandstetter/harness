@@ -16,7 +16,9 @@ a general process manager. Run arbitrary processes under your init system
 A single `harness` binary has two faces:
 
 - **`harness daemon`** — long-lived supervisor. Owns every harness: the process,
-  its PTY, daemon-side scrollback, restart policy, and state.
+  its PTY, daemon-side scrollback, restart policy, and state. A stream-json
+  one-shot (`claude -p`) runs on pipes instead of a PTY, and its output is kept
+  per run as JSON lines.
 - **`harness`** — thin client. Open the keyboard-driven **dashboard** with no
   arguments, or run one-shot **verbs** (`list`, `start`, `logs`, ...) to script
   it. Locally over a Unix socket, or remotely over SSH

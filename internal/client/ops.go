@@ -339,3 +339,27 @@ func (c *Client) checkEnvFileList(harnesses []protocol.ProjectHarness) error {
 	}
 	return nil
 }
+
+// SkillsSynced tells the daemon which serving clones `harness skills sync`
+// created or fast-forwarded, so it reindexes them (SPEC-0007 REQ
+// "Default-Branch Gate"). It returns each repo's post-reindex state.
+func (c *Client) SkillsSynced(names []string) (protocol.SkillsStatusData, error) {
+	resp, err := c.call(protocol.ControlReq{Op: protocol.OpSkillsSynced, Names: names})
+	if err != nil {
+		return protocol.SkillsStatusData{}, err
+	}
+	var out protocol.SkillsStatusData
+	return out, json.Unmarshal(resp.Data, &out)
+}
+
+// SkillsStatus asks the daemon for each skill repo's serving state, which
+// `harness doctor` turns into gate warnings (SPEC-0007 REQ "Default-Branch
+// Gate").
+func (c *Client) SkillsStatus() (protocol.SkillsStatusData, error) {
+	resp, err := c.call(protocol.ControlReq{Op: protocol.OpSkillsStatus})
+	if err != nil {
+		return protocol.SkillsStatusData{}, err
+	}
+	var out protocol.SkillsStatusData
+	return out, json.Unmarshal(resp.Data, &out)
+}

@@ -38,6 +38,13 @@ func newVTView(cols, rows int) *vtView {
 		rows = 1
 	}
 	v := &vtView{term: vt.NewEmulator(cols, rows), cols: cols, rows: rows}
+	// Nothing reads this emulator's scrollback: the scrollback substate
+	// (Ctrl-b [) freezes daemon-owned history plus this view's current
+	// screen (attachState.enterScrollback), never emulator rows. x/vt's
+	// default keeps 10,000 rows of 112-byte cells (~85 MiB at 80 columns) per
+	// view, so cap it at x/vt's minimum of 1. Governing: SPEC-0002 REQ
+	// "Emulator Memory" (the client-side mirror of the daemon's rule).
+	v.term.SetScrollbackSize(1)
 	// CursorVisibility alone is not enough to shadow DECTCEM: x/vt only fires
 	// it when Cursor.Hidden actually flips, and a full reset (RIS, "\x1bc" —
 	// what `reset`/`tput reset` and many TUIs on exit emit) clears the screen's
@@ -91,13 +98,16 @@ func newVTView(cols, rows int) *vtView {
 // query once per client, and the surplus replies would land in the guest as
 // spurious input.
 //
-// The pump runs for the process's lifetime and is never stopped, matching the
-// daemon's Mux. Emulator.Close would unpark the Read, but Close writes the
-// emulator's `closed` flag while the parked Read is reading it, with no
-// synchronization upstream — a genuine data race that `make race` catches. So
-// views are RE-USED rather than closed (see reset): the peek pane keeps one for
-// the dashboard's lifetime, and the attached view is reset across attaches and
-// hops, which means the number of pumps is fixed rather than growing with use.
+// The pump runs for the process's lifetime and is never stopped. Emulator.Close
+// would unpark the Read, but Close writes the emulator's `closed` flag while
+// the parked Read is reading it, with no synchronization upstream — a genuine
+// data race that `make race` catches. So views are RE-USED rather than closed
+// (see reset): the peek pane keeps one for the dashboard's lifetime, and the
+// attached view is reset across attaches and hops, which means the number of
+// pumps is fixed rather than growing with use. A view that ever has to be
+// discarded must be released the way the daemon's Mux and sanitizer are, by
+// closing its InputPipe (SPEC-0002 REQ "Emulator Memory"): a parked pump keeps
+// the whole emulator reachable.
 //
 // Governing: ADR-0003 (client-side emulator mirrors the daemon's screen), and
 // the daemon-side precedent in f03e493.

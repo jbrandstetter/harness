@@ -324,31 +324,44 @@ harness outright. When nothing can be matched, `harness logs` says so in a `note
 line and points you at `harness logs NAME --raw`; it does not print the log
 itself.
 
-`--raw` shows the durable log instead: the run's own output, bracketed by
-lifecycle lines that carry its outcome:
+`--raw` shows what the run printed instead. A `claude-code` one-shot like
+`pr-sweep` runs on pipes, not a terminal: its stdout is Claude Code's
+stream-json, kept as the run's `.stream.jsonl`, and its run log holds the
+lifecycle lines that carry its outcome and anything it printed on stderr.
+`--raw --run N` prints both, the stream first:
 
 ```sh
-$ harness logs pr-sweep --raw --lines 20
+$ harness logs pr-sweep --raw --run 12 --lines 20
+==> /home/you/.local/state/harness/jobs/pr-sweep/12.stream.jsonl <==
+{"type":"system","subtype":"init","session_id":"3f9a1c2e-…","model":"claude-sonnet-5",…}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash",…}]}}
+…
+{"type":"result","subtype":"success","is_error":false,"num_turns":14,"total_cost_usd":0.41,…}
+
+==> /home/you/.local/state/harness/jobs/pr-sweep/12.log <==
 2026/09/11 14:00:00 INFO run started run_id=12 trigger=schedule
 2026/09/11 14:00:00 INFO state changed from=stopped to=starting
 2026/09/11 14:00:00 INFO state changed from=starting to=running
-…agent output…
 2026/09/11 14:06:41 INFO exited code=0
 2026/09/11 14:06:41 INFO state changed from=running to=stopped
 2026/09/11 14:06:41 INFO run finished run_id=12 outcome=success exit_code=0
 ```
 
-`--run N` works with `--raw` too. It can't be combined with `--follow`; to watch
-a run as it happens, use `harness trigger NAME --wait` or `harness logs NAME
---follow`.
+For a harness that runs under a terminal (`crush`, `codex`), the run log holds
+the agent's output between those lifecycle lines instead, and there is no
+stream file. `--raw` without `--run` shows the harness's durable log.
 
-Each run's log is also a file on disk, which makes history easy to grep. Once
-a run closes its log is zstd-compressed, so search with `zstdgrep`, which reads
-plain and compressed files alike:
+`--run N` can't be combined with `--follow`; to watch a run as it happens, use
+`harness trigger NAME --wait` or `harness logs NAME --follow`.
+
+Each run's log and stream are also files on disk, which makes history easy to
+grep. Once a run closes, both are zstd-compressed, so search with `zstdgrep`,
+which reads plain and compressed files alike:
 
 ```sh
-ls ~/.local/state/harness/jobs/pr-sweep/          # 11.log.zst 12.log.zst … (13.log while it runs)
+ls ~/.local/state/harness/jobs/pr-sweep/          # 11.log.zst 11.stream.jsonl.zst 12.log.zst … (13.log while it runs)
 zstdgrep -h 'run finished' ~/.local/state/harness/jobs/pr-sweep/*.log*
+zstdgrep -h '"type":"result"' ~/.local/state/harness/jobs/pr-sweep/12.stream.jsonl*
 ```
 
 See [Supervision → Logs on disk](/usage/supervision#logs-on-disk) for what is
@@ -444,9 +457,12 @@ Then a run that exited 0 **without** the line is the one to look at:
 
 ```sh
 # runs that finished but never emitted the contract line
-zstdgrep -L 'SWEEP_RESULT:' ~/.local/state/harness/jobs/pr-sweep/*.log*
-zstdgrep -h 'SWEEP_RESULT: blocked' ~/.local/state/harness/jobs/pr-sweep/*.log*
+zstdgrep -L 'SWEEP_RESULT:' ~/.local/state/harness/jobs/pr-sweep/*.stream.jsonl*
+zstdgrep -h 'SWEEP_RESULT: blocked' ~/.local/state/harness/jobs/pr-sweep/*.stream.jsonl*
 ```
+
+A `claude-code` sweep's output is in its `.stream.jsonl`, as above; for a
+`crush` or `codex` sweep, grep `*.log` instead.
 
 ### Always send a summary; silence must mean nothing happened
 

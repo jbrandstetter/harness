@@ -100,6 +100,29 @@ is dropped, not emulated:
 ⚠️ `auto_accept` bypasses **ALL** of the agent's permission prompts. Only enable
 it on trusted, headless runs.
 
+### Stream-json one-shots run without a terminal
+
+A `claude-code` one-shot prints `stream-json`, one JSON object per line, so the
+daemon runs it on pipes rather than under a PTY
+([ADR-0033](/decisions/adr-0033-trace-first-run-records)). Every other kind
+keeps its PTY: `crush`, `codex`, `pi` and `omp` one-shots, every resident
+harness, and every `command` harness, whatever its `argv`.
+
+- **No terminal.** The process has no controlling terminal and its stdin is
+  `/dev/null`. The prompt is on the argv, so nothing waits on input. Stop,
+  `timeout`, `on_overlap = "replace"` and the budgets reach its whole process
+  group, as they do for a PTY harness.
+- **stdout** is kept per run as `jobs/<name>/<run_id>.stream.jsonl` (see
+  [Runs](#runs-history-logs-timeout-overlap)), masked line by line. A prompt
+  harness with no `schedule` or `triggers` has no per-run files, so its stdout
+  goes to its durable log (`logs/<name>.log`).
+- **stderr** goes to the run's log and the durable log, masked, with escape
+  sequences stripped.
+- **No log sanitizer.** The terminal emulator that turned a PTY run's output
+  into log text is not built for these runs, and the lines reach the logs as
+  the agent wrote them. `harness attach` and the TUI preview show the output
+  lines as they arrive; see [CLI → Attach](./cli#attach).
+
 ### Prompts that live in a file
 
 A TOML basic string carries no raw newline, so a prompt of any real length ends
@@ -231,6 +254,13 @@ keep_runs = 30         # default 20
   [`compress_logs = false`](#daemon-settings-daemon)); `harness logs <name> --run
   N` reads either. `keep_runs` bounds these log files only: the oldest logs are
   deleted, and their records stay in the ledger, marked `log_pruned`.
+- **Streams.** A [stream-json one-shot](#stream-json-one-shots-run-without-a-terminal)
+  also writes `jobs/<name>/<run_id>.stream.jsonl`: its stdout, one masked JSON
+  line per line, private to your user. Its `<run_id>.log` then holds the
+  lifecycle lines and the agent's stderr. The stream is compressed to
+  `<run_id>.stream.jsonl.zst` when the run closes, like the log. `keep_runs`
+  deletes a run's stream with its log. `harness logs <name> --run N --raw`
+  prints the stream, then the run log once the run has ended.
 
 :::note Upgrading from a release before the ledger
 The first daemon that has the ledger copies each harness's run history out of
