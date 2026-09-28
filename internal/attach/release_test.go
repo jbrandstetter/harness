@@ -14,25 +14,11 @@ import (
 	"time"
 	"weak"
 
+	"github.com/charmbracelet/x/vt"
+
 	"github.com/stump-wtf/harness/internal/protocol"
 	"github.com/stump-wtf/harness/internal/testwait"
 )
-
-// pumpFrame is the entry frame of a Mux's reply pump in a goroutine dump.
-const pumpFrame = "attach.(*Mux).pumpReplies("
-
-// goroutinesIn counts the live goroutines whose stack contains frame: the
-// leak itself, rather than the total count every other goroutine moves too.
-func goroutinesIn(frame string) int {
-	buf := make([]byte, 1<<20)
-	for {
-		n := runtime.Stack(buf, true)
-		if n < len(buf) {
-			return bytes.Count(buf[:n], []byte(frame))
-		}
-		buf = make([]byte, 2*len(buf))
-	}
-}
 
 // eventually polls cond until it holds or Budget(t, want) runs out.
 func eventually(t *testing.T, want time.Duration, cond func() bool) bool {
@@ -51,26 +37,30 @@ func eventually(t *testing.T, want time.Duration, cond func() bool) bool {
 // pump, and with it the last reference that kept the Mux — emulator, ring and
 // all — reachable. Before the fix the pump parked in Read forever, so every
 // project harness ever torn down stayed in the heap.
+//
+// Reachability is the property, so that is what this checks, through weak
+// pointers: a pump still parked holds both the Mux (its receiver) and the
+// emulator (inside Read), and neither can be collected. Counting pump
+// goroutines instead would race every other test's Mux, whose pumps exit on
+// their own schedule now that Remove releases them.
 func TestRegistryRemoveReleasesMux(t *testing.T) {
-	before := goroutinesIn(pumpFrame)
 	r := NewRegistry(100)
 	m := r.Mux("reduit/agent")
 	if _, err := m.Write([]byte("some output\r\n")); err != nil {
 		t.Fatal(err)
 	}
-	if got := goroutinesIn(pumpFrame); got != before+1 {
-		t.Fatalf("reply pumps = %d after creating a Mux, want %d", got, before+1)
-	}
-	gone := weak.Make(m)
+	muxGone := weak.Make(m)
+	termGone := weak.Make(m.term.(*vt.Emulator))
 	m = nil // drop the test's own reference: only the pump may hold it now
 
 	r.Remove("reduit/agent")
 
-	if !eventually(t, 2*time.Second, func() bool { return goroutinesIn(pumpFrame) <= before }) {
-		t.Fatalf("reply pumps = %d after Remove, want %d: pumpReplies is still parked", goroutinesIn(pumpFrame), before)
-	}
-	if !eventually(t, 2*time.Second, func() bool { runtime.GC(); return gone.Value() == nil }) {
-		t.Fatal("the removed Mux is still reachable after Remove")
+	if !eventually(t, 2*time.Second, func() bool {
+		runtime.GC()
+		return muxGone.Value() == nil && termGone.Value() == nil
+	}) {
+		t.Fatalf("after Remove the Mux is reachable = %v, its emulator = %v: pumpReplies is still parked",
+			muxGone.Value() != nil, termGone.Value() != nil)
 	}
 }
 

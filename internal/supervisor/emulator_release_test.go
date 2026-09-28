@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"testing"
 	"time"
+	"weak"
 
 	"github.com/charmbracelet/x/vt"
 
@@ -138,20 +139,31 @@ func TestRespawnsReleaseTheirSanitizer(t *testing.T) {
 	}
 }
 
+// collectable reports, after a collection, whether nothing but weak pointers
+// still reaches p's target.
+func collectable[T any](p weak.Pointer[T]) bool {
+	runtime.GC()
+	return p.Value() == nil
+}
+
 // TestReleaseEndsTheReplyPump: release is what lets a sanitizer's emulator be
-// collected, so after it the emulator's pump goroutine must be gone — and a
-// second release, which closeLog makes after readOutput's, must be harmless.
+// collected once its owner drops it — and a second release, which closeLog
+// makes after readOutput's, must be harmless.
+//
+// Reachability is checked through a weak pointer: a pump still parked in Read
+// holds the emulator, so it can never be collected. Counting pump goroutines
+// instead would race the pumps other tests' supervisors release on their own
+// schedule.
 func TestReleaseEndsTheReplyPump(t *testing.T) {
-	before := goroutinesIn(drainPumpFrame)
 	h := newPtyHistory(&bytes.Buffer{}, 80, 24)
-	if got := goroutinesIn(drainPumpFrame); got != before+1 {
-		t.Fatalf("reply pumps = %d after newPtyHistory, want %d", got, before+1)
-	}
+	gone := weak.Make(h.term.(*vt.Emulator))
 	h.Flush()
 	h.release()
 	h.release()
-	if !eventually(t, 2*time.Second, func() bool { return goroutinesIn(drainPumpFrame) <= before }) {
-		t.Fatalf("reply pumps = %d after release, want %d", goroutinesIn(drainPumpFrame), before)
+	h = nil // the owner drops it, as closeLog and the next spawn do
+
+	if !eventually(t, 2*time.Second, func() bool { return collectable(gone) }) {
+		t.Fatal("a released sanitizer's emulator is still reachable: its reply pump is still parked")
 	}
 }
 
@@ -191,22 +203,23 @@ func (panickyTerm) Write([]byte) (int, error) { panic("index out of range [24] w
 // one's reply pump must end with it rather than park forever beside its
 // replacement, and the replacement must be capped and pumped like the first.
 func TestPtyHistoryRebuildReleasesTheOldEmulator(t *testing.T) {
-	before := goroutinesIn(drainPumpFrame)
 	var out bytes.Buffer
 	h := newPtyHistory(&out, 80, 24)
 	defer h.release()
 	h.mu.Lock()
-	h.term = panickyTerm{h.term.(*vt.Emulator)}
+	old := h.term.(*vt.Emulator)
+	oldGone := weak.Make(old)
+	h.term = panickyTerm{old}
 	h.mu.Unlock()
+	old = nil // from here only h (until the rebuild) and its pump may hold it
 
 	_, _ = h.Write([]byte("boom\r\n"))
 
 	if !bytes.Contains(out.Bytes(), []byte("emulator reset")) {
 		t.Fatalf("expected the rebuild marker in the log, got:\n%s", out.String())
 	}
-	if !eventually(t, 2*time.Second, func() bool { return goroutinesIn(drainPumpFrame) == before+1 }) {
-		t.Fatalf("reply pumps = %d after a rebuild, want %d: the replaced emulator's pump is still parked",
-			goroutinesIn(drainPumpFrame), before+1)
+	if !eventually(t, 2*time.Second, func() bool { return collectable(oldGone) }) {
+		t.Fatal("the emulator a rebuild replaced is still reachable: its reply pump is still parked")
 	}
 	h.mu.Lock()
 	_, rebuilt := h.term.(*vt.Emulator)
