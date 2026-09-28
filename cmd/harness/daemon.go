@@ -374,6 +374,15 @@ func runDaemon(o daemonOpts) {
 	// server that broadcasts them does not exist until now.
 	wireTriggerVisibility(srv, sources, webhooks)
 
+	// SPEC-0007: index the serving clones of declared skill repos. Created or
+	// fast-forwarded only by `harness skills sync`; the daemon never writes a
+	// clone. Also refreshed on every config reload (skills.go).
+	go func() {
+		if err := srv.SyncSkillsManager(); err != nil {
+			log.Warn("skill serving index unavailable; searches stay empty until it is rebuilt", "err", err)
+		}
+	}()
+
 	log.Info("serving",
 		"socket", srv.SocketPath(),
 		"config", o.configPath,
