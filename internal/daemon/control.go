@@ -341,6 +341,11 @@ func (c *conn) opLogs(req protocol.ControlReq) {
 	}
 	text := readLogTail(c.srv.mgr.LogDir(), req.Name, lines)
 	data := protocol.LogsData{Name: req.Name, Text: text}
+	// A triggered structured one-shot writes its stdout to each run's stream
+	// file, not to this log (ADR-0033; streamlog.go).
+	if h, _, ok := c.srv.mgr.HarnessRecord(req.Name); ok && h.Triggered() && supervisor.RunsOnPipes(h) {
+		data.Notices = append(data.Notices, fmt.Sprintf("%s runs on pipes: this log holds its lifecycle and stderr lines; each run's stdout is in its stream file (harness logs %s --run N --raw)", req.Name, req.Name))
+	}
 	// SnapshotFor never materializes a Mux (#183), so a harness nobody has
 	// attached to and that has teed no output simply reports no viewport.
 	if ms, ok := c.srv.reg.SnapshotFor(req.Name); ok {
