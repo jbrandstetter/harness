@@ -2,7 +2,7 @@
 # closed #311, superseded by #313). Its redact test fixtures were literal
 # credential shapes; #313 rebuilt that commit with fixtures assembled at run
 # time, so no branch carries them. Gitea keeps pull refs forever, so a scan
-# that fetches refs/pull/* would still find them. Nothing else is ignored.
+# that fetches refs/pull/* would still find them.
 
 ce1e2f708621573d3a01fbbc4aa6a820392b656e:internal/redact/redact.go:curl-auth-user:63
 ce1e2f708621573d3a01fbbc4aa6a820392b656e:internal/redact/redact_test.go:curl-auth-header:17
@@ -10,3 +10,10 @@ ce1e2f708621573d3a01fbbc4aa6a820392b656e:internal/redact/redact_test.go:curl-aut
 ce1e2f708621573d3a01fbbc4aa6a820392b656e:internal/redact/redact_test.go:curl-auth-header:21
 ce1e2f708621573d3a01fbbc4aa6a820392b656e:internal/redact/redact_test.go:generic-api-key:26
 ce1e2f708621573d3a01fbbc4aa6a820392b656e:internal/redact/redact_test.go:curl-auth-user:46
+
+# 8146bee is the same orphan-ref class: not reachable from any branch (the
+# scan only reaches it through a ref the CI checkout fetches), and its
+# jsonline_test.go fixture is a literal curl -u credential shape in the
+# redact package's tests. The commit is unmodified history, not a live
+# secret; the branch-time fixtures are assembled at run time.
+8146beef50970c08d45f705c0b33a0dbdffaa15e:internal/redact/jsonline_test.go:curl-auth-user:105
