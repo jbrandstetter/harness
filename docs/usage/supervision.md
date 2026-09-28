@@ -165,6 +165,12 @@ Two launchd specifics worth knowing:
   `--scrollback N`). An attach replays the ring after the screen snapshot; a
   line over 64 KiB replays as its head and a `…[harness: truncated N bytes]`
   marker. See [Daemon settings](./configuration#daemon-settings-daemon).
+- **Stream-json one-shots have no PTY (ADR-0033)**: a `claude-code` one-shot
+  runs on pipes. Its stdout is kept per run as
+  `jobs/<name>/<run_id>.stream.jsonl`, its stderr goes to the run log and the
+  durable log, and it has no controlling terminal. Stop, timeout and replace
+  still reach its whole process group. See
+  [Configuration → Stream-json one-shots](./configuration#stream-json-one-shots-run-without-a-terminal).
 
 ## Flapping a.k.a. crash-loop protection
 

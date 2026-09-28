@@ -143,6 +143,32 @@ editing the referenced file SHALL change the next run without a config reload.
   starts again
 - **THEN** the new contents are used, with no config reload in between
 
+### Requirement: Structured Prompt Stream
+
+An adapter SHALL declare whether its prompt one-shot writes a structured,
+line-delimited stream on stdout, and in which format (ADR-0033). The
+declaration SHALL be the adapter's own, made beside the `PromptCommand` that
+asks the CLI for the format, and an adapter that declares nothing SHALL be
+treated as printing for a terminal. `claude-code` SHALL declare `stream-json`,
+the format its `--output-format stream-json` argv requests. `crush`, `codex`,
+`pi`, `omp`, `generic` and `command` SHALL declare none.
+
+A declared format SHALL appear in the adapter's prompt argv, so a declaration
+can never put a terminal-mode CLI on pipes. The declaration SHALL decide only
+how a one-shot is spawned (SPEC-0017 REQ-18). The daemon SHALL NOT parse the
+stream: normalizing it is agent-trace's.
+
+#### Scenario: claude-code declares stream-json
+
+- **WHEN** the adapter registry resolves `claude-code`
+- **THEN** it declares `stream-json`, and its prompt argv carries
+  `--output-format stream-json`
+
+#### Scenario: Other adapters keep their PTY
+
+- **WHEN** the registry resolves any other adapter
+- **THEN** it declares no stream, and its one-shots run under a PTY
+
 ### Requirement: Skill Path Configuration
 
 The harness schema SHALL accept an optional `skill_paths` list of directories

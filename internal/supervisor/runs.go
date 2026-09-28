@@ -709,6 +709,8 @@ func (s *Supervisor) finishRunWith(outcome RunOutcome, code *int, reason RunReas
 		run.evlog.Info("run finished", kv...)
 		_ = run.file.Close()
 	}
+	// A pipe run's stream file, closed before CloseRun seals it (pipes.go).
+	s.sealStream()
 	if s.journal != nil {
 		if err := s.journal.CloseRun(s.harness.Name, run.rec); err != nil {
 			s.logEvent("run history not saved", "run_id", run.rec.RunID, "err", err.Error())
@@ -827,7 +829,7 @@ func (s *Supervisor) awaitReader() {
 	if s.readerDone == nil {
 		return
 	}
-	drainReader(s.readerDone)
+	drainOutput(s.readerProgress, s.readerDone)
 }
 
 // historyOut is where the sanitized output history of the next spawn goes: the

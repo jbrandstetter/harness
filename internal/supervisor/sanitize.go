@@ -110,7 +110,7 @@ func newPtyHistory(out io.Writer, cols, rows int) *ptyHistory {
 // instead of a pump, so a late rebuild neither parks a goroutine nor lets a
 // reply block the writer.
 func (h *ptyHistory) startEmulator(cols, rows int) {
-	term := vt.NewEmulator(cols, rows)
+	term := newEmulator(cols, rows)
 	term.SetScrollbackSize(1)
 	h.term = term
 	if h.released {

@@ -78,6 +78,12 @@ runs `claude -p --dangerously-skip-permissions --model claude-sonnet-5
 at 06:00 UTC. [Scheduled sweeps](./scheduled-sweeps) covers the schedule, run
 history and how to tell a good run from a bad one.
 
+Because that output is stream-json, one JSON object per line, Harness runs a
+Claude Code one-shot on pipes rather than a terminal. Each run's stdout is kept
+as `jobs/<name>/<run_id>.stream.jsonl`, and `harness logs <name> --run N --raw`
+prints it. See
+[Stream-json one-shots](/usage/configuration#stream-json-one-shots-run-without-a-terminal).
+
 ## A one-shot cannot take extra flags
 
 `prompt` and `args` are mutually exclusive, and so are `prompt_file` and `args`.

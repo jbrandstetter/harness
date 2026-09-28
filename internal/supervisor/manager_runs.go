@@ -455,14 +455,21 @@ func runLogID(file string) (int, bool) {
 	return runIDWithSuffix(file, ".log")
 }
 
-// runArtifactID parses any of a run's on-disk artifacts — "<id>.log" or
-// "<id>.event.json" — into its run id. Pruning walks this, so a new artifact
-// kind is one line here rather than a second loop that can forget one.
+// runArtifactSuffixes are the file names a run's artifacts end in: its log,
+// its event file, the raw structured stream of a pipe-run one-shot (ADR-0033),
+// and the compressed form of each sealed one (ADR-0007 as amended). Pruning
+// walks these, so a new artifact kind is one line here rather than a second
+// loop that can forget one.
+var runArtifactSuffixes = []string{".log", ".log.zst", ".event.json", ".stream.jsonl", ".stream.jsonl.zst"}
+
+// runArtifactID parses any of a run's on-disk artifacts into its run id.
 func runArtifactID(file string) (int, bool) {
-	if id, ok := runIDWithSuffix(file, ".log"); ok {
-		return id, true
+	for _, suffix := range runArtifactSuffixes {
+		if id, ok := runIDWithSuffix(file, suffix); ok {
+			return id, true
+		}
 	}
-	return runIDWithSuffix(file, ".event.json")
+	return 0, false
 }
 
 func runIDWithSuffix(file, suffix string) (int, bool) {
