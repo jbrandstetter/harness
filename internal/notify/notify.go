@@ -170,6 +170,11 @@ type Options struct {
 	Logger  *log.Logger
 	// ShutdownGrace bounds Close (default DefaultShutdownGrace).
 	ShutdownGrace time.Duration
+
+	// delivered, when set, sees every finished delivery once its hook has
+	// exited. Tests only: they wait on it instead of polling the hook's
+	// output against a clock.
+	delivered func(Delivery)
 }
 
 type cooldownKey struct{ harness, event string }
@@ -423,6 +428,9 @@ func (d *Dispatcher) deliver(parent context.Context, n Notification, cfg core.No
 			kv = append(kv, "output", o)
 		}
 		d.opts.Logger.Error("notify: hook failed", kv...)
+	}
+	if d.opts.delivered != nil {
+		d.opts.delivered(del)
 	}
 	return del
 }
