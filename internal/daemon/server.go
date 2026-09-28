@@ -20,6 +20,7 @@ import (
 	"github.com/stump-wtf/harness/internal/attach"
 	"github.com/stump-wtf/harness/internal/protocol"
 	"github.com/stump-wtf/harness/internal/scheduler"
+	"github.com/stump-wtf/harness/internal/skillserve"
 	"github.com/stump-wtf/harness/internal/supervisor"
 )
 
@@ -51,7 +52,12 @@ type Server struct {
 	notifier Notifier
 	// triggers is the trigger source manager, nil when the daemon runs none
 	// (triggers.go).
-	triggers   TriggerSources
+	triggers TriggerSources
+	// skills is the skill serving manager, nil when no skill repo is
+	// declared (skills.go). It owns the serving clones' FTS5 index and the
+	// retrieval-count store (SPEC-0007).
+	skills     *skillserve.Manager
+	skillsMu   sync.Mutex
 	socketPath string
 	configPath string
 	version    string
@@ -116,7 +122,10 @@ type Options struct {
 	// Triggers is the trigger source manager the triggers op, the harness
 	// projection and jobs read source states from (SPEC-0014 REQ "Trigger
 	// Visibility"). Optional: nil reports every source with no state.
-	Triggers   TriggerSources
+	Triggers TriggerSources
+	// Skills is the skill serving manager (SPEC-0007), nil when no skill repo
+	// is declared. Optional.
+	Skills     *skillserve.Manager
 	SocketPath string
 	ConfigPath string // for the reload op
 	Version    string
@@ -158,6 +167,7 @@ func NewServer(opts Options) *Server {
 		sched:           opts.Scheduler,
 		notifier:        opts.Notifier,
 		triggers:        opts.Triggers,
+		skills:          opts.Skills,
 		socketPath:      opts.SocketPath,
 		configPath:      opts.ConfigPath,
 		version:         opts.Version,

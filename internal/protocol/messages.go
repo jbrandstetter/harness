@@ -172,6 +172,13 @@ const (
 	// last event and error, its counters and the harnesses it fires.
 	// Governing: ADR-0021, SPEC-0014 REQ "Trigger Visibility".
 	OpTriggers Op = "triggers"
+
+	// OpSkillsSynced reports which serving clones `harness skills sync`
+	// created or fast-forwarded, so the daemon reindexes them (SPEC-0007 REQ
+	// "Default-Branch Gate"). OpSkillsStatus returns each skill repo's
+	// serving state for `harness doctor`.
+	OpSkillsSynced Op = "skills_synced"
+	OpSkillsStatus Op = "skills_status"
 )
 
 // ControlReq is a control-plane request. ID correlates the response; Name
@@ -206,6 +213,9 @@ type ControlReq struct {
 	// log, and the events view uses the run record's exact window, overriding
 	// Since/Until. Zero means the harness-wide behavior.
 	Run int `json:"run,omitempty"`
+	// Names carries the skill repo names a skills_synced report covers
+	// (SPEC-0007 REQ "Default-Branch Gate").
+	Names []string `json:"names,omitempty"`
 	// Limit caps the records runs returns, newest first. Zero means 20.
 	Limit int `json:"limit,omitempty"`
 
@@ -316,6 +326,22 @@ type ControlResp struct {
 	ID   uint64          `json:"id"`
 	Op   Op              `json:"op"`
 	Data json.RawMessage `json:"data,omitempty"`
+}
+
+// SkillRepoStatus is one skill repo's serving state: the default-branch-gate
+// result, the indexed skill count, and reindex warnings naming malformed
+// files (SPEC-0007 REQ "Default-Branch Gate", REQ "Error Handling Standards").
+type SkillRepoStatus struct {
+	Name     string   `json:"name"`
+	State    string   `json:"state"`
+	Detail   string   `json:"detail,omitempty"`
+	Skills   int      `json:"skills"`
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+// SkillsStatusData is the skills_status response.
+type SkillsStatusData struct {
+	Repos []SkillRepoStatus `json:"repos"`
 }
 
 // HarnessInfo is one harness's state for list/describe (SPEC-0003 fields; the
