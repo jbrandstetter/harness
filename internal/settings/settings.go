@@ -27,6 +27,9 @@
 // "Environment Value Validation", REQ "Source Attribution".
 //
 // @joestump-agent 08/19/2026 - Introduced with the ADR-0016 environment layer.
+//
+// @joestump-agent 09/28/2026 - KindBytes: human byte sizes (bytes.go), for
+// settings that are amounts of memory.
 package settings
 
 import (
@@ -60,6 +63,9 @@ const (
 	KindString Kind = iota
 	KindBool
 	KindInt
+	// KindBytes is a human byte size ("2GiB", "512MiB", "0"), resolved to an
+	// int64 byte count. See bytes.go for the accepted units.
+	KindBytes
 )
 
 // ErrNoConfigFile reports that no file existed at the resolved path. It is a
@@ -122,6 +128,9 @@ type Resolved struct {
 func (r Resolved) String() string {
 	if r.Value == nil {
 		return ""
+	}
+	if n, ok := r.Value.(int64); ok && r.Setting.Kind == KindBytes {
+		return FormatBytes(n)
 	}
 	return fmt.Sprint(r.Value)
 }
@@ -273,6 +282,17 @@ func (r *Resolver) Int(name string) (int, error) {
 	return i, nil
 }
 
+// Bytes resolves a byte-size setting to a byte count. An unset setting with
+// no default is 0.
+func (r *Resolver) Bytes(name string) (int64, error) {
+	got, err := r.Resolve(name)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := got.Value.(int64)
+	return n, nil
+}
+
 // parse converts a raw string to the setting's type, naming the origin in any
 // error so an operator can tell HARNESS_SCROLLBACK=lots from --scrollback=lots.
 // SPEC-0010 REQ "Environment Value Validation" forbids coercing or ignoring a
@@ -293,6 +313,13 @@ func parse(s Setting, raw, origin string) (any, error) {
 			return nil, fmt.Errorf("%s: invalid value %q: expected an integer", origin, raw)
 		}
 		return i, nil
+
+	case KindBytes:
+		n, err := ParseBytes(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", origin, err)
+		}
+		return n, nil
 
 	default:
 		if s.Name == "log-level" {
