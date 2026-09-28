@@ -150,13 +150,13 @@ type rawProfile struct {
 
 // rawDaemon mirrors the [daemon] table before validation.
 //
-// Socket, LogLevel, LogFile and Scrollback are process settings: their value
-// is owned by internal/settings, which resolves them flag > env > file >
-// default (ADR-0016). They are decoded here only so checkUndecoded accepts
-// them and a bad value fails with its line number. Without these fields the
-// strict decode refused every one of them as an unknown key, so the file
-// layer the settings registry promises for them could never be reached
-// (GitHub stump-wtf/harness#19).
+// Socket, LogLevel, LogFile, Scrollback, MemoryLimit and PprofAddr are process
+// settings: their value is owned by internal/settings, which resolves them
+// flag > env > file > default (ADR-0016). They are decoded here only so
+// checkUndecoded accepts them and a bad value fails with its line number.
+// Without these fields the strict decode refused every one of them as an
+// unknown key, so the file layer the settings registry promises for them
+// could never be reached (GitHub stump-wtf/harness#19).
 type rawDaemon struct {
 	WatchConfig *bool   `toml:"watch_config"`
 	Socket      *string `toml:"socket"`
@@ -168,11 +168,7 @@ type rawDaemon struct {
 	// keys: unknown keys fail anyway, but this one deserves the way forward.
 	RemovedOTelEndpoint *string `toml:"otel_endpoint"`
 
-	// MemoryLimit and PprofAddr are process settings owned by
-	// internal/settings (--memory-limit / HARNESS_MEMORY_LIMIT, --pprof-addr /
-	// HARNESS_PPROF_ADDR). They are decoded here only so the strict decode
-	// accepts them and checkDaemonDiag can refuse a bad value with its line.
-	// MemoryLimit is untyped: a string with a unit or an integer of bytes.
+	// MemoryLimit is untyped: a size string ("2GiB") or an integer of bytes.
 	MemoryLimit any     `toml:"memory_limit"`
 	PprofAddr   *string `toml:"pprof_addr"`
 }
@@ -372,9 +368,6 @@ func Parse(data []byte, filename string) (*core.Config, error) {
 			var rd rawDaemon
 			if err := md.PrimitiveDecode(top["daemon"], &rd); err != nil {
 				return nil, newError(filename, h.line, "[daemon]: %v", err)
-			}
-			if err := checkDaemonDiag(filename, data, rd); err != nil {
-				return nil, err
 			}
 			if rd.RemovedOTelEndpoint != nil {
 				return nil, removedOTelEndpointErr(filename, lineOfKeyInTable(data, "daemon", "otel_endpoint"))
