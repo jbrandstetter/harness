@@ -44,7 +44,7 @@ type HarnessForm struct {
 	// upgrade and uninstall own that key — but it must round-trip: the `e`
 	// save path rewrites the whole table, and a form that dropped it would
 	// silently convert a package-sourced harness into a broken bare table.
-	Source string
+	PackageSource string
 	// Harness is the harness-kind enum (crush/claude-code/codex/pi/omp/
 	// generic/command). It selects the adapter, which supplies the executable
 	// for a long-running harness and the argv synthesis for a prompt one-shot
@@ -442,7 +442,7 @@ func (f HarnessForm) TOML() string {
 	fmt.Fprintf(&b, "harness = %s\n", strconv.Quote(f.Harness))
 	// Round-trip only (see the Source field doc): written verbatim, never
 	// edited by the form.
-	if s := strings.TrimSpace(f.Source); s != "" {
+	if s := strings.TrimSpace(f.PackageSource); s != "" {
 		fmt.Fprintf(&b, "source = %s\n", strconv.Quote(s))
 	}
 	prompt := strings.TrimSpace(f.Prompt)
@@ -810,7 +810,7 @@ func splitEnvFileInput(s string) []string {
 func (fi formInputs) toForm() HarnessForm {
 	f := HarnessForm{
 		Name:             strings.TrimSpace(fi.name),
-		Source:           strings.TrimSpace(fi.source),
+		PackageSource:    strings.TrimSpace(fi.source),
 		Harness:          strings.TrimSpace(fi.harness),
 		Prompt:           strings.TrimSpace(fi.prompt),
 		PromptFile:       strings.TrimSpace(fi.promptFile),
