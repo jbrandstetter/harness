@@ -5,7 +5,7 @@ package attach
 // session) and REQ "Backpressure Isolation" (the PTY reader MUST NOT block on
 // any client; bounded per-session queues; overflow coalesces to a fresh
 // snapshot); ADR-0003 (one x/vt emulator per harness; resize policy); ADR-0007
-// (ring + backpressure); ADR-0008 (read-only attach).
+// (byte-bounded ring + backpressure); ADR-0008 (read-only attach).
 
 import (
 	"bytes"
@@ -79,11 +79,18 @@ type Mux struct {
 	cols, rows int
 }
 
-// newMux builds a Mux for a harness. onResize is invoked when the
-// smallest-attached-wins size changes (to resize the real PTY); onInput
-// delivers read-write attach keystrokes to the PTY; onNudge re-delivers
-// SIGWINCH to the guest's process group (see reassertWinch). Any may be nil.
+// newMux builds a Mux whose ring keeps up to ringLines lines within the default
+// byte budget; see newMuxLimits.
 func newMux(name string, ringLines int, onResize func(cols, rows int), onInput func(p []byte), onNudge func()) *Mux {
+	return newMuxLimits(name, RingLimits{Lines: ringLines}, onResize, onInput, onNudge)
+}
+
+// newMuxLimits builds a Mux for a harness, its scrollback ring bounded by lim.
+// onResize is invoked when the smallest-attached-wins size changes (to resize
+// the real PTY); onInput delivers read-write attach keystrokes to the PTY;
+// onNudge re-delivers SIGWINCH to the guest's process group (see
+// reassertWinch). Any may be nil.
+func newMuxLimits(name string, lim RingLimits, onResize func(cols, rows int), onInput func(p []byte), onNudge func()) *Mux {
 	m := &Mux{
 		name:     name,
 		onResize: onResize,
@@ -98,7 +105,7 @@ func newMux(name string, ringLines int, onResize func(cols, rows int), onInput f
 		// asleep).
 		nudgeDelays: winchNudgeDelays,
 		term:        vt.NewEmulator(defaultCols, defaultRows),
-		ring:        newRing(ringLines),
+		ring:        newRing(lim),
 		cols:        defaultCols,
 		rows:        defaultRows,
 		sessions:    make(map[*Session]struct{}),
@@ -301,7 +308,7 @@ func (m *Mux) Attach(id uint32, mode protocol.AttachMode, cols, rows int, write 
 	}
 	m.mu.Lock()
 	s.enqueueLocked(renderScreen(m.term)) // 1. screen snapshot
-	if tail := m.ring.Tail(); len(tail) > 0 {
+	if tail := bytes.Join(m.ring.tailFrames(), nil); len(tail) > 0 {
 		s.enqueueLocked(tail) // 2. bounded scrollback tail
 	}
 	m.sessions[s] = struct{}{}
