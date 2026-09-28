@@ -79,6 +79,9 @@ type ptyHistory struct {
 	flushed bool
 	// mask carries credential masking across rows (logLine).
 	mask redact.Lines
+	// released records that the owner is done with this sanitizer and its
+	// emulator's reply pump has been ended (release).
+	released bool
 }
 
 // newPtyHistory builds the sanitizer for a PTY born at cols x rows.
@@ -89,10 +92,65 @@ func newPtyHistory(out io.Writer, cols, rows int) *ptyHistory {
 	if rows < 1 {
 		rows = defaultPTYRows
 	}
-	term := vt.NewEmulator(cols, rows)
-	h := &ptyHistory{term: term, out: out, prev: blankScreen(cols, rows)}
-	go h.drainReplies(term)
+	h := &ptyHistory{out: out, prev: blankScreen(cols, rows)}
+	h.startEmulator(cols, rows)
 	return h
+}
+
+// startEmulator installs a fresh emulator as h.term and starts its reply pump.
+// Called from the constructor and, under h.mu, from feedLocked's rebuild.
+//
+// Scrollback is capped at one row: the sanitizer diffs screens and never
+// reads the emulator's scrollback, which by default keeps 10,000 rows of
+// 112-byte cells — ~85 MiB at 80 columns, filled by nothing but a long run
+// (SPEC-0002 REQ "Emulator Memory"). x/vt ignores sizes below 1, and caps only
+// the main screen; the alternate screen's scrollback has no public knob.
+//
+// A sanitizer that is already released gets its new emulator's pipe closed
+// instead of a pump, so a late rebuild neither parks a goroutine nor lets a
+// reply block the writer.
+func (h *ptyHistory) startEmulator(cols, rows int) {
+	term := vt.NewEmulator(cols, rows)
+	term.SetScrollbackSize(1)
+	h.term = term
+	if h.released {
+		releaseEmulator(term)
+		return
+	}
+	go h.drainReplies(term)
+}
+
+// releaseEmulator ends t's reply pump by closing the emulator's input pipe:
+// the pump's parked Read returns EOF, and any later reply write fails at once
+// instead of blocking. It never touches Emulator.Close, whose unsynchronised
+// `closed` flag races a parked Read (stump.wtf/harness#142); io.Pipe is safe
+// to close from any goroutine. Closing twice is harmless.
+//
+// Governing: SPEC-0002 REQ "Emulator Memory"; ADR-0003.
+func releaseEmulator(t vt.Terminal) {
+	if c, ok := t.InputPipe().(io.Closer); ok {
+		_ = c.Close()
+	}
+}
+
+// release is called by the owner once it is done with the sanitizer — after
+// the final Flush — and ends the emulator's reply pump. Until it runs, that
+// pump's parked Read keeps the whole emulator reachable after the Supervisor
+// has dropped it: its 4 MiB parser buffer and every scrolled row. Unreleased,
+// that was ~98 MiB and one goroutine per spawn after a 5 MiB stream-json run
+// (https://github.com/stump-wtf/harness/issues/18). Idempotent.
+//
+// A reader that outlived closeLog's drain bound may still Write afterwards.
+// That is safe: the screen still updates, and a query's reply fails against
+// the closed pipe rather than blocking the PTY reader.
+func (h *ptyHistory) release() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.released {
+		return
+	}
+	h.released = true
+	releaseEmulator(h.term)
 }
 
 // drainReplies discards the bytes the sanitizer's emulator synthesizes in
@@ -111,10 +169,12 @@ func newPtyHistory(out io.Writer, cols, rows int) *ptyHistory {
 // and a second answer to the same query would land in the guest's input as
 // spurious keystrokes.
 //
-// The pump runs for its emulator's lifetime and is never stopped — the
-// same never-Close trade the mux's pumpReplies makes, for the same reason:
-// Emulator.Close races a parked Read (see vtview.pumpReplies). One parked
-// goroutine per emulator, not a frozen production agent.
+// The pump runs until its owner calls release, which closes the emulator's
+// input pipe so this Read returns EOF. It must be released, not abandoned: a
+// parked pump keeps the whole emulator reachable, and one was parked for
+// every spawn the daemon ever made (https://github.com/stump-wtf/harness/issues/18).
+// Emulator.Close would also unpark it, but races the parked Read on the
+// emulator's unsynchronised `closed` flag (see releaseEmulator).
 //
 // The emulator is a parameter, not h.term: feedLocked replaces that field
 // when it recovers from a panic, and reading it here would race that write
@@ -165,10 +225,11 @@ func (h *ptyHistory) Write(p []byte) (int, error) {
 //
 // Recovery is reset-first, rebuild-fallback: ESC[r resets DECSTBM to the
 // default scroll region (1;height), which heals the poisoned margins. A
-// rebuild leaks one goroutine per panic (the old emulator's drainReplies
-// pump parks forever), so we try reset first and only rebuild when reset
-// cannot heal the state. The frame is dropped in either case; the durable
-// log loses at most one screen of context.
+// rebuild costs a whole new emulator (a 4 MiB parser buffer before any
+// screen), and releases the old one first so its pump does not park, so we
+// try reset first and only rebuild when reset cannot heal the state. The
+// frame is dropped in either case; the durable log loses at most one screen
+// of context.
 func (h *ptyHistory) feedLocked(chunk []byte) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -193,17 +254,17 @@ func (h *ptyHistory) feedLocked(chunk []byte) {
 				return
 			}
 			// Reset itself panicked or did not heal the state. Fall back to a
-			// full rebuild. This leaks one drainReplies goroutine (the old pump
-			// parks forever), but it keeps the guest running when reset cannot
-			// fix whatever caused the original panic.
+			// full rebuild, which keeps the guest running when reset cannot
+			// fix whatever caused the original panic. Release the old
+			// emulator first: its pump would otherwise park forever and keep
+			// it reachable alongside its replacement.
 			cols, rows := h.term.Width(), h.term.Height()
 			if cols < 1 || rows < 1 {
 				cols, rows = defaultPTYCols, defaultPTYRows
 			}
-			term := vt.NewEmulator(cols, rows)
-			h.term = term
+			releaseEmulator(h.term)
+			h.startEmulator(cols, rows)
 			h.prev = blankScreen(cols, rows)
-			go h.drainReplies(term)
 			_, _ = io.WriteString(h.out, fmt.Sprintf("[harness] dropped a frame the terminal emulator could not render (%v); emulator reset\n", r))
 		}
 	}()
