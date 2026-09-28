@@ -717,10 +717,28 @@ exporting to a collector is a different audience, gated by `export_telemetry`
 
 ```toml
 [daemon]
-watch_config = true   # auto-reload on config file changes (default true)
+watch_config = true                      # auto-reload on config file changes (default true)
+scrollback   = 10000                     # per-harness scrollback ring depth, in lines
+log_level    = "info"                    # debug, info, warn, error
+log_file     = "/var/log/harness.log"    # absent = stderr
+socket       = "/run/harness/harness.sock"  # absent = $XDG_RUNTIME_DIR/harness.sock
 ```
 
-`watch_config` is the only daemon setting.
+Every key is optional. Apart from `watch_config`, each has a matching flag and
+`HARNESS_*` variable (see [Environment variables](#environment-variables)), and
+either one beats the file. Setting them here is how you tune a daemon you do not
+launch yourself — a Homebrew `brew services` daemon, a launchd agent, a
+container entrypoint — without editing the service definition.
+
+- `scrollback` must be at least 1. Each running harness keeps this many lines of
+  output in memory, so lowering it is the lever for daemon memory use.
+- `socket` and `log_file` must be absolute paths; `~` is not expanded. The CLI
+  reads `socket` from this file too, so `harness ls` finds a daemon on a
+  non-default socket without a `--socket` flag.
+- `scrollback`, `log_level`, `log_file` and `socket` are read when the daemon
+  starts. Changing them needs a daemon restart, not a reload. Until you restart,
+  a changed `socket` points the CLI at a socket the running daemon is not on.
+- `harness doctor` shows which source supplied each value.
 
 `otel_endpoint` has been **removed**: it was accepted but never exported
 anything. A config that still sets it fails to load, with an error pointing
@@ -1156,18 +1174,22 @@ the SSH server is on — can come from the environment instead of a flag or this
 file. That is what makes Harness deployable as a container or a systemd unit
 without baking in a config file.
 
-| Variable | Flag | Type | Default |
-|---|---|---|---|
-| `HARNESS_SOCKET` | `--socket` | path | `$XDG_RUNTIME_DIR/harness.sock` |
-| `HARNESS_CONFIG` | `--config` | path | `$XDG_CONFIG_HOME/harness/harness.toml` |
-| `HARNESS_JSON` | `--json` | bool | `false` |
-| `HARNESS_LOG_LEVEL` | `--log-level` | `debug`/`info`/`warn`/`error` | `info` |
-| `HARNESS_LOG_FILE` | `--log-file` | path | stderr |
-| `HARNESS_SCROLLBACK` | `--scrollback` | int | 10000 |
-| `HARNESS_SSH` | `--ssh` | bool | `false` |
-| `HARNESS_SSH_LISTEN` | `--ssh-listen` | `host:port` | unset |
-| `HARNESS_WEBHOOK_LISTEN` | `--webhook-listen` | `host:port` | unset (no webhook listener) |
-| `HARNESS_WATCH_CONFIG` | — | bool | `true` |
+| Variable | Flag | `harness.toml` key | Type | Default |
+|---|---|---|---|---|
+| `HARNESS_SOCKET` | `--socket` | `[daemon] socket` | path | `$XDG_RUNTIME_DIR/harness.sock` |
+| `HARNESS_CONFIG` | `--config` | — | path | `$XDG_CONFIG_HOME/harness/harness.toml` |
+| `HARNESS_JSON` | `--json` | — | bool | `false` |
+| `HARNESS_LOG_LEVEL` | `--log-level` | `[daemon] log_level` | `debug`/`info`/`warn`/`error` | `info` |
+| `HARNESS_LOG_FILE` | `--log-file` | `[daemon] log_file` | path | stderr |
+| `HARNESS_SCROLLBACK` | `--scrollback` | `[daemon] scrollback` | int | 10000 |
+| `HARNESS_SSH` | `--ssh` | `[server] enabled` | bool | `false` |
+| `HARNESS_SSH_LISTEN` | `--ssh-listen` | `[server] listen` | `host:port` | unset |
+| `HARNESS_WEBHOOK_LISTEN` | `--webhook-listen` | `[server] webhook_listen` | `host:port` | unset (no webhook listener) |
+| `HARNESS_WATCH_CONFIG` | — | `[daemon] watch_config` | bool | `true` |
+
+`config` has no file key because it names the file. `json` has none because it
+is an output choice for one invocation: a file default would change what every
+script parsing Harness's output receives.
 
 Booleans accept `1`, `0`, `true`, `false`, `yes`, `no`, `on`, `off`.
 

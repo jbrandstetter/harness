@@ -149,8 +149,20 @@ type rawProfile struct {
 }
 
 // rawDaemon mirrors the [daemon] table before validation.
+//
+// Socket, LogLevel, LogFile and Scrollback are process settings: their value
+// is owned by internal/settings, which resolves them flag > env > file >
+// default (ADR-0016). They are decoded here only so checkUndecoded accepts
+// them and a bad value fails with its line number. Without these fields the
+// strict decode refused every one of them as an unknown key, so the file
+// layer the settings registry promises for them could never be reached
+// (GitHub stump-wtf/harness#19).
 type rawDaemon struct {
-	WatchConfig *bool `toml:"watch_config"`
+	WatchConfig *bool   `toml:"watch_config"`
+	Socket      *string `toml:"socket"`
+	LogLevel    *string `toml:"log_level"`
+	LogFile     *string `toml:"log_file"`
+	Scrollback  *int    `toml:"scrollback"`
 	// RemovedOTelEndpoint is decoded only so its presence can be REJECTED
 	// with a migration error (SPEC-0015 REQ-13), like rawHarness's removed
 	// keys: unknown keys fail anyway, but this one deserves the way forward.
@@ -366,6 +378,9 @@ func Parse(data []byte, filename string) (*core.Config, error) {
 			}
 			if rd.RemovedOTelEndpoint != nil {
 				return nil, removedOTelEndpointErr(filename, lineOfKeyInTable(data, "daemon", "otel_endpoint"))
+			}
+			if err := checkDaemonSettings(filename, data, rd); err != nil {
+				return nil, err
 			}
 			cfg.Daemon = core.DaemonConfig{WatchConfig: rd.WatchConfig}
 

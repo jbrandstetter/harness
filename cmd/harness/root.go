@@ -316,7 +316,9 @@ func newDoctorCmd(g *globalOpts) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			exitFn(runDoctorWith(g.opts(), notifyTest))
+			o := g.opts()
+			o.cmd = cmd
+			exitFn(runDoctorWith(o, notifyTest))
 			return nil
 		},
 	}

@@ -339,6 +339,9 @@ harness daemon --detach       # fork into the background (dev convenience)
 
 Daemon flags: `--config`, `--socket`, `--scrollback N` (per-harness ring depth),
 `--ssh`, `--ssh-listen`, `--webhook-listen`, `--log-level`, `--log-file`, `--detach`.
+All but `--config` and `--detach` can also be set in `harness.toml`
+(`[daemon]` / `[server]`) or a `HARNESS_*` variable; see
+[Configuration → Environment variables](./configuration#environment-variables).
 
 ## Exit codes & error handling
 
