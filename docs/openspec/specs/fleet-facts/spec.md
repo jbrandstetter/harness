@@ -238,16 +238,19 @@ A fact MAY carry anchors in `fact_anchors`, one row each, with a `state` of
 | `span` | repo, path, line range | blob SHA, range, base commit |
 | `path` | repo, path | blob SHA, base commit |
 | `dependency` | repo, `dependency` node | module, synced version |
-| `tool_version` | tool name, version | tool, version |
+| `agent_version` | adapter (default: the writing run's) | adapter, version and fingerprint from the writing run's record |
 | `grounding_pr` | repo, number | number, merge SHA |
 
 The handler SHALL resolve blob SHAs and the base commit from the latest synced
 default-branch tree of the repository, and a dependency's version from the
-repo's synced `depends_on` edge (SPEC-0027 REQ "Graph Sync"), and SHALL NOT
-accept a caller-supplied blob SHA or version. A path absent from that tree, a
-pull request not recorded as merged, a dependency with no `depends_on` edge, and
-every `tool_version` anchor (nothing records agent CLI versions in this
-revision) SHALL be stored `unresolved`. A fact whose anchors are all
+repo's synced `depends_on` edge (SPEC-0027 REQ "Graph Sync"), and an agent's
+version from the writing run's ledger record (SPEC-0027 REQ "Agent Version
+Recording"), and SHALL NOT accept a caller-supplied blob SHA or version. A path
+absent from that tree, a pull request not recorded as merged, a dependency with
+no `depends_on` edge, and an `agent_version` anchor whose writing run recorded
+no version SHALL be stored `unresolved`. Other tools' versions are anchored
+where they are pinned: a manifest entry as `dependency`, a runner image tag as a
+`span` of the workflow file that names it. A fact whose anchors are all
 `unresolved` SHALL be treated as unanchored (REQ-10) until one resolves. A write
 SHALL carry at most 8 anchors, all in the writing run's repository; only
 promotion (REQ-14) gives a fact anchors in other repositories.
@@ -285,9 +288,23 @@ repository:
   `reverted`; the fact becomes `ended` with reason `reverted`, whatever its
   other anchors say.
 
+An `agent_version` anchor SHALL be checked when a run's record gains its
+`agent_version`, not on sync: when a run of the anchored adapter in the fact's
+repository records a version different from the anchor's, the anchor becomes
+`changed` and the fact `suspect` with reason `agent_version_changed`. A run
+that recorded no version SHALL change nothing.
+
 `observed`, `synced` and `operator` facts SHALL follow the same rules, except
 that a suspect `operator` fact SHALL NOT join the re-verification queue and SHALL
 appear in the operator feed instead.
+
+#### Scenario: An agent upgrade makes a version-anchored fact suspect
+
+- **WHEN** a fact recorded by a `crush` run at version `0.9.1` carries an
+  `agent_version` anchor, and a later `crush` run in the same repository records
+  `0.10.0`
+- **THEN** the fact is `suspect` with reason `agent_version_changed`, and a
+  `claude-code` run's version leaves it unchanged
 
 #### Scenario: A changed span makes the fact suspect
 
@@ -779,7 +796,8 @@ be global-only (ADR-0009) and rejected in a project `harness.toml`; promotion
 thresholds SHALL come only from `[memory.promotion]`, never from a policy repo.
 Durations SHALL parse as Harness durations with a `d` suffix allowed.
 Transition reasons SHALL come from this set: `anchor_changed`, `span_changed`,
-`dependency_changed`, `reverted`, `churn`, `ttl`, `run_ended`, `superseded`,
+`dependency_changed`, `agent_version_changed`, `reverted`, `churn`, `ttl`,
+`run_ended`, `superseded`,
 `sync_absent`, `renewed`, `reverify_end`, `pending`, `thresholds_lost`,
 `promoted`, `retracted`.
 
