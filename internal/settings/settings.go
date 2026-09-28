@@ -106,6 +106,7 @@ var Registry = []Setting{
 	{Name: "log-level", Env: "HARNESS_LOG_LEVEL", FileKey: "daemon.log_level", Kind: KindString, Default: "info", Desc: "log level"},
 	{Name: "log-file", Env: "HARNESS_LOG_FILE", FileKey: "daemon.log_file", Kind: KindString, Default: "", Desc: "log file (empty = stderr)"},
 	{Name: "scrollback", Env: "HARNESS_SCROLLBACK", FileKey: "daemon.scrollback", Kind: KindInt, Desc: "scrollback ring depth (lines)"},
+	{Name: "scrollback-bytes", Env: "HARNESS_SCROLLBACK_BYTES", FileKey: "daemon.scrollback_bytes", Kind: KindBytes, Desc: "scrollback ring storage per harness"},
 	{Name: "ssh", Env: "HARNESS_SSH", FileKey: "server.enabled", Kind: KindBool, Default: false, Desc: "remote SSH server enabled"},
 	{Name: "ssh-listen", Env: "HARNESS_SSH_LISTEN", FileKey: "server.listen", Kind: KindString, Default: "", Desc: "SSH bind address"},
 	{Name: "webhook-listen", Env: "HARNESS_WEBHOOK_LISTEN", FileKey: "server.webhook_listen", Kind: KindString, Default: "", Desc: "webhook listener bind address (empty = off)"},

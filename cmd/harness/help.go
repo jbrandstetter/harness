@@ -113,6 +113,7 @@ var daemonHelpText = struct {
 		{"--config PATH", "path to harness.toml"},
 		{"--socket PATH", "control/data plane socket path"},
 		{"--scrollback N", "per-harness scrollback ring depth (lines)"},
+		{"--scrollback-bytes SIZE", "per-harness scrollback ring storage (default 1MiB)"},
 		{"--log-level LEVEL", "debug, info (default), warn, error"},
 		{"--log-file PATH", "append logs to this file instead of stderr"},
 		{"--detach", "fork into the background; redirect stdio to --log-file (default: $XDG_STATE_HOME/harness/harness-daemon.log)"},

@@ -44,6 +44,9 @@ func NewRegistryLimits(lim RingLimits) *Registry {
 	return &Registry{limits: lim, muxes: make(map[string]*Mux)}
 }
 
+// Limits reports the limits each new Mux's ring gets, defaults filled in.
+func (r *Registry) Limits() RingLimits { return r.limits.withDefaults() }
+
 // SetController wires the Manager the muxes call back into for PTY resize and
 // input. Call it once, before the daemon starts harnesses or serves clients, so
 // the callbacks are visible to the goroutines that later use them.

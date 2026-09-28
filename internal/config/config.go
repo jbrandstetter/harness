@@ -151,6 +151,10 @@ type rawProfile struct {
 // rawDaemon mirrors the [daemon] table before validation.
 type rawDaemon struct {
 	WatchConfig *bool `toml:"watch_config"`
+	// ScrollbackBytes is a process setting owned by internal/settings, decoded
+	// here so the strict decode accepts it and a bad value fails with its
+	// line (checkScrollbackBytes). A TOML integer (bytes) or a size string.
+	ScrollbackBytes any `toml:"scrollback_bytes"`
 	// RemovedOTelEndpoint is decoded only so its presence can be REJECTED
 	// with a migration error (SPEC-0015 REQ-13), like rawHarness's removed
 	// keys: unknown keys fail anyway, but this one deserves the way forward.
@@ -355,6 +359,9 @@ func Parse(data []byte, filename string) (*core.Config, error) {
 			}
 			if rd.RemovedOTelEndpoint != nil {
 				return nil, removedOTelEndpointErr(filename, lineOfKeyInTable(data, "daemon", "otel_endpoint"))
+			}
+			if err := checkScrollbackBytes(filename, data, rd.ScrollbackBytes); err != nil {
+				return nil, err
 			}
 			cfg.Daemon = core.DaemonConfig{WatchConfig: rd.WatchConfig}
 
