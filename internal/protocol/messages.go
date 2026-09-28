@@ -391,6 +391,10 @@ type HarnessInfo struct {
 	// correlating a session back to its harness must treat a bound command
 	// harness as the agent it names, not as an arbitrary command.
 	Transcripts string `json:"transcripts,omitempty"`
+	// Source is the harness's agent-package pin reference, when it is
+	// defined by an installed package (SPEC-0026 REQ-7). On the wire so the
+	// TUI edit form can round-trip it; the TUI never edits it.
+	Source string `json:"source,omitempty"`
 	// LastStarted / LastExitAt (RFC 3339) bound the harness's latest run, so a
 	// client can attribute a session to the harness whose run covers it, not
 	// merely to one sharing its workdir (SPEC-0006 REQ "Run Correlation";

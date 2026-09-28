@@ -110,6 +110,15 @@ type rawHarness struct {
 	// Delete-not-deprecate still owes the user a loud failure.
 	RemovedCmd   string `toml:"cmd"`
 	RemovedAgent string `toml:"agent"`
+
+	// Source names an installed agent package pin this harness is defined
+	// by: "<stable>/<package>@<sha>" (SPEC-0026 REQ-7). Resolved at config
+	// load against the content-addressed store on local disk only — the
+	// package's [harness] values apply first and any key set directly on the
+	// table overrides them. The daemon never fetches, clones, scans or
+	// confirms; that lives in the `harness agent` CLI tree (ADR-0040).
+	// Governing: ADR-0040; SPEC-0026 REQ-7.
+	Source string `toml:"source"`
 }
 
 // envFileValue decodes `env_file` as a string or a list of strings. Only the
@@ -654,6 +663,19 @@ func registerHarness(cfg *core.Config, filename, name string, line int, rh rawHa
 			"harness %q: \"agent\" was renamed to \"harness\" — use harness = %q",
 			name, strings.TrimSpace(rh.RemovedAgent))
 	}
+
+	// A sourced harness resolves its package's manifest first, so every check
+	// below validates the merged table exactly as a hand-written one — an
+	// unknown adapter in a manifest fails with the same error a typo'd table
+	// does (SPEC-0026 REQ-3, REQ-7). The daemon reads local disk only.
+	if rh.Source != "" {
+		var err error
+		rh, err = applySource(filename, name, line, rh)
+		if err != nil {
+			return err
+		}
+	}
+	sourceValue := strings.TrimSpace(rh.Source)
 
 	// The `harness` enum key selects the adapter (and, for a long-running
 	// harness, the executable it runs). It is REQUIRED and has no default: an
@@ -1224,6 +1246,7 @@ func registerHarness(cfg *core.Config, filename, name string, line int, rh rawHa
 
 	h := core.Harness{
 		Name:             name,
+		Source:           sourceValue,
 		Adapter:          adapter,
 		Args:             rh.Args,
 		Argv:             rh.Argv,

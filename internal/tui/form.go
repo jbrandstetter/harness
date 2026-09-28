@@ -39,6 +39,12 @@ import (
 // match the TOML unit (config.rawHarness.RestartDelay).
 type HarnessForm struct {
 	Name string
+	// Source, when set, names the installed agent package pin the harness
+	// is defined by (SPEC-0026 REQ-7). The form does not EDIT it — install,
+	// upgrade and uninstall own that key — but it must round-trip: the `e`
+	// save path rewrites the whole table, and a form that dropped it would
+	// silently convert a package-sourced harness into a broken bare table.
+	Source string
 	// Harness is the harness-kind enum (crush/claude-code/codex/pi/omp/
 	// generic/command). It selects the adapter, which supplies the executable
 	// for a long-running harness and the argv synthesis for a prompt one-shot
@@ -434,6 +440,11 @@ func (f HarnessForm) TOML() string {
 	// `harness` is required and has no default, so it is always written —
 	// unlike every optional field below, which is emitted only when set.
 	fmt.Fprintf(&b, "harness = %s\n", strconv.Quote(f.Harness))
+	// Round-trip only (see the Source field doc): written verbatim, never
+	// edited by the form.
+	if s := strings.TrimSpace(f.Source); s != "" {
+		fmt.Fprintf(&b, "source = %s\n", strconv.Quote(s))
+	}
 	prompt := strings.TrimSpace(f.Prompt)
 	promptFile := strings.TrimSpace(f.PromptFile)
 	isCommand := f.Harness == core.AdapterCommand
@@ -699,6 +710,9 @@ func editInputsFor(path string, sel protocol.HarnessInfo) formInputs {
 		// match the parser's default scope, not blank — blank now means the
 		// deny-all `mcp_allow = []`.
 		mcpAllow: defaultMCPAllowInput,
+		// Package pin round-trip fallback; the file load below overwrites it
+		// with the table's own value when the file is readable.
+		source: sel.Source,
 	}
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -709,6 +723,9 @@ func editInputsFor(path string, sel protocol.HarnessInfo) formInputs {
 		return fi
 	}
 	fi.harness = h.Adapter
+	// Round-trip only: the file is the truth here, since a stale HarnessInfo
+	// would pin an upgraded harness to its old sha on an unrelated edit.
+	fi.source = h.Source
 	fi.prompt = h.Prompt
 	fi.promptFile = h.PromptFile
 	fi.systemPromptFile = h.SystemPromptFile
@@ -793,6 +810,7 @@ func splitEnvFileInput(s string) []string {
 func (fi formInputs) toForm() HarnessForm {
 	f := HarnessForm{
 		Name:             strings.TrimSpace(fi.name),
+		Source:           strings.TrimSpace(fi.source),
 		Harness:          strings.TrimSpace(fi.harness),
 		Prompt:           strings.TrimSpace(fi.prompt),
 		PromptFile:       strings.TrimSpace(fi.promptFile),

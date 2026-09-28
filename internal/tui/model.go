@@ -106,6 +106,9 @@ type confirmState struct {
 // HarnessForm for TOML serialization.
 type formInputs struct {
 	name, harness, prompt, model, maxTurns, schedule, args, workdir, envFile, delay, restart, backend string
+	// source is the agent-package pin reference (SPEC-0026 REQ-7), carried
+	// for the edit round-trip only — the form renders no field for it.
+	source string
 	// argv is a command harness's argv (SPEC-0017 REQ-2), edited as the TOML
 	// array the file holds (formatArgvInput / parseArgvInput).
 	argv string
