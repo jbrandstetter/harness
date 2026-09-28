@@ -40,7 +40,7 @@
 // zero; a harness that never succeeded has no last-success timestamp, rather
 // than 1970.
 //
-// Governing: ADR-0020; SPEC-0013 REQ-1..REQ-6; ADR-0007 (never block the
+// Governing: ADR-0020; SPEC-0013 REQ-1..REQ-7; ADR-0007 (never block the
 // supervisor on a slow consumer); ADR-0008 (no credentials, prompts or
 // environment in any label).
 //
@@ -49,6 +49,7 @@ package metrics
 
 import (
 	"net/http"
+	"regexp"
 	"sync"
 	"time"
 
@@ -352,12 +353,38 @@ func New(src Source, opts Options) *Metrics {
 	// daemon is long-lived and its own growth is part of reading the rest
 	// (REQ-1).
 	m.reg.MustRegister(
-		collectors.NewGoCollector(),
+		collectors.NewGoCollector(runtimeMemoryMetrics),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		&collector{m: m},
 	)
 	return m
 }
+
+// runtimeMemoryMetrics adds the runtime/metrics memory breakdown to the Go
+// collector's defaults (SPEC-0013 REQ-7):
+//
+//   - /memory/classes/.* (go_memory_classes_*_bytes): where every mapped byte
+//     is, live heap objects apart from free and released heap, stacks and
+//     runtime metadata. It is the one view that tells a live leak (heap
+//     objects climb) from GC headroom (free heap climbs), and the two need
+//     different fixes.
+//   - /gc/heap/goal:bytes (go_gc_heap_goal_bytes): the heap size the GC is
+//     steering for. With GOGC=100 it sits near twice the live heap, which is
+//     why the footprint doubles a leak; a memory limit shows up as the goal
+//     flattening under it.
+//
+// The collector's defaults already carry go_goroutines, go_memstats_*
+// (heap objects among them) and go_gc_gomemlimit_bytes, the limit actually
+// in effect. Both families added here are fixed sets with no labels, about
+// fifteen series in all, so they do not move the cardinality budget
+// (REQ-5). The runtime's histograms stay off: each is a family of buckets.
+//
+// @joestump-agent 09/28/2026 - Added for GitHub
+// https://github.com/stump-wtf/harness/issues/18.
+var runtimeMemoryMetrics = collectors.WithGoCollectorRuntimeMetrics(
+	collectors.GoRuntimeMetricsRule{Matcher: regexp.MustCompile(`^/memory/classes/.*`)},
+	collectors.GoRuntimeMetricsRule{Matcher: regexp.MustCompile(`^/gc/heap/goal:bytes$`)},
+)
 
 // Registry is the private registry /metrics serves.
 func (m *Metrics) Registry() *prometheus.Registry { return m.reg }

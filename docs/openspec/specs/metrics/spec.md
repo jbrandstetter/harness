@@ -123,6 +123,52 @@ Where collection fails, `harness_metrics_collection_errors_total{collector}` MUS
 increment, so a broken collector is visible rather than flattening a graph into a
 confident zero.
 
+### REQ-7: Runtime memory
+
+Beyond the Go collector's defaults, the endpoint MUST export the Go runtime's
+memory breakdown and GC goal from `runtime/metrics`:
+
+```text
+go_memory_classes_*_bytes      gauge   every /memory/classes/ series
+go_gc_heap_goal_bytes          gauge   /gc/heap/goal:bytes
+```
+
+The defaults the diagnosis depends on MUST stay exported: `go_goroutines`,
+`go_memstats_heap_objects`, and `go_gc_gomemlimit_bytes` (the soft memory limit
+the runtime holds, `math.MaxInt64` for none).
+
+A process-level number (`process_resident_memory_bytes`) says the daemon grew;
+it cannot say whether the growth is live heap or headroom the GC has not yet
+reclaimed. `go_memory_classes_heap_objects_bytes` is the live heap, and
+`go_memory_classes_heap_free_bytes` plus `go_memory_classes_heap_released_bytes`
+are the headroom. A leak and a GC tuning question need different fixes, so the
+scrape MUST let an operator tell them apart.
+
+These families carry no labels, and the runtime's histogram metrics MUST NOT be
+enabled by this requirement: each is a family of buckets, and REQ-5's budget is
+for harnesses.
+
+### REQ-8: Profiling listener
+
+The daemon MAY serve `net/http/pprof` when `[daemon] pprof_addr` (or
+`--pprof-addr`, `HARNESS_PPROF_ADDR`) names an address. It MUST be off by
+default.
+
+It MUST bind loopback only: an address whose host is not a loopback IP or
+`localhost` MUST be refused, before any harness starts, with an error naming
+the source that supplied it. The address actually bound MUST be checked again
+after the bind, because `localhost` resolves at bind time. Unlike REQ-1, no
+token unlocks a non-loopback bind: a heap profile names every allocation site,
+a goroutine dump carries argument values, and `/debug/pprof/cmdline` is the
+daemon's argv. An operator on another host reaches it through an SSH tunnel.
+
+The handlers MUST be mounted on a mux of their own, never
+`http.DefaultServeMux`, and MUST NOT be reachable on the metrics listener.
+
+A bind failure (the port is taken) MUST be logged and MUST NOT stop the daemon,
+as for REQ-1's listener. The listener MUST shut down with the daemon. Changing
+the address needs a daemon restart.
+
 ## Scenarios
 
 ### Scenario: the 2026-09-14 outage, as it would have appeared
@@ -159,6 +205,31 @@ A doorbell-driven worker has no session.
   signature of a worker that is alive but not consuming
 
 Neither service can conclude this alone; the pair can.
+
+### Scenario: the 2026-09 emulator leak, as it would have appeared
+
+Every spawn leaks a ~98 MiB terminal emulator. A scheduled harness runs every
+few minutes; the daemon reaches 12 GB over days.
+
+* `go_goroutines` rises by a constant step per run and never falls back
+* `go_memory_classes_heap_objects_bytes` and `go_memstats_heap_objects` rise
+  in step with `harness_sessions_started_total`
+* `go_gc_heap_goal_bytes` tracks about twice the live heap, which is why the
+  footprint doubles the leak
+
+A ratio of goroutines or heap objects to runs that climbs is the leak
+signature; a flat ratio with a high footprint is GC headroom. With
+`pprof_addr` set, `go tool pprof -sample_index=inuse_space` on
+`/debug/pprof/heap` names the allocation site in one command.
+
+### Scenario: a profiler asked to listen on the network
+
+An operator sets `pprof_addr = "0.0.0.0:6060"`.
+
+* the config load (and any reload) fails with the key's line number
+* the same value from `HARNESS_PPROF_ADDR` stops `harness daemon` before any
+  harness starts, naming the variable
+* nothing is bound, so nothing serves heap dumps to the network
 
 ## Out of Scope
 

@@ -127,6 +127,41 @@ increase(harness_trigger_reconnects_total[1h]) > 5
 as well, so scope the first rule to the sources you expect to be live, for
 example with `{source=~"channel.sb|webhook.gitea-pr"}`.
 
+### Daemon memory
+
+The daemon's own memory is on the same scrape. In September 2026 a daemon
+reached 12 GB because every spawn leaked a terminal emulator of about 98 MiB
+(https://github.com/stump-wtf/harness/issues/18). The **leak signature** is
+something that should return to a baseline climbing in step with the run
+count instead:
+
+- `go_goroutines` rising by a fixed step per spawn and never falling back;
+- `go_memory_classes_heap_objects_bytes` or `go_memstats_heap_objects`
+  rising in step with `harness_state_transitions_total{to="starting"}`, which
+  counts spawns.
+
+A high footprint with a flat live heap is GC headroom, not a leak:
+`go_memory_classes_heap_free_bytes` and `go_gc_heap_goal_bytes` are high, and
+`[daemon] memory_limit` is the lever. The two need different fixes, so graph
+them together:
+
+```promql
+# Live heap against the GC's target and the total mapped.
+go_memory_classes_heap_objects_bytes{job="harness"}
+go_gc_heap_goal_bytes{job="harness"}
+go_memory_classes_total_bytes{job="harness"}
+
+# Goroutines left behind per spawn over six hours. A healthy daemon hovers
+# near 0; a leak holds near a constant (1 or more per spawn).
+delta(go_goroutines{job="harness"}[6h])
+  / on(instance) clamp_min(sum by (instance) (increase(harness_state_transitions_total{job="harness",to="starting"}[6h])), 1)
+```
+
+An alert on the second expression at `> 0.5` fires on a per-spawn leak within
+a few dozen runs. Tune the window to how often your harnesses spawn. To find
+what is leaking, see
+[Diagnosing daemon memory](./production-observability#diagnosing-daemon-memory).
+
 ## What is exported
 
 | Series | Type | Notes |
@@ -152,7 +187,14 @@ example with `{source=~"channel.sb|webhook.gitea-pr"}`.
 | `harness_metrics_harnesses_overflowed` | gauge | How many harnesses were folded into `__other__`. |
 | `harness_notify_deliveries_total{event,result}` | counter | Runs of the [`[notify]` hook](./notify): `ok`, `error`, `timeout`, and notifications that never ran it, `dropped` (queue full) and `suppressed` (inside the cooldown). |
 | `harness_observer_*` | mixed | Health of the transcript reader: delivered and dropped events, ambiguous and unattributed items, parse errors, scan errors, sessions tracked. |
-| `go_*`, `process_*` | | The daemon's own runtime. |
+| `go_goroutines` | gauge | The daemon's goroutines. It returns to a baseline between runs; a count that stays up by a fixed step per spawn is a leak. See [Daemon memory](#daemon-memory). |
+| `go_memory_classes_heap_objects_bytes` | gauge | Live heap: memory held by objects the program can still reach, plus garbage not yet swept. This is what a leak grows. |
+| `go_memory_classes_heap_free_bytes`, `go_memory_classes_heap_released_bytes` | gauge | Heap the GC has freed. `free` is still mapped; `released` has been returned to the OS. Growth here is GC headroom, not a leak. |
+| `go_memory_classes_*_bytes` | gauge | The rest of the runtime's breakdown: stacks, metadata, profiling buckets, other. `go_memory_classes_total_bytes` is all of it, which is close to what the OS sees as the daemon's Go memory. |
+| `go_gc_heap_goal_bytes` | gauge | The heap size the GC is steering for. With the default `GOGC=100` it sits near twice the live heap. Under `[daemon] memory_limit` it flattens below the limit. |
+| `go_gc_gomemlimit_bytes` | gauge | The soft memory limit in effect, from `memory_limit` or `GOMEMLIMIT`. `9.223372036854776e+18` (MaxInt64) means none. |
+| `go_memstats_heap_objects` | gauge | Allocated heap objects. It rises with a leak, in step with spawns. |
+| other `go_*`, `process_*` | | The rest of the Go collector's defaults (GC pauses, `go_memstats_*`, threads) and the process collector (`process_resident_memory_bytes`, CPU, file descriptors). |
 
 ### What "running" means
 

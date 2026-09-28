@@ -752,6 +752,8 @@ scrollback   = 10000                     # and at most this many lines of it
 log_level    = "info"                    # debug, info, warn, error
 log_file     = "/var/log/harness.log"    # absent = stderr
 socket       = "/run/harness/harness.sock"  # absent = $XDG_RUNTIME_DIR/harness.sock
+memory_limit = "2GiB"                    # Go soft memory limit; absent = GOMEMLIMIT or off
+pprof_addr   = "127.0.0.1:6060"          # net/http/pprof, loopback only; absent = off
 ```
 
 Every key is optional. Apart from `watch_config`, each has a matching flag and
@@ -778,10 +780,57 @@ container entrypoint — without editing the service definition.
 - `socket` and `log_file` must be absolute paths; `~` is not expanded. The CLI
   reads `socket` from this file too, so `harness ls` finds a daemon on a
   non-default socket without a `--socket` flag.
-- `scrollback_bytes`, `scrollback`, `log_level`, `log_file` and `socket` are
-  read when the daemon starts. Changing them needs a daemon restart, not a reload. Until you restart,
-  a changed `socket` points the CLI at a socket the running daemon is not on.
+- `scrollback_bytes`, `scrollback`, `log_level`, `log_file`, `socket`,
+  `memory_limit` and `pprof_addr` are read when the daemon starts. Changing them
+  needs a daemon restart, not a reload. Until you restart, a changed `socket`
+  points the CLI at a socket the running daemon is not on.
 - `harness doctor` shows which source supplied each value.
+
+### Memory limit and profiler
+
+Both are off by default. They are guardrails for the daemon's own memory, not
+for the agents it runs.
+
+`memory_limit` sets the Go runtime's **soft** memory limit
+(`--memory-limit`, `HARNESS_MEMORY_LIMIT`). As the heap nears the limit, the GC
+runs harder so the daemon stays under it, instead of growing to about twice its
+live heap, which is the default (`GOGC=100`).
+
+- Write a size, such as `"2GiB"` or `"1536MiB"` (see
+  [sizes](#environment-variables); the units are 1024-based, as in systemd's
+  `MemoryMax=`). A bare number, or a TOML integer, is **bytes**, so
+  `memory_limit = 2048` is 2 KiB and the daemon warns. `"0"` or `0` means no
+  limit.
+- It cannot free memory the daemon is still holding. A leak still grows, only
+  with less headroom on top of it. Set below the live heap, it keeps the GC
+  running almost continuously. Keep the hard cap in the init system (systemd
+  `MemoryMax=`, a container limit). That cap usually covers every agent the
+  daemon spawns as well, so size `memory_limit` for the daemon alone, well under
+  it.
+- `GOMEMLIMIT` in the daemon's environment is honoured when none of
+  `--memory-limit`, `HARNESS_MEMORY_LIMIT` and `memory_limit` is set. Any of
+  them overrides it, and an explicit `0` removes it. Prefer `memory_limit`:
+  every harness the daemon spawns inherits `GOMEMLIMIT`, and Go agents read it
+  too.
+- The daemon logs the limit in effect and where it came from at startup
+  (`memory limit limit=2GiB source=file`), and `/metrics` reports it as
+  `go_gc_gomemlimit_bytes`.
+
+`pprof_addr` serves Go's profiler (`--pprof-addr`, `HARNESS_PPROF_ADDR`) at
+`http://<addr>/debug/pprof/`.
+
+- It binds **loopback only**: `127.0.0.1`, `::1` or `localhost`. Any other
+  address fails the config load (and any reload) with its line number, or stops
+  `harness daemon` at startup when it comes from the flag or the variable.
+  No token unlocks a remote bind, as `metrics_token_file` does for `/metrics`.
+  Heap profiles and goroutine dumps describe the daemon's internals, so reach
+  them from another host through a tunnel:
+  `ssh -L 6060:127.0.0.1:6060 host`.
+- A port that is already taken is logged, and the daemon runs without the
+  profiler.
+
+See [Diagnosing daemon memory](./production-observability#diagnosing-daemon-memory)
+for how to use both.
 
 `otel_endpoint` has been **removed**: it was accepted but never exported
 anything. A config that still sets it fails to load, with an error pointing
@@ -1230,6 +1279,11 @@ without baking in a config file.
 | `HARNESS_SSH_LISTEN` | `--ssh-listen` | `[server] listen` | `host:port` | unset |
 | `HARNESS_WEBHOOK_LISTEN` | `--webhook-listen` | `[server] webhook_listen` | `host:port` | unset (no webhook listener) |
 | `HARNESS_WATCH_CONFIG` | — | `[daemon] watch_config` | bool | `true` |
+| `HARNESS_MEMORY_LIMIT` | `--memory-limit` | `[daemon] memory_limit` | size (`2GiB`; `0` = off) | unset (`GOMEMLIMIT`, else off) |
+| `HARNESS_PPROF_ADDR` | `--pprof-addr` | `[daemon] pprof_addr` | loopback `host:port` | unset (no profiler) |
+
+`GOMEMLIMIT` is not a Harness variable, but the daemon honours it when no source
+above sets a memory limit. See [Memory limit and profiler](#memory-limit-and-profiler).
 
 `config` has no file key because it names the file. `json` has none because it
 is an output choice for one invocation: a file default would change what every

@@ -122,6 +122,31 @@ support question. Viper knows the answer; surfacing it costs one column and
 removes a whole class of confusion. `doctor` already exists and already owns its
 own reporting and exit code, so this needs no new verb.
 
+### Decision: `GOMEMLIMIT` ranks below the memory limit's own sources
+
+**Choice**: the order is `--memory-limit`, `HARNESS_MEMORY_LIMIT`,
+`[daemon] memory_limit`, `GOMEMLIMIT`, then off. An explicit `0` from any
+harness source removes a limit `GOMEMLIMIT` set. (Recorded 2026-09-28 with the
+setting, https://github.com/stump-wtf/harness/issues/18.)
+
+**Rationale**: `GOMEMLIMIT` is an environment variable, but it is not in this
+spec's namespace. It is Go-wide: a shell profile or a container platform may
+set it for every Go program. The daemon's environment is also inherited by
+every harness it spawns, and Go agents read the variable too. A setting named
+for the daemon is the more specific statement, so it wins, including over the
+environment layer's usual rank above the file. `GOMEMLIMIT` still beats the
+default, because the runtime applied it before `main` ran, and discarding it
+unasked would silently undo an operator's limit. `harness doctor` reports
+`memory-limit` from the four harness sources only; the daemon's startup log
+line and `go_gc_gomemlimit_bytes` report the limit actually in effect,
+`GOMEMLIMIT` included.
+
+The limit is off by default because it is soft. It cannot free a live leak,
+below the live heap it keeps the GC running near-continuously, and the right
+value depends on the host. The hard cap belongs to the init system
+(`MemoryMax=`, a container limit). That cap usually covers the spawned agents
+too, so this setting is sized for the daemon alone.
+
 ## Architecture
 
 ```mermaid
