@@ -41,7 +41,7 @@ in [`x/*`](https://github.com/charmbracelet/x).
 
 | Pkg | Role here | Tier |
 |-----|-----------|------|
-| [**x/vt**](https://pkg.go.dev/github.com/charmbracelet/x/vt) | The virtual terminal emulator: parse harness output → screen + scrollback, `InputPipe`, `Draw`. **The heart of ADR-0003.** | Core |
+| [**x/vt**](https://pkg.go.dev/github.com/charmbracelet/x/vt) | The virtual terminal emulator: parse harness output → screen, `InputPipe`, `Draw`. Harness caps its scrollback and keeps history in its own byte ring (see the memory note below). **The heart of ADR-0003.** | Core |
 | [**x/xpty**](https://github.com/charmbracelet/x/tree/main/xpty) | Cross-platform PTY allocation for the supervised process. | Core |
 | **x/conpty** | Windows ConPTY backing for `xpty` — the path to eventual Windows support. | Later |
 | **x/ansi** | ANSI/escape-sequence encode and parse — under `vt` and for anything Harness emits. | Core |
@@ -54,6 +54,37 @@ in [`x/*`](https://github.com/charmbracelet/x).
 | [**sequin**](https://github.com/charmbracelet/sequin) | Human-readable ANSI decoder — a debugging tool while building and hardening the emulator. | Reference |
 | **x/editor** | Launch `$EDITOR` cleanly — backs the "edit raw TOML" escape hatch (SPEC-0001). | Likely |
 | **x/mosaic** | Render images in the terminal — niche; only if the TUI ever shows images. | Later |
+
+### x/vt memory: the foot-gun
+
+An `x/vt` emulator is much more expensive than its screen suggests. These
+numbers are for the version Harness pins:
+
+* **Parser buffer.** Every emulator allocates a fixed 4 MiB before it draws
+  anything
+  ([charmbracelet/x#973](https://github.com/charmbracelet/x/issues/973)).
+* **Scrollback.** Each of its two screens keeps a scrollback of 10,000 rows by
+  default. A cell is 112 bytes, so a full main-screen scrollback is about
+  85 MiB at 80 columns and about 210 MiB at 200.
+* **The reply pump.** The emulator answers terminal queries by writing into an
+  unbuffered pipe, so something must drain `Read`. A goroutine parked in that
+  `Read` keeps the whole emulator reachable until the pipe is closed.
+  `Emulator.Close` races the parked `Read`, so Harness releases an emulator by
+  closing its `InputPipe()` instead.
+
+Harness follows three rules for the emulators it creates: the log sanitizer
+built for each spawn, the attach mux for each harness, and the TUI's views.
+
+* Each one calls `SetScrollbackSize(1)`, because nothing reads emulator
+  scrollback. The alternate screen's scrollback has no public knob and stays
+  uncapped.
+* Each one's reply pump is released when its owner is done with it.
+* No emulator is used to store history. Attach scrollback comes from a raw-byte
+  ring, and durable history comes from the per-harness log.
+
+Before these rules, every spawn left its sanitizer emulator behind: about
+98 MiB after a 5 MiB run at 80 columns
+([stump-wtf/harness#18](https://github.com/stump-wtf/harness/issues/18)).
 
 ## Layer 3 — CLI surface (the `harness` command — ADR-0001)
 
