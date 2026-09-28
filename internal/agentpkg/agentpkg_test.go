@@ -24,12 +24,12 @@ func TestParseSource(t *testing.T) {
 	}
 
 	for _, bad := range []string{
-		"",                        // empty
-		"stump-wtf/pr-reviewer",   // no pin
-		"stump-wtf@abc123",        // no package
-		"stump-wtf/pr@main",       // branch, not sha
-		"stump-wtf/pr@0123",       // short sha
-		"Stump/pr@0123456789abcdef0123456789abcdef01234567",  // uppercase stable
+		"",                      // empty
+		"stump-wtf/pr-reviewer", // no pin
+		"stump-wtf@abc123",      // no package
+		"stump-wtf/pr@main",     // branch, not sha
+		"stump-wtf/pr@0123",     // short sha
+		"Stump/pr@0123456789abcdef0123456789abcdef01234567",     // uppercase stable
 		"stump-wtf/PR@0123456789abcdef0123456789abcdef01234567", // uppercase package
 		"stump_wtf/pr@0123456789abcdef0123456789abcdef01234567", // underscore
 	} {

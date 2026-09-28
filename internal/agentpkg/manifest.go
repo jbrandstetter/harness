@@ -54,8 +54,8 @@ type Requests struct {
 
 // Manifest is a fully validated package.toml.
 type Manifest struct {
-	Package PackageMeta
-	Harness HarnessValues
+	Package  PackageMeta
+	Harness  HarnessValues
 	Requests Requests
 }
 
@@ -78,15 +78,15 @@ var harnessAllowlist = map[string]bool{
 // error can say what the key is rather than a generic "unknown". Every deny
 // reason is one line of guidance.
 var harnessForbidden = map[string]string{
-	"env_file":         "a package must not reference secrets; use the installing harness's own env_file",
-	"secrets_env":      "a package must not reference secrets; use the installing harness's own secrets",
-	"workdir":          "a package cannot choose a workdir; set it on the harness table after install",
-	"enabled":          "a package cannot choose autostart; set enabled on the harness table",
-	"restart":          "restart policy is supervisor state, not package content",
-	"restart_delay":    "restart policy is supervisor state, not package content",
-	"operating_hours":  "operating hours belong to the machine, not the package",
-	"schedule":         "a package cannot schedule itself; set schedule on the harness table",
-	"triggers":         "a package cannot bind itself to event sources; set triggers on the harness table",
+	"env_file":        "a package must not reference secrets; use the installing harness's own env_file",
+	"secrets_env":     "a package must not reference secrets; use the installing harness's own secrets",
+	"workdir":         "a package cannot choose a workdir; set it on the harness table after install",
+	"enabled":         "a package cannot choose autostart; set enabled on the harness table",
+	"restart":         "restart policy is supervisor state, not package content",
+	"restart_delay":   "restart policy is supervisor state, not package content",
+	"operating_hours": "operating hours belong to the machine, not the package",
+	"schedule":        "a package cannot schedule itself; set schedule on the harness table",
+	"triggers":        "a package cannot bind itself to event sources; set triggers on the harness table",
 }
 
 var requestsAllowlist = map[string]bool{
