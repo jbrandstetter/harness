@@ -144,6 +144,79 @@ func TestDuplicateTableRefused(t *testing.T) {
 	}
 }
 
+// TestSetKeyReplacesMultiLineValue: setting a key whose existing value is a
+// multi-line array must consume the whole value — replacing only the key's
+// first line would leave the continuation lines orphaned below the new
+// single-line value, and the file would no longer parse.
+func TestSetKeyReplacesMultiLineValue(t *testing.T) {
+	e := New([]byte(sample))
+	if err := e.SetHarnessKey("build", "args", []string{"make", "check"}); err != nil {
+		t.Fatal(err)
+	}
+	out := string(e.Bytes())
+	if strings.Count(out, "\"make\"") != 1 || strings.Contains(out, "\"test\",") {
+		t.Errorf("old array lines survived the replacement:\n%s", out)
+	}
+	var cfg struct {
+		Harness map[string]struct {
+			Args []string
+		}
+	}
+	if _, err := toml.Decode(out, &cfg); err != nil {
+		t.Fatalf("edited file no longer parses: %v\n%s", err, out)
+	}
+	got := cfg.Harness["build"].Args
+	if len(got) != 2 || got[0] != "make" || got[1] != "check" {
+		t.Errorf("args = %v, want [make check]", got)
+	}
+}
+
+// TestSetKeyKeepsTrailingComment: a comment after the value belongs to the
+// line, not the value, and an in-place replacement preserves it.
+func TestSetKeyKeepsTrailingComment(t *testing.T) {
+	e := New([]byte("[stable.acme]\nremote = \"https://old.example/s.git\" # pinned mirror\n"))
+	if err := e.SetStableKey("acme", "remote", "https://new.example/s.git"); err != nil {
+		t.Fatal(err)
+	}
+	out := string(e.Bytes())
+	if !strings.Contains(out, "remote = \"https://new.example/s.git\" # pinned mirror") {
+		t.Errorf("trailing comment lost:\n%s", out)
+	}
+}
+
+// TestRemoveKeepsMultiLineStringBlankLines: the blank-line tidy after a
+// removal touches only the seam the cut creates — never a whole-file
+// replace, which would rewrite blank lines inside a multi-line string in a
+// table the removal never went near.
+func TestRemoveKeepsMultiLineStringBlankLines(t *testing.T) {
+	doc := "[stable.one]\nremote = \"https://a.example/s.git\"\n\n" +
+		"[harness.notes]\nharness = \"generic\"\nprompt = \"\"\"\npara one\n\n\npara three\n\"\"\"\n\n" +
+		"[stable.two]\nremote = \"https://b.example/s.git\"\n"
+	e := New([]byte(doc))
+	if err := e.RemoveStable("one"); err != nil {
+		t.Fatal(err)
+	}
+	out := string(e.Bytes())
+	if !strings.Contains(out, "para one\n\n\npara three") {
+		t.Errorf("blank lines inside the multi-line string were rewritten:\n%s", out)
+	}
+	// The tidy still does its real job at the seam: no triple newline may
+	// appear OUTSIDE the string.
+	outside := strings.ReplaceAll(out, "para one\n\n\npara three", "")
+	if strings.Contains(outside, "\n\n\n") {
+		t.Errorf("seam left a doubled blank line:\n%s", outside)
+	}
+	var cfg struct {
+		Stable map[string]struct{ Remote string }
+	}
+	if _, err := toml.Decode(out, &cfg); err != nil {
+		t.Fatalf("edited file no longer parses: %v\n%s", err, out)
+	}
+	if _, ok := cfg.Stable["two"]; !ok {
+		t.Errorf("stable.two lost by the removal:\n%s", out)
+	}
+}
+
 func TestMultiLineStringBracketIsNotHeader(t *testing.T) {
 	// The `"""…[not a header]…"""` body must not end the build table early:
 	// the whole table is removed, and a following table survives.

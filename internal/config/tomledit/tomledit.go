@@ -382,8 +382,29 @@ func (e *Editor) removeTable(names ...string) error {
 	// Cut from the start of the header line (include leading indentation,
 	// already zero — start IS the '['; back up over nothing).
 	e.data = append(append([]byte{}, e.data[:h.start]...), e.data[end:]...)
-	// Tidy: collapse a doubled blank line the cut can leave behind.
-	e.data = bytes.ReplaceAll(e.data, []byte("\n\n\n"), []byte("\n\n"))
+	// Tidy the seam the cut creates: more than one blank line between the
+	// previous table's last key and the next header collapses to one. The
+	// tidy touches only the junction bytes — a whole-file replace would
+	// rewrite blank lines inside multi-line strings the cut never went near,
+	// silently corrupting values this editor promises to preserve.
+	seam := h.start
+	before, after := e.data[:seam], e.data[seam:]
+	trailing := 0
+	for trailing < len(before) && before[len(before)-1-trailing] == '\n' {
+		trailing++
+	}
+	leading := 0
+	for leading < len(after) && after[leading] == '\n' {
+		leading++
+	}
+	if excess := trailing + leading - 2; excess > 0 {
+		dropAfter := min(excess, leading)
+		dropBefore := excess - dropAfter
+		if dropBefore > trailing {
+			dropBefore = trailing
+		}
+		e.data = append(before[:len(before)-dropBefore], after[dropAfter:]...)
+	}
 	return nil
 }
 
@@ -418,8 +439,15 @@ func (e *Editor) setKey(dotted, key string, value any, altNames ...string) error
 			if err != nil {
 				return err
 			}
+			// The existing value may span lines (a multi-line array or
+			// string); replacing only the key's first line would orphan its
+			// continuation lines as garbage. Replace through the value's
+			// true end.
+			abs := ln.start + h.bodyStart
+			eq := abs + strings.Index(ln.content, "=")
+			valueEnd := valueSpanEnd(e.data, eq+1)
 			replacement := key + " = " + encoded
-			e.data = splice(e.data, ln.start+h.bodyStart, ln.start+h.bodyStart+ln.length, []byte(replacement))
+			e.data = splice(e.data, abs, valueEnd, []byte(replacement))
 			return nil
 		}
 	}
@@ -453,6 +481,86 @@ func keyLineKey(line string) string {
 	}
 	key := strings.TrimSpace(s[:eq])
 	return strings.Trim(key, `"'`)
+}
+
+// valueSpanEnd returns the offset where a key's value ends, given the offset
+// just past its '='. It understands the shapes harness.toml carries — strings
+// (single- and multi-line, basic and literal), arrays with nested brackets,
+// booleans — and stops when the value is complete: outside every string, at
+// bracket depth zero, at the value's newline or at a trailing comment's '#'.
+// Stopping at the comment is what lets an in-place replacement preserve one;
+// stopping at the newline is what keeps a multi-line array's continuation
+// lines from being orphaned when the value is replaced wholesale.
+func valueSpanEnd(data []byte, i int) int {
+	n := len(data)
+	depth := 0
+	for i < n {
+		c := data[i]
+		switch {
+		case c == ' ' || c == '\t' || c == '\r':
+			i++
+		case c == '\n':
+			if depth == 0 {
+				return i
+			}
+			i++
+		case c == '#':
+			if depth == 0 {
+				// Leave the whitespace between the value and the comment in
+				// the remainder, so a replacement keeps `value # comment`
+				// shaped instead of gluing `value"# comment`.
+				for i > 0 && (data[i-1] == ' ' || data[i-1] == '\t') {
+					i--
+				}
+				return i
+			}
+			for i < n && data[i] != '\n' {
+				i++
+			}
+		case bytes.HasPrefix(data[i:], []byte(`"""`)):
+			j := bytes.Index(data[i+3:], []byte(`"""`))
+			if j < 0 {
+				return n
+			}
+			i = i + 3 + j + 3
+		case bytes.HasPrefix(data[i:], []byte("'''")):
+			j := bytes.Index(data[i+3:], []byte("'''"))
+			if j < 0 {
+				return n
+			}
+			i = i + 3 + j + 3
+		case c == '"':
+			j := i + 1
+			for j < n {
+				if data[j] == '\\' {
+					j += 2
+					continue
+				}
+				if data[j] == '"' || data[j] == '\n' {
+					break
+				}
+				j++
+			}
+			i = j + 1
+		case c == '\'':
+			j := bytes.IndexByte(data[i+1:], '\n')
+			if j < 0 {
+				return n
+			}
+			i = i + 1 + j
+		case c == '[':
+			depth++
+			i++
+		case c == ']':
+			if depth > 0 {
+				depth--
+			}
+			i++
+		default:
+			i++
+		}
+	}
+	return n
 }
 
 type lineInfo struct {
