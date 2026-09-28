@@ -1,0 +1,543 @@
+// Package tomledit is a comment-preserving, atomic editor for the two table
+// families SPEC-0026 commands write: [stable.<name>] and harness tables
+// ([harness.<name>] or the bare [<name>] spelling the loader accepts). The
+// daemon never edits config on its own; this package exists for the
+// `harness agent` CLI tree (ADR-0040).
+//
+// It operates on the file's bytes with TOML-aware header detection — a "["
+// inside a multi-line array or multi-line string is not a header — so every
+// key outside the edited table keeps its line, order and comments. Writes are
+// atomic (temp file + fsync + rename, mode preserved); a failed write leaves
+// the original byte-identical.
+//
+// The API is deliberately narrow: there is no "any header" entry point, so no
+// SPEC-0026 command can write [mcp.*], [job.*], [server], [profile.*],
+// [adapter.*] or [skill_repo.*] — the structural half of REQ-11, which #813
+// checks end to end.
+//
+// Governing: ADR-0040; SPEC-0026 REQ-1, REQ-6, REQ-8, REQ-9, REQ-11.
+package tomledit
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// ErrTableNotFound names a table the caller expected to be present.
+var ErrTableNotFound = errors.New("table not found")
+
+// ErrDuplicateTable names a table that appears more than once; editing it in
+// place would be ambiguous.
+var ErrDuplicateTable = errors.New("duplicate table")
+
+// ErrArrayTable names a table spelled [[...]] (an array-of-tables entry),
+// which this editor never touches.
+var ErrArrayTable = errors.New("array table")
+
+// Editor holds the file bytes being edited. Create with Load or New.
+type Editor struct {
+	data []byte
+	mode os.FileMode
+	// set when loaded from disk, for mode preservation and rename target.
+	path string
+}
+
+// New wraps existing harness.toml bytes.
+func New(data []byte) *Editor { return &Editor{data: data, mode: 0o644} }
+
+// Load reads path into an Editor, remembering its mode for the atomic write.
+func Load(path string) (*Editor, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("tomledit: read %s: %w", path, err)
+	}
+	mode := os.FileMode(0o644)
+	if fi, err := os.Stat(path); err == nil {
+		mode = fi.Mode().Perm()
+	}
+	return &Editor{data: data, mode: mode, path: path}, nil
+}
+
+// Bytes returns the edited content.
+func (e *Editor) Bytes() []byte { return e.data }
+
+// Save writes atomically: temp file in the same directory, fsync, rename over
+// the target, mode preserved. On any failure the original file is untouched.
+func (e *Editor) Save(path string) error {
+	if path == "" {
+		path = e.path
+	}
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tomledit-*")
+	if err != nil {
+		return fmt.Errorf("tomledit: create temp in %s: %w", dir, err)
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		if tmpName != "" {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err := tmp.Chmod(e.mode); err != nil {
+		tmp.Close()
+		return fmt.Errorf("tomledit: chmod temp: %w", err)
+	}
+	if _, err := tmp.Write(e.data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("tomledit: write temp: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("tomledit: sync temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("tomledit: close temp: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("tomledit: rename into place: %w", err)
+	}
+	tmpName = "" // renamed; nothing to clean up
+	return nil
+}
+
+// header is one table header occurrence: its byte offset and the offset just
+// past the header line (the table body starts there).
+type header struct {
+	name      string // canonical dotted name, e.g. "harness.pr" or "stable.acme"
+	start     int    // offset of the '['
+	bodyStart int    // offset of the first byte after the header line
+	array     bool   // spelled [[...]]
+}
+
+// headerName normalizes a header's literal name: trimmed, and with the
+// surrounding brackets stripped by the scanner.
+func canonicalName(literal string) string {
+	return strings.TrimSpace(literal)
+}
+
+// headerAt reports whether data[i] starts a table header line, and if so the
+// header's extent. A line is a header line when, ignoring leading whitespace
+// and comments, it begins with '['. The byte just past the trailing ']' (plus
+// its newline, when present) is the body start.
+//
+// The scan is TOML-aware at the whole-file level: findHeaders walks the file
+// once tracking multi-line strings and arrays, so a '[' inside either is
+// never mistaken for a header (the bug removeHarnessTOML had).
+func findHeaders(data []byte) []header {
+	var headers []header
+	i := 0
+	n := len(data)
+	for i < n {
+		// Multi-line basic string.
+		if bytes.HasPrefix(data[i:], []byte(`"""`)) {
+			end := bytes.Index(data[i+3:], []byte(`"""`))
+			if end < 0 {
+				break
+			}
+			i = i + 3 + end + 3
+			continue
+		}
+		// Multi-line literal string.
+		if bytes.HasPrefix(data[i:], []byte("'''")) {
+			end := bytes.Index(data[i+3:], []byte("'''"))
+			if end < 0 {
+				break
+			}
+			i = i + 3 + end + 3
+			continue
+		}
+		switch data[i] {
+		case '"': // single-line basic string
+			j := i + 1
+			for j < n {
+				if data[j] == '\\' {
+					j += 2
+					continue
+				}
+				if data[j] == '"' || data[j] == '\n' {
+					break
+				}
+				j++
+			}
+			i = j + 1
+			continue
+		case '\'': // single-line literal string
+			j := bytes.IndexByte(data[i+1:], '\n')
+			if j < 0 {
+				break
+			}
+			i = i + 1 + j
+			continue
+		case '[':
+			if lineStartsAt(data, i) {
+				h, ok := parseHeader(data, i)
+				if ok {
+					headers = append(headers, h)
+					i = h.bodyStart
+					continue
+				}
+			}
+			i++
+			continue
+		case '#': // comment to end of line
+			j := bytes.IndexByte(data[i:], '\n')
+			if j < 0 {
+				break
+			}
+			i += j
+			continue
+		}
+		i++
+	}
+	return headers
+}
+
+// lineStartsAt reports whether data[i] is the first non-space byte of its
+// line.
+func lineStartsAt(data []byte, i int) bool {
+	for j := i - 1; j >= 0; j-- {
+		switch data[j] {
+		case ' ', '\t':
+			continue
+		case '\n':
+			return true
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// parseHeader reads a header starting at data[i] == '['. It returns ok=false
+// for anything that is not a well-formed header line (e.g. a line-continuation
+// artifact), leaving the caller to advance one byte.
+func parseHeader(data []byte, i int) (header, bool) {
+	n := len(data)
+	array := false
+	if i+1 < n && data[i+1] == '[' {
+		array = true
+	}
+	open := i
+	if array {
+		open = i + 1
+	}
+	// Find the closing bracket on this same logical line.
+	close := bytes.IndexByte(data[open:], ']')
+	if close < 0 {
+		return header{}, false
+	}
+	close += open
+	if array {
+		if close+1 >= n || data[close+1] != ']' {
+			return header{}, false
+		}
+	}
+	nameEnd := close
+	if array {
+		nameEnd = close + 1
+	}
+	// The header line must end at the newline (only spaces after ']').
+	rest := data[nameEnd+1:]
+	lineEnd := bytes.IndexByte(rest, '\n')
+	seg := rest
+	if lineEnd >= 0 {
+		seg = rest[:lineEnd]
+	} else {
+		lineEnd = len(rest) - 1 // no newline: last line of the file
+	}
+	if strings.TrimSpace(string(seg)) != "" {
+		return header{}, false
+	}
+	bodyStart := nameEnd + 1
+	if lineEnd >= 0 && lineEnd < len(rest) {
+		bodyStart = nameEnd + 1 + lineEnd + 1 // past the newline
+	} else {
+		bodyStart = n
+	}
+	name := string(data[i+1 : close])
+	if array {
+		name = string(data[i+2 : close])
+	}
+	return header{
+		name:      canonicalName(name),
+		start:     i,
+		bodyStart: bodyStart,
+		array:     array,
+	}, true
+}
+
+// findTable returns the single header whose canonical name equals name,
+// wrapped ErrTableNotFound / ErrArrayTable / ErrDuplicateTable otherwise.
+// Bare names are matched against both spellings for harness tables via
+// harnessNames; for stable tables the caller passes the full "stable.x".
+func (e *Editor) findTable(names ...string) (header, error) {
+	headers := findHeaders(e.data)
+	var found *header
+	for _, h := range headers {
+		match := false
+		for _, want := range names {
+			if h.name == want {
+				match = true
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+		if h.array {
+			return header{}, fmt.Errorf("%w: [[%s]] is an array table", ErrArrayTable, h.name)
+		}
+		if found != nil {
+			return header{}, fmt.Errorf("%w: [%s] appears more than once", ErrDuplicateTable, h.name)
+		}
+		hc := h
+		found = &hc
+	}
+	if found == nil {
+		return header{}, fmt.Errorf("%w: none of [%s]", ErrTableNotFound, strings.Join(names, "] ["))
+	}
+	return *found, nil
+}
+
+// tableEnd returns the exclusive end offset of the table starting at h: the
+// start of the next header, or the end of the file. Trailing blank lines
+// before the next header belong to the NEXT table, not this one.
+func (e *Editor) tableEnd(h header) int {
+	headers := findHeaders(e.data)
+	for _, nh := range headers {
+		if nh.start > h.start {
+			// Keep at most one blank line with the removed table so the file
+			// does not grow or glue sections: end at the last non-blank line
+			// of this table's body.
+			end := nh.start
+			body := e.data[h.bodyStart:end]
+			trimmed := bytes.TrimRight(body, " \t\n")
+			return h.bodyStart + len(trimmed) + trailingNewline(body[len(trimmed):])
+		}
+	}
+	return len(e.data)
+}
+
+func trailingNewline(tail []byte) int {
+	if len(tail) == 0 {
+		return 0
+	}
+	return 1
+}
+
+// AddStable appends a [stable.<name>] table at the end of the file, writing
+// the given keys in order (strings, string lists, booleans). It refuses when
+// the table already exists.
+func (e *Editor) AddStable(name string, keys [][2]any) error {
+	return e.addTable("stable."+name, keys)
+}
+
+// AddHarness appends a [harness.<name>] table at the end of the file.
+func (e *Editor) AddHarness(name string, keys [][2]any) error {
+	return e.addTable("harness."+name, keys)
+}
+
+func (e *Editor) addTable(dotted string, keys [][2]any) error {
+	if _, err := e.findTable(dotted); err == nil {
+		return fmt.Errorf("%w: [%s] already exists", ErrDuplicateTable, dotted)
+	} else if !errors.Is(err, ErrTableNotFound) {
+		return err
+	}
+	var b strings.Builder
+	b.WriteString("[" + dotted + "]\n")
+	if err := writeKeys(&b, keys); err != nil {
+		return err
+	}
+	body := b.String()
+	out := strings.TrimRight(string(e.data), "\n")
+	if out != "" {
+		out += "\n\n"
+	}
+	e.data = []byte(out + body)
+	return nil
+}
+
+// RemoveStable removes the [stable.<name>] table, header through the end of
+// its body (multi-line aware), comments included.
+func (e *Editor) RemoveStable(name string) error {
+	return e.removeTable("stable." + name)
+}
+
+// RemoveHarness removes a harness table under either spelling,
+// [harness.<name>] or bare [<name>].
+func (e *Editor) RemoveHarness(name string) error {
+	return e.removeTable("harness."+name, name)
+}
+
+func (e *Editor) removeTable(names ...string) error {
+	h, err := e.findTable(names...)
+	if err != nil {
+		return err
+	}
+	end := e.tableEnd(h)
+	// Cut from the start of the header line (include leading indentation,
+	// already zero — start IS the '['; back up over nothing).
+	e.data = append(append([]byte{}, e.data[:h.start]...), e.data[end:]...)
+	// Tidy: collapse a doubled blank line the cut can leave behind.
+	e.data = bytes.ReplaceAll(e.data, []byte("\n\n\n"), []byte("\n\n"))
+	return nil
+}
+
+// SetStableKey sets one key inside [stable.<name>], in place: the value line
+// is replaced when present, the key appended to the table when absent.
+func (e *Editor) SetStableKey(table, key string, value any) error {
+	return e.setKey("stable."+table, key, value)
+}
+
+// SetHarnessKey sets one key inside a harness table under either spelling.
+func (e *Editor) SetHarnessKey(table, key string, value any) error {
+	return e.setKey("harness."+table, key, value, table)
+}
+
+func (e *Editor) setKey(dotted, key string, value any, altNames ...string) error {
+	names := append([]string{dotted}, altNames...)
+	h, err := e.findTable(names...)
+	if err != nil {
+		return err
+	}
+	end := e.tableEnd(h)
+	body := e.data[h.bodyStart:end]
+
+	// Find the key's line within the body: first line whose first token is
+	// `key =`. The body has no headers, so a line-oriented search is safe —
+	// multi-line values are only a problem for matching the START of a key,
+	// and a key always starts a fresh line.
+	lines := splitLines(body)
+	for _, ln := range lines {
+		if keyLineKey(ln.content) == key {
+			encoded, err := encodeValue(value)
+			if err != nil {
+				return err
+			}
+			replacement := key + " = " + encoded
+			e.data = splice(e.data, ln.start+h.bodyStart, ln.start+h.bodyStart+ln.length, []byte(replacement))
+			return nil
+		}
+	}
+	// Absent: append inside the table, after the last key. tableEnd already
+	// normalized the body to at most one trailing newline, so the new key
+	// lands after it (or after a newline we add when the file ended without
+	// one).
+	encoded, err := encodeValue(value)
+	if err != nil {
+		return err
+	}
+	insert := []byte(key + " = " + encoded + "\n")
+	if len(body) > 0 && body[len(body)-1] != '\n' {
+		insert = append([]byte("\n"), insert...)
+	}
+	insertAt := h.bodyStart + len(body)
+	e.data = splice(e.data, insertAt, insertAt, insert)
+	return nil
+}
+
+// keyLineKey returns the TOML key of a `key = value` line, or "" when the
+// line is not a key line (comment, blank, continuation).
+func keyLineKey(line string) string {
+	s := strings.TrimLeft(line, " \t")
+	if s == "" || strings.HasPrefix(s, "#") || strings.HasPrefix(s, "[") {
+		return ""
+	}
+	eq := strings.Index(s, "=")
+	if eq <= 0 {
+		return ""
+	}
+	key := strings.TrimSpace(s[:eq])
+	return strings.Trim(key, `"'`)
+}
+
+type lineInfo struct {
+	content string
+	start   int // offset within the slice passed to splitLines
+	length  int // length of the line including its newline
+}
+
+// splitLines is line-oriented only where that is safe: a table body between
+// two headers, where every key starts a fresh line.
+func splitLines(body []byte) []lineInfo {
+	var out []lineInfo
+	start := 0
+	for i := 0; i < len(body); i++ {
+		if body[i] == '\n' {
+			out = append(out, lineInfo{string(body[start:i]), start, i - start + 1})
+			start = i + 1
+		}
+	}
+	if start < len(body) {
+		out = append(out, lineInfo{string(body[start:]), start, len(body) - start})
+	}
+	return out
+}
+
+func splice(data []byte, from, to int, insert []byte) []byte {
+	out := make([]byte, 0, len(data)-(to-from)+len(insert))
+	out = append(out, data[:from]...)
+	out = append(out, insert...)
+	out = append(out, data[to:]...)
+	return out
+}
+
+// encodeValue renders the only value shapes these commands write: TOML basic
+// strings with escapes, string lists and booleans.
+func encodeValue(v any) (string, error) {
+	switch t := v.(type) {
+	case bool:
+		if t {
+			return "true", nil
+		}
+		return "false", nil
+	case string:
+		return encodeString(t), nil
+	case []string:
+		parts := make([]string, len(t))
+		for i, s := range t {
+			parts[i] = encodeString(s)
+		}
+		return "[" + strings.Join(parts, ", ") + "]", nil
+	default:
+		return "", fmt.Errorf("tomledit: unsupported value type %T (strings, string lists, booleans only)", v)
+	}
+}
+
+func encodeString(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+func writeKeys(b *strings.Builder, keys [][2]any) error {
+	for _, kv := range keys {
+		enc, err := encodeValue(kv[1])
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(b, "%s = %s\n", kv[0].(string), enc)
+	}
+	return nil
+}
