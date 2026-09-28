@@ -56,6 +56,11 @@ func (l *Lines) String(ln string) string {
 		}
 		l.inKey = false
 	}
+	// Outside a key block, a line no rule can match (not even the BEGIN of a
+	// block) is returned as is, without running them (prefilter.go).
+	if !mayMatch(ln) {
+		return ln
+	}
 	out := String(ln)
 	if loc := pemBegin.FindStringIndex(ln); loc != nil && !pemEnd.MatchString(ln[loc[1]:]) {
 		l.inKey = true
