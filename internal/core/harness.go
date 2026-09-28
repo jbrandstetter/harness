@@ -708,6 +708,15 @@ type Config struct {
 	// Governing: SPEC-0014 REQ "Credential Resolution", REQ "Webhook
 	// Listener".
 	Warnings []string
+	// Skills is the optional global [skills] serving table (SPEC-0007 REQ
+	// "Skill Repos"); the zero value carries the defaults.
+	Skills SkillsConfig
+	// SkillRepos is every [skill_repo.*] table keyed by name, nil when none
+	// are declared. Global-only: project files reject them.
+	SkillRepos map[string]SkillRepo
+	// SkillRepoOrder is skill repo names in the order they appear, as
+	// HarnessOrder is for harnesses.
+	SkillRepoOrder []string
 }
 
 // OrderedChannels returns the channel sources in declaration order.

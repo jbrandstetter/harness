@@ -12,6 +12,9 @@ package main
 // common one); SPEC-0003 (the state glyphs distinguish healthy from
 // degraded harnesses — we map per-harness state into the doctor's
 // pass/warn/fail levels).
+//
+// @joestump-agent 09/27/2026 - Added the skill-repo serving-clone row
+// (SPEC-0007 REQ "Default-Branch Gate").
 
 import (
 	"encoding/json"
@@ -66,6 +69,9 @@ type doctorResult struct {
 	TelemetryCheck *checkResult `json:"telemetry_check,omitempty"`
 	// Notify is the [notify] hook row; NotifyTest is present only with
 	// --notify-test (SPEC-0003 REQ "Operator Notification").
+	// Skills is the skill-repo serving-clone row (SPEC-0007 REQ
+	// "Default-Branch Gate"); absent when no skill repo is declared.
+	Skills     *checkResult `json:"skills,omitempty"`
 	Notify     *checkResult `json:"notify,omitempty"`
 	NotifyTest *checkResult `json:"notify_test,omitempty"`
 	// Settings reports every process setting with the source that supplied it,
@@ -291,6 +297,14 @@ func runDoctorWith(o verbOpts, notifyTest bool) int {
 		if r := triggersCheck(in); r != nil {
 			rows = append(rows, *r)
 		}
+	}
+
+	// --- Check: skill repo serving clones -----------------------------------
+	// Governing: SPEC-0007 REQ "Default-Branch Gate". A clone off the default
+	// branch or dirty keeps its previous index, so doctor is the only place
+	// the condition is visible.
+	if r := skillsCheck(cfg, c); r != nil {
+		rows = append(rows, *r)
 	}
 
 	// --- Check 5: harnesses in healthy state -------------------------------
@@ -557,6 +571,9 @@ func emitDoctorJSON(w io.Writer, rows []check, resolved []settings.Resolved, tel
 		case "operating_hours":
 			c := cr
 			res.OperatingHours = &c
+		case "skills":
+			c := cr
+			res.Skills = &c
 		case "triggers":
 			c := cr
 			res.Triggers = &c
