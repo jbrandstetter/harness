@@ -17,7 +17,8 @@
 # # Process settings. A --flag or HARNESS_* variable beats each of these, and
 # # each is read at daemon start, so a change needs a restart, not a reload.
 # # Paths must be absolute. See docs/usage/configuration.md.
-# scrollback = 10000                        # per-harness scrollback ring depth (lines)
+# scrollback_bytes = "1MiB"                 # per-harness scrollback ring storage, 64KiB-1GiB
+# scrollback = 10000                        # and at most this many lines of it
 # log_level = "info"                        # debug, info, warn, error
 # log_file = "/var/log/harness.log"         # absent = stderr
 # socket = "/run/harness/harness.sock"      # absent = $XDG_RUNTIME_DIR/harness.sock

@@ -25,7 +25,7 @@ type Controller interface {
 // Registry maps harness name → Mux, creating each lazily on first use. It is
 // safe for concurrent use.
 type Registry struct {
-	ringLines int
+	limits RingLimits
 
 	mu    sync.Mutex
 	muxes map[string]*Mux
@@ -33,10 +33,19 @@ type Registry struct {
 }
 
 // NewRegistry builds a registry whose muxes each keep ringLines of scrollback
-// (DefaultRingLines when <=0).
+// (DefaultRingLines when <=0) within the default byte budget.
 func NewRegistry(ringLines int) *Registry {
-	return &Registry{ringLines: ringLines, muxes: make(map[string]*Mux)}
+	return NewRegistryLimits(RingLimits{Lines: ringLines})
 }
+
+// NewRegistryLimits builds a registry whose muxes' scrollback rings are each
+// bounded by lim (zero fields take defaults; ADR-0007).
+func NewRegistryLimits(lim RingLimits) *Registry {
+	return &Registry{limits: lim, muxes: make(map[string]*Mux)}
+}
+
+// Limits reports the limits each new Mux's ring gets, defaults filled in.
+func (r *Registry) Limits() RingLimits { return r.limits.withDefaults() }
 
 // SetController wires the Manager the muxes call back into for PTY resize and
 // input. Call it once, before the daemon starts harnesses or serves clients, so
@@ -57,7 +66,7 @@ func (r *Registry) Mux(name string) *Mux {
 	if m, ok := r.muxes[name]; ok {
 		return m
 	}
-	m := newMux(name, r.ringLines,
+	m := newMuxLimits(name, r.limits,
 		func(cols, rows int) {
 			if c := r.controller(); c != nil {
 				c.Resize(name, cols, rows)

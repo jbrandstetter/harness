@@ -33,6 +33,7 @@ import (
 
 	"github.com/stump-wtf/harness/internal/attach"
 	"github.com/stump-wtf/harness/internal/buildinfo"
+	"github.com/stump-wtf/harness/internal/settings"
 )
 
 // daemonOpts carries the resolved daemon settings. Previously these were flag
@@ -43,6 +44,7 @@ type daemonOpts struct {
 	configPath string
 	socketPath string
 	ringLines  int
+	ringBytes  int64 // ADR-0007 ring budget; its string flag is read via the resolver
 	sshEnable  bool
 	sshListen  string
 	// webhookListen is the webhook listener address from --webhook-listen or
@@ -76,6 +78,7 @@ func newDaemonCmd(g *globalOpts) *cobra.Command {
 	// Daemon-only flags. --socket, --config and --json come from the root's
 	// persistent set, so they work before or after the subcommand.
 	daemon.PersistentFlags().IntVar(&d.ringLines, "scrollback", attach.DefaultRingLines, "per-harness scrollback ring depth (lines)")
+	daemon.PersistentFlags().String("scrollback-bytes", settings.FormatBytes(attach.DefaultRingBytes), "per-harness scrollback ring storage, e.g. 4MiB (64KiB-1GiB)")
 	daemon.PersistentFlags().BoolVar(&d.sshEnable, "ssh", false, "enable the remote Wish SSH server (ADR-0004; overrides [server] enabled)")
 	daemon.PersistentFlags().StringVar(&d.sshListen, "ssh-listen", "", "SSH bind address host:port (overrides [server] listen)")
 	daemon.PersistentFlags().StringVar(&d.webhookListen, "webhook-listen", "", "webhook listener bind address host:port (SPEC-0014; overrides [server] webhook_listen)")
@@ -162,6 +165,9 @@ func (d *daemonOpts) childArgs() []string {
 		"--config", d.configPath,
 		"--socket", d.socketPath,
 		"--scrollback", strconv.Itoa(d.ringLines),
+	}
+	if d.ringBytes > 0 {
+		args = append(args, "--scrollback-bytes", settings.FormatBytes(d.ringBytes))
 	}
 	if d.sshEnable {
 		args = append(args, "--ssh")

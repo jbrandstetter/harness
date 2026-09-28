@@ -34,15 +34,16 @@ import (
 // setting, keyed by setting name. A new FileKey with no sample fails the test
 // rather than being skipped.
 var fileKeySamples = map[string]any{
-	"socket":         "/tmp/harness-test.sock",
-	"log-level":      "warn",
-	"log-file":       "/tmp/harness-test.log",
-	"scrollback":     2000,
-	"ssh":            false,
-	"ssh-listen":     "127.0.0.1:2222",
-	"webhook-listen": "127.0.0.1:9000",
-	"watch-config":   false,
-	"compress-logs":  false,
+	"socket":           "/tmp/harness-test.sock",
+	"log-level":        "warn",
+	"log-file":         "/tmp/harness-test.log",
+	"scrollback":       2000,
+	"scrollback-bytes": int64(2 << 20), // KindBytes resolves to int64
+	"ssh":              false,
+	"ssh-listen":       "127.0.0.1:2222",
+	"webhook-listen":   "127.0.0.1:9000",
+	"watch-config":     false,
+	"compress-logs":    false,
 }
 
 func TestRegistryFileKeysLoad(t *testing.T) {

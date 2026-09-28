@@ -20,6 +20,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/spf13/cobra"
 
@@ -31,14 +32,15 @@ import (
 )
 
 // newResolver builds a resolver seeded with the runtime-computed defaults. The
-// socket and config defaults depend on the XDG environment and scrollback comes
-// from the attach package, so none of the three can be a compile-time constant
-// in the registry.
+// socket and config defaults depend on the XDG environment and the scrollback
+// limits come from the attach package, so none of them can be a compile-time
+// constant in the registry.
 func newResolver(cmd *cobra.Command) *settings.Resolver {
 	r := settings.New()
 	r.SetDefault("socket", protocol.DefaultSocketPath())
 	r.SetDefault("config", config.DefaultPath())
 	r.SetDefault("scrollback", attach.DefaultRingLines)
+	r.SetDefault("scrollback-bytes", int64(attach.DefaultRingBytes))
 	if cmd != nil {
 		r.BindFlags(cmd.Flags())
 	}
@@ -99,6 +101,10 @@ func resolveDaemonSettings(cmd *cobra.Command, g *globalOpts, d *daemonOpts) err
 	if err != nil {
 		return err
 	}
+	ringBytes, err := resolveScrollbackBytes(r)
+	if err != nil {
+		return err
+	}
 	sshEnable, err := r.Bool("ssh")
 	if err != nil {
 		return err
@@ -133,13 +139,37 @@ func resolveDaemonSettings(cmd *cobra.Command, g *globalOpts, d *daemonOpts) err
 	}
 
 	d.configPath, d.socketPath = configPath, socket
-	d.ringLines, d.sshEnable, d.sshListen = ring, sshEnable, sshListen
+	d.ringLines, d.ringBytes, d.sshEnable, d.sshListen = ring, ringBytes, sshEnable, sshListen
 	d.webhookListen = webhookListen
 	d.logLevel, d.logFile = logLevel, logFile
 	d.compressLogs = compressLogs
 
 	g.configPath, g.socket = configPath, socket
 	return nil
+}
+
+// resolveScrollbackBytes resolves the scrollback ring's byte budget and holds it
+// to the range internal/config holds the file to, naming the source that
+// supplied it (SPEC-0010 REQ "Environment Value Validation"). This runs before
+// the daemon loads its config, so a bad file value stops startup here, named
+// by its key; config.Load would name its line.
+func resolveScrollbackBytes(r *settings.Resolver) (int64, error) {
+	got, err := r.Resolve("scrollback-bytes")
+	if err != nil {
+		return 0, err
+	}
+	n, _ := got.Value.(int64)
+	if err := config.CheckScrollbackBytes(n); err != nil {
+		origin := got.Setting.FileKey
+		switch got.Source {
+		case settings.SourceFlag:
+			origin = "--" + got.Setting.Name
+		case settings.SourceEnv:
+			origin = got.Setting.Env
+		}
+		return 0, fmt.Errorf("%s: %w", origin, err)
+	}
+	return n, nil
 }
 
 // resolveReport returns every setting with its winning source, for `harness

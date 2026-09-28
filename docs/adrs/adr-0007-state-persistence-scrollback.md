@@ -63,10 +63,27 @@ restoring the intended running set after a restart is what ADR-0005 requires.
 
 ### Scrollback, per harness
 
-* The `x/vt` emulator keeps the **live screen and a bounded scrollback ring**
-  (10,000 lines by default; `[daemon] scrollback` or `HARNESS_SCROLLBACK`
-  changes it). The ring backs attach, in-TUI scroll and search. It lives in
-  memory.
+* The `x/vt` emulator keeps the **live screen**, which every attach's
+  snapshot is rendered from. Nothing reads the emulator's own scrollback
+  (ADR-0003).
+* Beside it, a **scrollback ring of raw PTY bytes** keeps each harness's
+  recent output in memory. The ring is **bounded by bytes**: 1 MiB of storage
+  by default, set with `[daemon] scrollback_bytes`, `HARNESS_SCROLLBACK_BYTES`
+  or `harness daemon --scrollback-bytes` (64 KiB to 1 GiB). It evicts the
+  oldest whole lines to stay within the budget. It also keeps at most 10,000
+  lines, a secondary bound set with `[daemon] scrollback` or
+  `HARNESS_SCROLLBACK`. A line longer than 64 KiB (or a quarter of the budget,
+  if that is smaller) keeps its head and ends in a visible
+  `…[harness: truncated N bytes]` marker. The ring backs the scrollback an
+  attach replays. In-TUI scroll and search read the durable log below.
+* **Why bytes.** A line cap alone does not bound memory. Claude Code's
+  stream-json lines average 2–34 KB and reach 4 MB, so 10,000 lines came to
+  20–340 MB per harness
+  ([stump-wtf/harness#18](https://github.com/stump-wtf/harness/issues/18)).
+  The default budget is small because attach replay is the ring's only
+  reader, and a client parses replayed bytes at a few MB/s. Every retained
+  byte costs latency on every attach and buys nothing past what a client
+  shows. 1 MiB is still about 13,000 lines of 80-column text.
 * **In parallel**, the daemon writes a **rotating, sanitized log** per harness
   at `$XDG_STATE_HOME/harness/logs/<name>.log` (falling back to
   `~/.local/state/harness/logs/<name>.log`). A project harness's namespaced name
@@ -81,13 +98,17 @@ restoring the intended running set after a restart is what ADR-0005 requires.
   flapping) written with `charmbracelet/log`. Credential-shaped spans are
   masked before they reach the file (ADR-0008). The raw byte stream feeds only
   the in-memory ring and live attaches, which need it to repaint.
-* On **attach**, a client gets a screen snapshot and a tail of scrollback, then
-  the live stream. On **detach**, nothing is lost: the daemon kept reading the
-  PTY the whole time.
+* On **attach**, a client gets a screen snapshot, then the ring's contents,
+  then the live stream. The ring is sent as frames no larger than one of its
+  storage chunks (about 1/64 of the budget), read straight from storage
+  rather than copied, so an attach costs no memory in proportion to the ring.
+  On **detach**, nothing is lost: the daemon kept reading the PTY the whole
+  time.
 * **Backpressure.** The PTY reader never blocks on a slow client. Output always
   reaches the ring and the log; each client's attach stream has a bounded
-  queue, and a client that cannot keep up has frames coalesced or dropped for
-  that client only, then repaints from the current screen. One slow SSH client
+  queue, which the replayed ring shares with live output, and a client that
+  cannot keep up has frames coalesced or dropped for that client only, then
+  repaints from the current screen. One slow SSH client
   cannot stall a harness. The daemon protocol specification (SPEC-0002) holds
   the detail.
 
@@ -176,7 +197,8 @@ operator replays a delivery by pointing `harness trigger --event` at it.
   not as a stream of repaint frames.
 * Good, because a daemon restart restores the intended running set and keeps
   log history.
-* Good, because memory (the ring) and disk (rotation) are both bounded.
+* Good, because memory (the ring, by bytes) and disk (rotation) are both
+  bounded.
 * Good, because the intent/state split keeps the config file hand-editable and
   git-friendly (ADR-0006).
 * Bad, because logs cost disk, bounded by rotation to six files per harness.
@@ -191,6 +213,11 @@ operator replays a delivery by pointing `harness trigger --event` at it.
 * Bad, because a secret a harnessed program prints can reach the log in a shape
   the masker does not recognize; the daemon controls what it writes, not what
   the child prints.
+* Bad, because the replayed ring is lossy at the edges: a line past the
+  per-line cap arrives as its head and a marker, and a full-screen TUI that
+  repaints for 64 KiB without a newline can have a frame cut short in the
+  replay. The snapshot that opens every attach is still exact, and the live
+  stream is never truncated.
 * Neutral, because the durable log is not the live screen. A full-screen TUI's
   final frame is flushed when the stream ends, but repaint-in-place content
   never appears in it; attach is the way to see a TUI.
@@ -212,6 +239,11 @@ operator replays a delivery by pointing `harness trigger --event` at it.
   that a malformed `state.json` is kept and reported rather than overwritten.
 * Run-history tests pin that no `env_file` value reaches `state.json` or a run
   record (ADR-0013).
+* Ring tests pin the byte budget (40 MiB of 30 KB lines leaves the ring within
+  1 MiB), the per-line cap and its marker, a 4 MB line, and allocation-free
+  writes on a full ring; `FuzzRing` checks the ring against a flat model.
+  Attach tests pin snapshot, then ring, then live under a concurrent writer,
+  and a ring past the 16 MiB frame limit still reaching the client.
 
 ## Pros and Cons of the Options
 
@@ -257,8 +289,10 @@ operator replays a delivery by pointing `harness trigger --event` at it.
 
 ```mermaid
 flowchart LR
-    PTY["harness PTY"]:::agent --> EMU["x/vt emulator<br/>live screen + 10k-line ring"]:::daemon
-    EMU --> ATT["attach streams<br/>bounded per-client queue"]:::client
+    PTY["harness PTY"]:::agent --> EMU["x/vt emulator<br/>live screen"]:::daemon
+    PTY --> RING["scrollback ring<br/>raw bytes, 1 MiB budget"]:::daemon
+    EMU -->|"snapshot"| ATT["attach streams<br/>bounded per-client queue"]:::client
+    RING -->|"replay, chunk-sized frames"| ATT
     EMU -->|"rows that scrolled off,<br/>final screen on exit"| SAN["sanitizer + masker"]:::daemon
     SUP["supervisor lifecycle"]:::daemon -->|"state changes, exits,<br/>flapping"| SAN
     SAN --> LOG["logs/NAME.log<br/>8 MiB / 24 h, 5 backups"]:::store
@@ -269,7 +303,9 @@ flowchart LR
 
 ## More Information
 
-* **Extends ADR-0003** — the emulator the daemon owns is what holds the ring.
+* **Extends ADR-0003** — the daemon owns the emulator, which holds the live
+  screen every attach snapshot is rendered from. The scrollback ring is a
+  separate buffer of raw bytes beside it, not the emulator's scrollback.
 * **Related ADR-0002** — the daemon, not the client, holds state.
 * **Related ADR-0005** — `state.json` is what restore-on-restart reads.
 * **Related ADR-0006** — configuration stays in the TOML, never in

@@ -151,9 +151,14 @@ Two launchd specifics worth knowing:
   restores it on boot, and re-attaches to intended running set regardless of how
   it restarted.
 - **Daemon-owned scrollback (ADR-0007)**: each harness's PTY output is tee'd
-  into an in-memory ring (depth configurable with `[daemon] scrollback` in `harness.toml`,
-  `HARNESS_SCROLLBACK`, or `harness daemon --scrollback N`)
-  plus a durable log, so you can read back output even while detached.
+  into an in-memory ring plus a durable log, so you can read back output even
+  while detached. The ring is bounded by bytes: 1 MiB per harness by default,
+  set with `[daemon] scrollback_bytes` in `harness.toml`,
+  `HARNESS_SCROLLBACK_BYTES`, or `harness daemon --scrollback-bytes 4MiB`, and
+  capped at 10,000 lines (`[daemon] scrollback`, `HARNESS_SCROLLBACK`,
+  `--scrollback N`). An attach replays the ring after the screen snapshot; a
+  line over 64 KiB replays as its head and a `…[harness: truncated N bytes]`
+  marker. See [Daemon settings](./configuration#daemon-settings-daemon).
 
 ## Flapping a.k.a. crash-loop protection
 

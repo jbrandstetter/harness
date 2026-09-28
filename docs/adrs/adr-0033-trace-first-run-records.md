@@ -208,8 +208,9 @@ publication must stay a deliberate act (ADR-0022's consent rules).
 This ADR supersedes ADR-0007's framing of scrollback as the record. What ADR-0007
 decided about the terminal stays:
 
-* The `x/vt` emulator's live screen and bounded scrollback ring back attach,
-  in-TUI scroll and search for every PTY harness.
+* The `x/vt` emulator's live screen and the byte-bounded scrollback ring of
+  raw bytes beside it back attach for every PTY harness; in-TUI scroll and
+  search read the durable log.
 * The sanitized, rotating durable log (`logs/<name>.log`) stays the terminal
   view that `harness logs --raw` reads, including after a crash and, with
   ADR-0037, with the daemon down.
