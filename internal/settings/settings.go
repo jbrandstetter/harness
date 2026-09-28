@@ -110,6 +110,10 @@ var Registry = []Setting{
 	{Name: "ssh-listen", Env: "HARNESS_SSH_LISTEN", FileKey: "server.listen", Kind: KindString, Default: "", Desc: "SSH bind address"},
 	{Name: "webhook-listen", Env: "HARNESS_WEBHOOK_LISTEN", FileKey: "server.webhook_listen", Kind: KindString, Default: "", Desc: "webhook listener bind address (empty = off)"},
 	{Name: "watch-config", Env: "HARNESS_WATCH_CONFIG", FileKey: "daemon.watch_config", Kind: KindBool, Default: true, Desc: "watch the config file for changes"},
+	// No Default: unset must stay distinguishable from an explicit "0", which
+	// turns off a limit GOMEMLIMIT set (SPEC-0010 REQ "Go Memory Limit").
+	{Name: "memory-limit", Env: "HARNESS_MEMORY_LIMIT", FileKey: "daemon.memory_limit", Kind: KindBytes, Desc: "Go soft memory limit (0 = off; unset = GOMEMLIMIT, else off)"},
+	{Name: "pprof-addr", Env: "HARNESS_PPROF_ADDR", FileKey: "daemon.pprof_addr", Kind: KindString, Default: "", Desc: "pprof listener, loopback only (empty = off)"},
 }
 
 // logLevels is the accepted set for log-level, listed in errors so a typo tells

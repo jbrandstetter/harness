@@ -155,6 +155,14 @@ type rawDaemon struct {
 	// with a migration error (SPEC-0015 REQ-13), like rawHarness's removed
 	// keys: unknown keys fail anyway, but this one deserves the way forward.
 	RemovedOTelEndpoint *string `toml:"otel_endpoint"`
+
+	// MemoryLimit and PprofAddr are process settings owned by
+	// internal/settings (--memory-limit / HARNESS_MEMORY_LIMIT, --pprof-addr /
+	// HARNESS_PPROF_ADDR). They are decoded here only so the strict decode
+	// accepts them and checkDaemonDiag can refuse a bad value with its line.
+	// MemoryLimit is untyped: a string with a unit or an integer of bytes.
+	MemoryLimit any     `toml:"memory_limit"`
+	PprofAddr   *string `toml:"pprof_addr"`
 }
 
 // rawServer mirrors the [server] table before validation (ADR-0004/0008 remote
@@ -352,6 +360,9 @@ func Parse(data []byte, filename string) (*core.Config, error) {
 			var rd rawDaemon
 			if err := md.PrimitiveDecode(top["daemon"], &rd); err != nil {
 				return nil, newError(filename, h.line, "[daemon]: %v", err)
+			}
+			if err := checkDaemonDiag(filename, data, rd); err != nil {
+				return nil, err
 			}
 			if rd.RemovedOTelEndpoint != nil {
 				return nil, removedOTelEndpointErr(filename, lineOfKeyInTable(data, "daemon", "otel_endpoint"))

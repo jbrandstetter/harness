@@ -33,6 +33,7 @@ import (
 
 	"github.com/stump-wtf/harness/internal/attach"
 	"github.com/stump-wtf/harness/internal/buildinfo"
+	"github.com/stump-wtf/harness/internal/settings"
 )
 
 // daemonOpts carries the resolved daemon settings. Previously these were flag
@@ -53,6 +54,14 @@ type daemonOpts struct {
 	logLevel      string
 	logFile       string
 	detach        bool
+	// memoryLimit is --memory-limit / HARNESS_MEMORY_LIMIT / [daemon]
+	// memory_limit in bytes (0 = off), and memoryLimitSource which of them
+	// supplied it, or settings.SourceDefault when none did and GOMEMLIMIT (if
+	// set) stays in charge. See daemon_memory.go.
+	memoryLimit       int64
+	memoryLimitSource settings.Source
+	// pprofAddr is the loopback pprof listener address; empty is off.
+	pprofAddr string
 }
 
 func newDaemonCmd(g *globalOpts) *cobra.Command {
@@ -79,6 +88,10 @@ func newDaemonCmd(g *globalOpts) *cobra.Command {
 	daemon.PersistentFlags().StringVar(&d.logLevel, "log-level", "", "log level: debug, info, warn, error")
 	daemon.PersistentFlags().StringVar(&d.logFile, "log-file", "", "append logs to this file instead of stderr")
 	daemon.PersistentFlags().BoolVar(&d.detach, "detach", false, "fork into the background; redirect stdio to --log-file (dev convenience; prefer systemd in production)")
+	// Declared for parsing only: the settings ladder reads them back by name
+	// and resolves them into d (resolveDaemonSettings).
+	daemon.PersistentFlags().String("memory-limit", "", "Go soft memory limit, e.g. 2GiB (0 = off; overrides [daemon] memory_limit and GOMEMLIMIT)")
+	daemon.PersistentFlags().String("pprof-addr", "", "serve net/http/pprof on this loopback host:port (overrides [daemon] pprof_addr)")
 
 	// The daemon prints "harness daemon <version>"; Cobra only wires --version
 	// onto the root, so this one is declared explicitly.
@@ -173,6 +186,14 @@ func (d *daemonOpts) childArgs() []string {
 	}
 	if d.logFile != "" {
 		args = append(args, "--log-file", d.logFile)
+	}
+	// Only an explicit limit is passed on. Passing the default would make it
+	// a flag in the child, outranking the GOMEMLIMIT the child inherits.
+	if d.memoryLimitSource != "" && d.memoryLimitSource != settings.SourceDefault {
+		args = append(args, "--memory-limit", settings.FormatBytes(d.memoryLimit))
+	}
+	if d.pprofAddr != "" {
+		args = append(args, "--pprof-addr", d.pprofAddr)
 	}
 	return args
 }

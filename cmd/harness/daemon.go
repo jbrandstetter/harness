@@ -216,6 +216,11 @@ func runDaemon(o daemonOpts) {
 
 	configureDaemonLogger(o.logLevel, o.logFile)
 
+	// GitHub https://github.com/stump-wtf/harness/issues/18: the Go soft
+	// memory limit, before anything allocates in earnest. Off unless set;
+	// GOMEMLIMIT stays in charge when no harness setting names one.
+	applyDaemonMemoryLimit(o.memoryLimit, o.memoryLimitSource, os.Getenv)
+
 	// Refuse a live socket BEFORE anything with side effects runs. Listen
 	// probes again below, but by then Restore and Autostart have started this
 	// daemon's copies of the live daemon's harnesses, and the mgr.Close on
@@ -258,6 +263,11 @@ func runDaemon(o daemonOpts) {
 		signalDetached('e')
 		os.Exit(1)
 	}
+
+	// SPEC-0013 REQ-8: opt-in pprof, loopback only (a non-loopback address
+	// was refused with the other settings). Bound after the refusals above,
+	// and stopped last, after the Manager.
+	pprofSrv := startDaemonPprof(o.pprofAddr)
 
 	// ADR-0032: the merge train, only when [mergetrain] enabled = true. Its
 	// preconditions (the token variable) are checked here, before any harness
@@ -494,6 +504,7 @@ func runDaemon(o daemonOpts) {
 	}
 	srv.Close()
 	mgr.Close()
+	stopDaemonPprof(pprofSrv)
 	<-telemetryDone
 }
 
