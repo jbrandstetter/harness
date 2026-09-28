@@ -364,12 +364,27 @@ it departs from the text above:
 * **Runs with no per-run log.** A prompt harness with no triggers has no
   per-run log, and a run's log can fail to open. Such a run writes its masked
   stdout lines to the durable log instead.
-* **Attach and peek.** Both streams reach the attach sessions as
+* **Attach and peek.** The ADR's attach is the rendered event log, which needs
+  the normalizer. Until then a pipe run is attached through an emulator-less
+  line mux (`internal/attach`, `lines.go`). Both streams reach its sessions as
   CRLF-terminated lines, the bytes a terminal would have shown, so
   claude-code's stream-json peek formatter and `harness attach` read them
-  unchanged. In this first cut the lines still go through the per-harness
-  attach mux and its emulator. An emulator-less line mode for pipe runs
-  follows separately.
+  unchanged and the protocol does not change. Details:
+  * The snapshot is the recent lines, from the same byte-bounded ring a
+    terminal mux replays scrollback from, with no screen repaint in front.
+  * Live output goes out in frames of at most 32 KiB, so a multi-megabyte
+    line cannot fill a slow session's queue with megabytes. A session that
+    falls behind gets a one-line notice in place of its backlog.
+  * Input is dropped and resize is recorded for `describe` only. `describe`
+    shows the sessions and no viewport.
+  * Which mux serves a harness follows what its latest run did. The
+    supervisor's per-harness output sink is the registry's `Output`, and a
+    pipe run writes its `LineOut`. Before the first run, the harness's
+    definition decides. A terminal harness's mux is still built with its
+    supervisor (`Output.Prime`). A stream-json harness gets no mux and no
+    emulator, and the spawn does not ask the attach layer for a viewport.
+  * A session opened before a reload changed a harness's kind stays on the
+    old mux until it reattaches.
 * **Exit ordering.** The exit path waits for the readers while they make
   progress: a reader masking a multi-megabyte line is slow, not stuck. It gives
   up after a two-second bound with no read returning and every reader waiting,

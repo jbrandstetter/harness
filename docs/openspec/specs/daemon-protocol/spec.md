@@ -183,6 +183,23 @@ NOT copy the ring to send it. A replay SHALL occupy at most 128 frames: a
 budget larger than 128 chunks replays its newest 128 chunks' worth, starting on
 a line boundary. No live byte SHALL reach a session before the last tail frame.
 
+A harness whose runs have no terminal (a structured one-shot on pipes,
+SPEC-0017 REQ-18) SHALL be attached without an emulator. The session SHALL
+receive no screen snapshot: first its recent output lines, from a ring bounded
+as above, then the live lines, each CRLF-terminated, in frames of at most
+32 KiB. Its input SHALL be discarded, since the process's stdin is `/dev/null`.
+`ATTACH_RESIZE` SHALL be recorded for `describe` and resize nothing, and
+`describe` SHALL report no viewport for it. A session too slow to drain its
+queue SHALL have its backlog replaced by a one-line notice, since there is no
+screen to repaint. The frames and their order are otherwise as above, so a
+client needs no change.
+
+#### Scenario: Attaching to a structured one-shot
+
+- **WHEN** a client attaches to a `claude-code` prompt one-shot while it runs
+- **THEN** it receives the run's recent stream-json and stderr lines, then the
+  live ones, and the daemon builds no terminal emulator for the harness
+
 #### Scenario: Instant repaint on attach
 
 - **WHEN** a client attaches to a running harness

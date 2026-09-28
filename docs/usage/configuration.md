@@ -118,10 +118,12 @@ harness, and every `command` harness, whatever its `argv`.
   goes to its durable log (`logs/<name>.log`).
 - **stderr** goes to the run's log and the durable log, masked, with escape
   sequences stripped.
-- **No log sanitizer.** The terminal emulator that turned a PTY run's output
-  into log text is not built for these runs, and the lines reach the logs as
-  the agent wrote them. `harness attach` and the TUI preview show the output
-  lines as they arrive; see [CLI → Attach](./cli#attach).
+- **No emulator.** Neither the log sanitizer nor the attach plane builds a
+  terminal emulator for these runs, so the daemon's memory no longer grows with
+  how much a run prints, and the lines reach the logs as the agent wrote them.
+  There is no screen and no viewport: `harness attach` and the TUI preview show
+  the recent output lines, then new ones as they arrive; see
+  [CLI → Attach](./cli#attach).
 
 ### Prompts that live in a file
 
