@@ -2,7 +2,7 @@
 status: draft
 date: 2026-09-27
 implements: [ADR-0041]
-extends: [SPEC-0003]
+extends: [SPEC-0003, SPEC-0022]
 ---
 
 # SPEC-0027: Fleet Graph
@@ -33,8 +33,10 @@ Harness already keeps:
   TUI surfaces: the neighborhood browser, the live board and the ask pane.
 
 See ADR-0041 for the decision and the options it rejected. This spec extends
-SPEC-0003 REQ "Operator Notification" with one event, `collision` (REQ-7), and
-otherwise adds requirements rather than amending existing ones. It reuses
+SPEC-0003 REQ "Operator Notification" with one event, `collision` (REQ-7),
+and SPEC-0022 REQ-4 with two record fields, `agent_version` and
+`agent_fingerprint` (REQ-25), and otherwise adds requirements rather than
+amending existing ones. It reuses
 SPEC-0007 REQ "Session Git Provenance" and REQ "Session-To-Pull-Request
 Linking" by reference.
 
@@ -97,7 +99,7 @@ counted.
 | `read` | run → file | trace targets with touch `read` |
 | `edited` | run → file | trace targets with touch `edit` |
 | `verified` | run → file | targets of a call with action `verify` |
-| `ran` | run → tool | calls with action `exec` |
+| `ran` | run → tool | each name in a call's `Event.Programs` (agent-trace) |
 | `loaded` | run → skill | skill retrieval records (SPEC-0007) |
 | `opened` | branch → pull_request | `harness graph sync` |
 | `merged_as` | pull_request → commit | `harness graph sync` |
@@ -109,7 +111,10 @@ counted.
 `read`, `edited`, `verified` and `ran` SHALL be one edge per (run, target,
 kind), with `observed_at` from the first qualifying event, `last_at` from the
 latest, and a count. A target with touch `hit`, or marked weak by agent-trace,
-SHALL produce no edge. A `verified` edge SHALL carry whether the latest verify
+SHALL produce no edge. `ran` SHALL come from every shell call whatever its
+action, so `go test` (a `verify`) still yields `ran` to `tool:go`, and SHALL
+take the program names agent-trace reports, never a re-parse of the command
+text. A `verified` edge SHALL carry whether the latest verify
 call errored. A `depends_on` edge SHALL carry the resolved version and manifest
 path. A `reviewed` edge SHALL carry the review state, reviewer login and time,
 and never the review body. A revert SHALL be as SPEC-0007 REQ
@@ -735,6 +740,7 @@ With the metrics listener on, the daemon SHALL export (SPEC-0013):
 | `harness_graph_sync_last_success_timestamp_seconds` | gauge | none |
 | `harness_graph_rebuild_duration_seconds` | histogram | none |
 | `harness_graph_tool_calls_total` | counter | `tool`, `result` |
+| `harness_agent_version_probes_total` | counter | `adapter`, `result`: `ok`, `timeout`, `error`, `unparsed` |
 
 Repo names, paths, branches, node ids and run ids MUST NOT be labels. A value
 the daemon cannot compute, such as the last sync time before any sync, SHALL be
@@ -745,6 +751,67 @@ omitted rather than reported as zero (SPEC-0013 REQ-6).
 - **WHEN** the endpoint is scraped during a file collision
 - **THEN** `harness_graph_collisions_active{scope="file"}` is 1 and no series
   carries a path, repo or run id
+
+### Requirement: REQ-25 — Agent Version Recording
+
+Every run SHALL record the version of the agent CLI it actually started, so a
+fact can be tied to that version (SPEC-0028 REQ "Anchors") and a version change
+is visible in the graph. This amends SPEC-0022 REQ-4 with two record fields:
+`agent_version` (string, at most 64 bytes) and `agent_fingerprint` (the first 12
+hex digits of the executable's SHA-256).
+
+* **The executable.** At spawn the daemon SHALL resolve the effective adapter's
+  `executable` (ADR-0039) to the absolute path it execs, and fingerprint that
+  file. It SHALL cache the fingerprint by path, size, modification time and
+  inode, and SHALL rehash only when one of those changes.
+* **The probe.** For a fingerprint with no cached version, the daemon SHALL run
+  the adapter's `version_argv` (ADR-0039) against that same path: no shell, the
+  harness's credential-free environment, a 5 second timeout, and at most 4 KiB
+  of output read. The version SHALL be the first match of
+  `\d+\.\d+(\.\d+)?([-+][0-9A-Za-z.-]+)?` in stdout, then stderr. The result,
+  including a failure, SHALL be cached by fingerprint, so each binary is probed
+  once however many harnesses and restarts use it. The same cache SHALL answer
+  ADR-0039's detected client version in `harness adapters list`, `harness
+  doctor` and `harness_adapter_info`.
+* **Never on the spawn path.** A cached version SHALL be written on the run's
+  `opened` line. On a cache miss the spawn SHALL NOT wait: the probe SHALL run
+  beside it, and its result SHALL be written as an `updated` line (SPEC-0022
+  REQ-2), which folds into the same record. A probe that times out, fails or
+  prints nothing that matches SHALL leave `agent_version` unset, record
+  `agent_fingerprint` alone, and never fail or delay the run.
+* **In the graph.** The run node SHALL carry `agent_version` and
+  `agent_fingerprint` as attributes read from the ledger record, so a rebuild
+  (REQ-8) reproduces them without probing anything.
+
+Nothing agent-written SHALL set these fields: a version an agent reports in its
+own output or transcript is not read.
+
+#### Scenario: Each binary is probed once
+
+- **WHEN** four harnesses on the `claude-code` adapter start, all exec'ing the
+  same `claude` binary, and one of them restarts twice
+- **THEN** `claude --version` ran once, and all six ledger records carry the
+  same `agent_version` and `agent_fingerprint`
+
+#### Scenario: An upgrade is seen at the next spawn
+
+- **WHEN** the operator upgrades `claude` in place, changing its size and
+  modification time, and a harness then restarts
+- **THEN** the daemon rehashes the file, probes the new fingerprint, and the new
+  run's record carries the new version while earlier records keep the old one
+
+#### Scenario: A slow probe does not hold the spawn
+
+- **WHEN** a new `crush` binary's `--version` takes 4 seconds on its first run
+- **THEN** the harness's process spawns without waiting, its `opened` line has no
+  `agent_version`, and an `updated` line adds it when the probe returns
+
+#### Scenario: A failed probe leaves the version unset
+
+- **WHEN** `version_argv` exits non-zero and prints no version
+- **THEN** the run proceeds, its record carries `agent_fingerprint` and no
+  `agent_version`, and `harness_agent_version_probes_total{result="unparsed"}`
+  or `{result="error"}` increments
 
 ### Requirement: Error Handling Standards
 

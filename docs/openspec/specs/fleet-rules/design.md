@@ -177,6 +177,17 @@ reads untrusted traces cannot touch the forge, and the process that touches the
 forge never treats proposal text as instructions. The level cap at store time
 means even a merged mined rule arrives at `notify` at most.
 
+### Lint shares the loader
+
+`harness rules lint` (REQ-21) calls the same schema check, CEL environment,
+validators and cost estimator the daemon calls at load, rather than a parallel
+checker. A second checker would drift, and a lint that passes a rule the daemon
+then disables is worse than no lint: the policy repo's green check would vouch
+for a rule that never runs. Lint needs no store because nothing it checks reads
+one; backtesting stays in `harness rules backtest`, which does. Enforcement is
+reported as a warning, never granted, because the enforce list lives in
+hand-written config and no policy repo file can change it.
+
 ## Architecture
 
 ```mermaid
@@ -283,6 +294,3 @@ fires; the loop guard is untouched throughout.
 * **Miner read access.** This spec gives the miner only `propose_rule`. It
   reads through SPEC-0027's tools and `propose_rule`'s `dry_run`
   backtest; a read-only tool over the journal may prove necessary.
-* **Policy repo CI.** A `harness rules lint <dir>` (compile and cost checks
-  without a store), like `harness skills lint`, would let the policy repo
-  reject a broken rule before merge.

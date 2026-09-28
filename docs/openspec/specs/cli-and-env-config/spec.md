@@ -39,18 +39,26 @@ corresponding flag name uppercased with hyphens replaced by underscores.
 
 The following variables SHALL be recognized:
 
-| Variable | Flag | Type | Default |
-|---|---|---|---|
-| `HARNESS_SOCKET` | `--socket` | path | `$XDG_RUNTIME_DIR/harness.sock` |
-| `HARNESS_CONFIG` | `--config` | path | `$XDG_CONFIG_HOME/harness/harness.toml` |
-| `HARNESS_JSON` | `--json` | bool | `false` |
-| `HARNESS_LOG_LEVEL` | `--log-level` | enum | `info` |
-| `HARNESS_LOG_FILE` | `--log-file` | path | *(stderr)* |
-| `HARNESS_SCROLLBACK` | `--scrollback` | int | `attach.DefaultRingLines` |
-| `HARNESS_SSH` | `--ssh` | bool | `false` |
-| `HARNESS_SSH_LISTEN` | `--ssh-listen` | host:port | *(unset)* |
-| `HARNESS_WEBHOOK_LISTEN` | `--webhook-listen` | host:port | *(unset)* |
-| `HARNESS_WATCH_CONFIG` | *(none)* | bool | `true` |
+| Variable | Flag | File key | Type | Default |
+|---|---|---|---|---|
+| `HARNESS_SOCKET` | `--socket` | `[daemon]` `socket` | path | `$XDG_RUNTIME_DIR/harness.sock` |
+| `HARNESS_CONFIG` | `--config` | *(none)* | path | `$XDG_CONFIG_HOME/harness/harness.toml` |
+| `HARNESS_JSON` | `--json` | *(none)* | bool | `false` |
+| `HARNESS_LOG_LEVEL` | `--log-level` | `[daemon]` `log_level` | enum | `info` |
+| `HARNESS_LOG_FILE` | `--log-file` | `[daemon]` `log_file` | path | *(stderr)* |
+| `HARNESS_SCROLLBACK` | `--scrollback` | `[daemon]` `scrollback` | int | `attach.DefaultRingLines` |
+| `HARNESS_SSH` | `--ssh` | `[server]` `enabled` | bool | `false` |
+| `HARNESS_SSH_LISTEN` | `--ssh-listen` | `[server]` `listen` | host:port | *(unset)* |
+| `HARNESS_WEBHOOK_LISTEN` | `--webhook-listen` | `[server]` `webhook_listen` | host:port | *(unset)* |
+| `HARNESS_WATCH_CONFIG` | *(none)* | `[daemon]` `watch_config` | bool | `true` |
+
+Every file key in this table SHALL be accepted by the config file loader. A key
+that the settings layer reads but the loader rejects as unknown makes the whole
+file fail to load, so the file source it names can never be used. In the file,
+`socket` and `log_file` SHALL be absolute paths and `scrollback` SHALL be at
+least 1. The loader SHALL reject any other value with the key's line number.
+`config` has no file key because it names the file. `json` has none because it
+selects the output format for one invocation.
 
 Harness MUST NOT read harness or profile definitions from the environment. No
 `HARNESS_*` variable SHALL define, modify, or remove a `[harness.*]` or
@@ -124,6 +132,20 @@ environment variable.
 - **WHEN** the config file sets `[server]` `listen = "127.0.0.1:2222"`, no
   `HARNESS_SSH_LISTEN` is set, and no `--ssh-listen` flag is given
 - **THEN** the SSH server SHALL bind `127.0.0.1:2222`
+
+#### Scenario: Daemon table supplies scrollback
+
+- **WHEN** the config file sets `[daemon]` `scrollback = 2000`, no
+  `HARNESS_SCROLLBACK` is set, and no `--scrollback` flag is given
+- **THEN** the daemon SHALL start, and each harness's scrollback ring SHALL hold
+  2000 lines
+
+#### Scenario: Daemon table supplies the socket to daemon and client
+
+- **WHEN** the config file sets `[daemon]` `socket = "/run/harness/h.sock"` and
+  neither `HARNESS_SOCKET` nor `--socket` is given
+- **THEN** the daemon SHALL bind `/run/harness/h.sock`, and a client reading the
+  same file SHALL dial it
 
 #### Scenario: Unchanged flag does not mask the environment
 

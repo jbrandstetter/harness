@@ -122,6 +122,9 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	for _, d := range allDescs {
 		ch <- d
 	}
+	for _, d := range triggerDescs {
+		ch <- d
+	}
 }
 
 // row is one declared harness as read for this scrape.
@@ -169,6 +172,8 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		rows = append(rows, rw)
 	}
 	st, stOK := m.observerStats()
+	// The trigger source manager, too, answers from its own lock (triggers.go).
+	trig, trigOK := m.triggerRows()
 
 	m.mu.Lock()
 	if snapsOK {
@@ -340,5 +345,9 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		if !st.LastScan.IsZero() {
 			gauge(descObsLastScan, unix(st.LastScan))
 		}
+	}
+
+	if trigOK {
+		collectTriggers(ch, trig)
 	}
 }

@@ -86,15 +86,16 @@ type Setting struct {
 	Desc string
 }
 
-// Registry is the recognized set, in report order. Adding a setting here is the
-// only step needed to give it flag/env/file/default resolution and doctor
-// reporting.
+// Registry is the recognized set, in report order. Adding a setting here gives
+// it flag/env/file/default resolution and doctor reporting. A FileKey also
+// needs a field in internal/config's raw table, whose strict decode refuses
+// any key it does not know; TestRegistryFileKeysLoad fails until it has one.
 //
 // HARNESS_DETACH_READY_FD is deliberately absent: it is internal IPC between
 // `daemon --detach` and its forked child, not operator configuration, and
 // SPEC-0010 reserves rather than reuses it.
 var Registry = []Setting{
-	{Name: "socket", Env: "HARNESS_SOCKET", Kind: KindString, Desc: "daemon socket path"},
+	{Name: "socket", Env: "HARNESS_SOCKET", FileKey: "daemon.socket", Kind: KindString, Desc: "daemon socket path"},
 	{Name: "config", Env: "HARNESS_CONFIG", Kind: KindString, Desc: "harness.toml path"},
 	{Name: "json", Env: "HARNESS_JSON", Kind: KindBool, Default: false, Desc: "machine-readable output"},
 	{Name: "log-level", Env: "HARNESS_LOG_LEVEL", FileKey: "daemon.log_level", Kind: KindString, Default: "info", Desc: "log level"},
@@ -335,6 +336,20 @@ func validLogLevel(raw string) bool {
 		}
 	}
 	return false
+}
+
+// CheckFileValue validates a value the TOML file supplies for fileKey, exactly
+// as Resolve would. internal/config calls it while loading, so a bad value is
+// reported with its source line and refused by a reload, rather than accepted
+// there and only discovered when the next daemon start fails.
+func CheckFileValue(fileKey string, value any) error {
+	for _, s := range Registry {
+		if s.FileKey == fileKey {
+			_, err := parse(s, fmt.Sprint(value), fileKey)
+			return err
+		}
+	}
+	return fmt.Errorf("settings: no setting has file key %q", fileKey)
 }
 
 func lookup(name string) (Setting, bool) {
