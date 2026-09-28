@@ -9,6 +9,7 @@ package attach
 
 import (
 	"bytes"
+	"io"
 	"sort"
 	"sync"
 	"time"
@@ -115,6 +116,12 @@ func newMuxLimits(name string, lim RingLimits, onResize func(cols, rows int), on
 		rows:        defaultRows,
 		sessions:    make(map[*Session]struct{}),
 	}
+	// Nothing reads this emulator's scrollback: attach replays history from
+	// the raw-byte ring, and a snapshot renders only the screen. x/vt's
+	// default keeps 10,000 rows of 112-byte cells, ~85 MiB per harness at 80
+	// columns, so cap it (x/vt's minimum is 1; the alternate screen has no
+	// public knob). Governing: SPEC-0002 REQ "Emulator Memory".
+	m.term.SetScrollbackSize(1)
 	// Shadow the guest's bracketed-paste mode. Only the emulator on THIS side
 	// ever sees the guest's ?2004h: a client attaches to a screen snapshot
 	// (renderScreen emits cells, cursor and SGR — no modes), so a client-side
@@ -157,10 +164,10 @@ func newMuxLimits(name string, lim RingLimits, onResize func(cols, rows int), on
 // with the OS process still alive — invisible to a liveness check like
 // `harness list` (stump.wtf/harness#142).
 //
-// Runs for the Mux's lifetime — nothing currently calls Close on the
-// emulator (Registry.Remove deliberately doesn't; see its doc comment), so in
-// practice this loop never returns. Accepted: unlike the deadlock it fixes,
-// the cost is one parked goroutine per Mux, not a frozen production agent.
+// Runs until Registry.Remove drops the Mux and calls releaseReplies, which
+// closes the emulator's input pipe so the Read below returns EOF. Before
+// that existed the loop never returned, and every Mux ever removed stayed
+// reachable through its parked goroutine.
 func (m *Mux) pumpReplies() {
 	buf := make([]byte, 4096)
 	for {
@@ -171,6 +178,20 @@ func (m *Mux) pumpReplies() {
 		if err != nil {
 			return
 		}
+	}
+}
+
+// releaseReplies ends pumpReplies by closing the emulator's input pipe: the
+// pump's parked Read returns EOF, and a reply the emulator synthesizes later
+// fails at once instead of blocking Write. It deliberately avoids
+// Emulator.Close, whose unsynchronised `closed` flag races the parked Read
+// (stump.wtf/harness#142). No lock is needed: m.term is never reassigned, and
+// io.Pipe is safe to close from any goroutine. Safe to call more than once.
+//
+// Governing: SPEC-0002 REQ "Emulator Memory"; ADR-0003.
+func (m *Mux) releaseReplies() {
+	if c, ok := m.term.InputPipe().(io.Closer); ok {
+		_ = c.Close()
 	}
 }
 

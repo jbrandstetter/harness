@@ -59,6 +59,26 @@ Traps in this repo specifically, each of which has already cost a wrong
 - **A zero.** "No matches" and "never fired" read identically whether a rule is
   correct-and-quiet or never exercised at all. Show the check can fire before
   trusting its silence.
+- **x/vt emulators.** An emulator that renders correctly can still leak, and
+  "tests pass" says nothing about its memory. Each one allocates a fixed 4 MiB
+  parser buffer. It also keeps a 10,000-row scrollback of 112-byte cells on
+  each of its two screens, about 85 MiB at 80 columns.
+  - **The leak.** Its reply pump parks in `Read`, and a parked pump keeps the
+    whole emulator reachable after its owner drops it. Before this was fixed,
+    that cost 98 MiB and one goroutine per spawn
+    (https://github.com/stump-wtf/harness/issues/18).
+  - **The rules** (SPEC-0002 REQ "Emulator Memory", ADR-0003):
+    - Call `SetScrollbackSize(1)` on every emulator you create. It caps only
+      the main screen, and nothing here reads scrollback.
+    - Release the pump when the owner is done by closing
+      `term.InputPipe().(io.Closer)`. Never call `Emulator.Close`, which races
+      the parked `Read` (#142).
+    - Never use an emulator as a history store. History belongs in the attach
+      ring or the log.
+  - **How to verify.** Count goroutines by their frame in `runtime.Stack` and
+    compare live heap after `runtime.GC()`, across the real spawn path. See
+    `TestRespawnsReleaseTheirSanitizer`. Do not trust RSS or total goroutine
+    counts.
 
 When you report a result, say which property you checked.
 

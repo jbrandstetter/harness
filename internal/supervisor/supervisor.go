@@ -776,11 +776,17 @@ func (s *Supervisor) spawnSize() (int, int) {
 // the last holder of the terminal exiting, or the PTY closing — then flushes
 // the final screenful into the log. A short run's output never scrolls, so
 // EOF is the only moment it can be landed (#279).
+//
+// The stream is then over, so nothing writes to this spawn's sanitizer again:
+// release it here, per spawn, not only in closeLog, which runs once per
+// Supervisor. Every restart otherwise kept its emulator reachable for good
+// (SPEC-0002 REQ "Emulator Memory"; https://github.com/stump-wtf/harness/issues/18).
 func (s *Supervisor) readOutput(src io.Reader, sink io.Writer, hist *ptyHistory, done chan struct{}) {
 	defer close(done)
 	_, _ = io.Copy(sink, src)
 	if hist != nil {
 		hist.Flush()
+		hist.release()
 	}
 }
 
@@ -1304,7 +1310,8 @@ func (s *Supervisor) closeLog() {
 		s.readerDone = nil
 	}
 	if s.hist != nil {
-		s.hist.Flush() // land the final screenful before the file goes away
+		s.hist.Flush()   // land the final screenful before the file goes away
+		s.hist.release() // then end its reply pump; see ptyHistory.release
 		s.hist = nil
 	}
 	if s.log != nil {

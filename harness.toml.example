@@ -22,6 +22,16 @@
 # log_level = "info"                        # debug, info, warn, error
 # log_file = "/var/log/harness.log"         # absent = stderr
 # socket = "/run/harness/harness.sock"      # absent = $XDG_RUNTIME_DIR/harness.sock
+# # Memory guardrails (both off by default). memory_limit is the Go runtime's
+# # SOFT limit: it makes the GC work harder near it, but cannot free a leak.
+# # Keep a hard cap too (systemd MemoryMax=, a container limit); that cap
+# # usually covers the agents as well, so size this for the daemon alone.
+# # Sizes are 1024-based ("2GiB", "512MiB"); a bare number is bytes; 0 = off.
+# # Unset, GOMEMLIMIT from the environment applies; set, it overrides it.
+# # pprof_addr serves net/http/pprof and binds loopback only (127.0.0.1, ::1,
+# # localhost); anything else is refused. Tunnel to it from other hosts.
+# memory_limit = "2GiB"
+# pprof_addr = "127.0.0.1:6060"
 
 # Optional agent telemetry export (ADR-0022, SPEC-0015). Nothing leaves the
 # daemon unless a destination below is on AND a harness is opted in with
@@ -397,3 +407,22 @@ autostart = true
 #
 # metrics_listen = "127.0.0.1:10229"
 # metrics_token_file = "~/.config/harness/metrics.token"
+
+# Skill serving (SPEC-0007, ADR-0030). Global-only tables: a project
+# harness.toml is refused them. With no [skill_repo.*] declared, the skill
+# tools are not registered and no index file is created.
+#
+# `harness skills sync` creates and fast-forwards each serving clone at
+# $XDG_STATE_HOME/harness/skills/<name>; the daemon indexes only the clone's
+# default branch and never writes a clone itself.
+#
+# [skills]
+# summary_max_chars  = 1000
+# retire_grace_days  = 30
+# retire_window_days = 60
+#
+# [skill_repo.go-stack]
+# remote   = "https://git.example.com/your-org/go-skills.git"
+# public   = false                    # unset is treated as public
+# path     = "skills"                 # where skills live inside the repo
+# serve_to = ["*"]                    # the bare star matches every harness

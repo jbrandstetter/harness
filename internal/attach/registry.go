@@ -185,24 +185,29 @@ func (r *Registry) SnapshotFor(name string) (MuxSnapshot, bool) {
 // keep their now-quiescent Mux until they detach; a later re-registration gets
 // a brand-new one.
 //
-// Deliberately does NOT close the dropped Mux's emulator: that would stop its
-// pumpReplies goroutine, but x/vt's Emulator guards Read/Close with a plain
-// bool (no mutex, no atomic) — calling Close from here races Read on
-// pumpReplies' own goroutine under -race (confirmed; not our field to fix).
-// The tradeoff is one goroutine (and its Mux) parked forever in a blocked
-// Read per project harness ever torn down — small, bounded by how often
-// projects actually churn, and nowhere near as bad as the deadlock this
-// goroutine exists to fix — against a genuine data race. See
-// stump.wtf/harness#142.
+// The dropped Mux's reply pump is released (Mux.releaseReplies), so its
+// pumpReplies goroutine exits instead of parking in Read forever and keeping
+// the whole emulator reachable after the map has let go of it. It is released
+// by closing the emulator's input pipe, never with Emulator.Close: x/vt guards
+// Read/Close with a plain bool (no mutex, no atomic), so Close races Read on
+// pumpReplies' own goroutine under -race (stump.wtf/harness#142). A session
+// still attached keeps working: snapshots and the live fan-out never touch
+// the pipe, and a reply the emulator synthesizes afterwards fails against the
+// closed pipe rather than blocking Write. Governing: SPEC-0002 REQ "Emulator
+// Memory".
 //
 // The harness's LineMux and recorded mode go with it (lines.go). A LineMux has
 // no emulator and no goroutine, so dropping it is all its release needs.
 func (r *Registry) Remove(name string) {
 	r.mu.Lock()
+	m := r.muxes[name]
 	delete(r.muxes, name)
 	delete(r.lines, name)
 	delete(r.pipes, name)
 	r.mu.Unlock()
+	if m != nil {
+		m.releaseReplies()
+	}
 }
 
 // controller reads the wired controller under the lock.

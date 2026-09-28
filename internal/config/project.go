@@ -198,6 +198,14 @@ func ParseProject(data []byte, filename string) (*Project, error) {
 		if len(h.parts) >= 1 && h.parts[0] == "notify" {
 			return nil, forbiddenTableErr(filename, full, h.line)
 		}
+		// Skill repos and their serving settings are daemon-owned: the daemon
+		// indexes the serving clone's default branch, and a project harness
+		// never enters that view. A project-declared repo would be accepted
+		// and never cloned or served.
+		// Governing: SPEC-0007 REQ "Skill Repos".
+		if len(h.parts) >= 1 && (h.parts[0] == "skills" || h.parts[0] == "skill_repo") {
+			return nil, forbiddenTableErr(filename, full, h.line)
+		}
 		// Trigger sources are daemon-owned: the daemon holds a channel
 		// session and serves a webhook route from the config of record, and
 		// a project harness never enters that view. A project source would

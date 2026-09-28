@@ -120,6 +120,8 @@ var daemonHelpText = struct {
 		{"--ssh", "enable the remote Wish SSH server"},
 		{"--ssh-listen H:P", "SSH bind address (overrides [server] listen)"},
 		{"--webhook-listen H:P", "webhook listener bind address (overrides [server] webhook_listen)"},
+		{"--memory-limit SIZE", "Go soft memory limit, e.g. 2GiB; 0 = off (or HARNESS_MEMORY_LIMIT, [daemon] memory_limit; any of them overrides GOMEMLIMIT)"},
+		{"--pprof-addr H:P", "serve net/http/pprof on this loopback address (or HARNESS_PPROF_ADDR, [daemon] pprof_addr; off by default)"},
 		{"--version", "print version and exit"},
 	},
 	exHead: "examples:",
