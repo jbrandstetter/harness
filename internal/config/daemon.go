@@ -47,5 +47,5 @@ func checkDaemonSettings(filename string, data []byte, rd rawDaemon) error {
 	if rd.Scrollback != nil && *rd.Scrollback < 1 {
 		return fail("scrollback", "must be at least 1, got %d", *rd.Scrollback)
 	}
-	return nil
+	return checkScrollbackBytes(filename, data, rd.ScrollbackBytes)
 }

@@ -5,7 +5,7 @@ package attach
 // session) and REQ "Backpressure Isolation" (the PTY reader MUST NOT block on
 // any client; bounded per-session queues; overflow coalesces to a fresh
 // snapshot); ADR-0003 (one x/vt emulator per harness; resize policy); ADR-0007
-// (ring + backpressure); ADR-0008 (read-only attach).
+// (byte-bounded ring + backpressure); ADR-0008 (read-only attach).
 
 import (
 	"bytes"
@@ -32,6 +32,11 @@ const (
 // modest: a client that falls this far behind is better served by one repaint
 // than a long backlog.
 const queueCap = 256
+
+// A fresh session's queue must hold the snapshot plus a full scrollback replay,
+// or Attach itself would trip the coalescing meant for slow clients and drop
+// the tail it just queued. This fails to compile if the two drift apart.
+var _ [queueCap - 1 - maxTailFrames]struct{}
 
 // The bracketed-paste brackets a client wraps a paste in (DECSET ?2004).
 var (
@@ -79,11 +84,18 @@ type Mux struct {
 	cols, rows int
 }
 
-// newMux builds a Mux for a harness. onResize is invoked when the
-// smallest-attached-wins size changes (to resize the real PTY); onInput
-// delivers read-write attach keystrokes to the PTY; onNudge re-delivers
-// SIGWINCH to the guest's process group (see reassertWinch). Any may be nil.
+// newMux builds a Mux whose ring keeps up to ringLines lines within the default
+// byte budget; see newMuxLimits.
 func newMux(name string, ringLines int, onResize func(cols, rows int), onInput func(p []byte), onNudge func()) *Mux {
+	return newMuxLimits(name, RingLimits{Lines: ringLines}, onResize, onInput, onNudge)
+}
+
+// newMuxLimits builds a Mux for a harness, its scrollback ring bounded by lim.
+// onResize is invoked when the smallest-attached-wins size changes (to resize
+// the real PTY); onInput delivers read-write attach keystrokes to the PTY;
+// onNudge re-delivers SIGWINCH to the guest's process group (see
+// reassertWinch). Any may be nil.
+func newMuxLimits(name string, lim RingLimits, onResize func(cols, rows int), onInput func(p []byte), onNudge func()) *Mux {
 	m := &Mux{
 		name:     name,
 		onResize: onResize,
@@ -98,7 +110,7 @@ func newMux(name string, ringLines int, onResize func(cols, rows int), onInput f
 		// asleep).
 		nudgeDelays: winchNudgeDelays,
 		term:        vt.NewEmulator(defaultCols, defaultRows),
-		ring:        newRing(ringLines),
+		ring:        newRing(lim),
 		cols:        defaultCols,
 		rows:        defaultRows,
 		sessions:    make(map[*Session]struct{}),
@@ -282,11 +294,21 @@ func (m *Mux) Write(p []byte) (int, error) {
 
 // Attach opens a new session (SPEC-0002 REQ "Attach Session"). It queues, in
 // order and before any live byte can reach this session, the current screen
-// snapshot then a bounded scrollback tail, then joins the live fan-out — all
-// under mu, so no Write can interleave a live chunk ahead of the snapshot. That
-// is the "full screen snapshot before any live bytes" guarantee. write sends one
-// ATTACH_DATA payload to the client; it may block (a slow client), which is
-// precisely what triggers coalescing without ever stalling Write.
+// snapshot then the scrollback tail, then joins the live fan-out — all under
+// mu, so no Write can interleave a live chunk ahead of the snapshot or the
+// tail. That is the "full screen snapshot before any live bytes" guarantee.
+// write sends one ATTACH_DATA payload to the client; it may block (a slow
+// client), which is precisely what triggers coalescing without ever stalling
+// Write.
+//
+// The tail is queued as views into the ring's storage, at most one storage
+// chunk each (ring.tailFrames), never as one copy of the whole ring. The copy
+// cost a ring-sized allocation per attach, and a tail past 16 MiB could not be
+// sent at all: it exceeded protocol.MaxFrameSize, the write failed, and the
+// session tore itself down straight after the snapshot. The frames share the
+// session's bounded queue with live output, so a client too slow to take them
+// is coalesced to a fresh snapshot like any other (SPEC-0002 REQ "Backpressure
+// Isolation").
 func (m *Mux) Attach(id uint32, mode protocol.AttachMode, cols, rows int, write func([]byte) error) *Session {
 	s := &Session{
 		id:        id,
@@ -301,8 +323,8 @@ func (m *Mux) Attach(id uint32, mode protocol.AttachMode, cols, rows int, write 
 	}
 	m.mu.Lock()
 	s.enqueueLocked(renderScreen(m.term)) // 1. screen snapshot
-	if tail := m.ring.Tail(); len(tail) > 0 {
-		s.enqueueLocked(tail) // 2. bounded scrollback tail
+	for _, f := range m.ring.tailFrames() {
+		s.enqueueLocked(f) // 2. scrollback tail, one storage chunk per frame
 	}
 	m.sessions[s] = struct{}{}
 	m.applyResizeLocked() // recompute smallest-attached-wins with this client

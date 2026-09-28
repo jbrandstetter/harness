@@ -59,7 +59,7 @@ sequenceDiagram
     D->>C: HELLO {proto, capabilities}
     C->>D: ATTACH_OPEN {name, cols, rows, mode}
     D->>C: screen snapshot (x/vt repaint)
-    D->>C: scrollback tail (bounded)
+    D->>C: scrollback ring (chunk-sized frames, no copy)
     H-->>D: PTY output (never blocks on C)
     D-->>C: ATTACH_DATA (live, coalesced under backpressure)
     C->>D: ATTACH_DATA (keystrokes, dropped if ro)
