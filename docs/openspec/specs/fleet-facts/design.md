@@ -142,7 +142,9 @@ unanchored facts get the short 7-day TTL.
 ### Anchors resolve from synced data, not from the agent
 
 **Choice**: blob SHAs and base commits come from the last synced default-branch
-tree, and dependency versions from synced `depends_on` edges; unresolvable
+tree, dependency versions from synced `depends_on` edges, and agent versions
+from the writing run's ledger record, which the daemon fills by probing the
+binary it exec'd (SPEC-0027 REQ "Agent Version Recording"); unresolvable
 anchors are stored `unresolved`, and the fact runs its TTL until a sync
 resolves them. Span checks use the line ranges, commit counts and versions
 that `harness graph sync` computes (SPEC-0027 REQ "Graph Sync"); no file
@@ -282,11 +284,6 @@ sequenceDiagram
 
 ## Open Questions
 
-* **Agent CLI version anchors have no source.** agent-trace's `SessionMeta`
-  has no agent CLI version, and the daemon does not probe versions. Until
-  something records one, `tool_version` anchors stay `unresolved`; a tool
-  pinned in a manifest is anchored as `dependency`, and a runner image tag as a
-  span of the workflow file that names it. What should record agent versions?
 * **What counts as "upheld".** This spec counts only facts that reached fleet
   scope unretracted. Facts that lived out their project life unretracted are
   also weak evidence of reliability; counting them would reward volume.
