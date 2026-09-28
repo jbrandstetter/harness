@@ -144,7 +144,8 @@ line and `go_gc_gomemlimit_bytes` report the limit actually in effect,
 The limit is off by default because it is soft. It cannot free a live leak,
 below the live heap it keeps the GC running near-continuously, and the right
 value depends on the host. The hard cap belongs to the init system
-(`MemoryMax=`, a container limit); this setting sits a little below that cap.
+(`MemoryMax=`, a container limit). That cap usually covers the spawned agents
+too, so this setting is sized for the daemon alone.
 
 ## Architecture
 

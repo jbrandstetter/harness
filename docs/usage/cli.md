@@ -338,10 +338,21 @@ harness daemon --detach       # fork into the background (dev convenience)
 ```
 
 Daemon flags: `--config`, `--socket`, `--scrollback N` (per-harness ring depth),
-`--ssh`, `--ssh-listen`, `--webhook-listen`, `--log-level`, `--log-file`, `--detach`.
+`--ssh`, `--ssh-listen`, `--webhook-listen`, `--log-level`, `--log-file`,
+`--memory-limit SIZE`, `--pprof-addr H:P`, `--detach`.
 All but `--config` and `--detach` can also be set in `harness.toml`
 (`[daemon]` / `[server]`) or a `HARNESS_*` variable; see
 [Configuration → Environment variables](./configuration#environment-variables).
+
+- `--memory-limit` (`HARNESS_MEMORY_LIMIT`, `[daemon] memory_limit`) sets the
+  daemon's Go soft memory limit, e.g. `2GiB`; `0` is off. Any of the three
+  overrides `GOMEMLIMIT`. With none set, `GOMEMLIMIT` applies if present, and
+  otherwise there is no limit.
+- `--pprof-addr` (`HARNESS_PPROF_ADDR`, `[daemon] pprof_addr`) serves
+  `/debug/pprof/` on a loopback address. A non-loopback address makes the daemon
+  refuse to start.
+
+See [Memory limit and profiler](./configuration#memory-limit-and-profiler).
 
 ## Exit codes & error handling
 

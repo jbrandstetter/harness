@@ -19,8 +19,9 @@
 // against relying on it where you do not control the environment, and a
 // supervisor runs everywhere from a laptop to a 2 GB VM. So it is off unless
 // an operator sets it, and the hard cap stays with the init system (systemd
-// MemoryMax=, a container limit). memory_limit is set a little below that cap,
-// so the GC works harder before the kernel's OOM killer acts.
+// MemoryMax=, a container limit). That cap usually covers the spawned agents
+// too, so memory_limit is sized for the daemon alone, well under it, and the
+// GC works harder long before the kernel's OOM killer acts.
 //
 // Precedence, highest first (ResolveMemoryLimit):
 //
