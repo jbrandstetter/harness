@@ -171,6 +171,7 @@ func TestApplyDaemonMemoryLimitLogs(t *testing.T) {
 
 	buf.Reset()
 	applyDaemonMemoryLimit(2048, settings.SourceEnv, func(string) string { return "" })
+	debug.SetMemoryLimit(math.MaxInt64) // a 2 KiB limit keeps the GC spinning; lift it at once
 	for _, want := range []string{"limit=2KiB", "very small", "bare number is bytes"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("a 2048-byte limit's log lacks %q:\n%s", want, buf.String())
@@ -276,8 +277,9 @@ func TestStartDaemonPprof(t *testing.T) {
 	}
 }
 
-// waitHTTP polls url until it answers or the startup ceiling passes.
-func waitHTTP(t *testing.T, url string, out fmt.Stringer) {
+// waitHTTP polls url until it answers or the startup ceiling passes. On
+// failure it stops the daemon and prints its output.
+func waitHTTP(t *testing.T, url string, stop func() string) {
 	t.Helper()
 	deadline := time.Now().Add(daemonStartupCeiling(t))
 	for {
@@ -285,7 +287,7 @@ func waitHTTP(t *testing.T, url string, out fmt.Stringer) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%s never answered\n%s", url, out)
+			t.Fatalf("%s never answered\n%s", url, stop())
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -301,16 +303,17 @@ func TestDaemonBinaryMemoryLimitAndPprof(t *testing.T) {
 	bin := buildHarnessBinary(t)
 
 	for _, tc := range []struct {
-		name  string
-		limit string // [daemon] memory_limit, "" to omit
-		env   []string
-		want  float64
+		name    string
+		limit   string // [daemon] memory_limit, "" to omit
+		env     []string
+		want    float64
+		wantLog string // the startup line's limit and source
 	}{
-		{"file", `"1GiB"`, []string{"HARNESS_MEMORY_LIMIT=", "GOMEMLIMIT="}, 1 << 30},
-		{"env over file", `"1GiB"`, []string{"HARNESS_MEMORY_LIMIT=768MiB", "GOMEMLIMIT="}, 768 << 20},
-		{"file over GOMEMLIMIT", `"1GiB"`, []string{"HARNESS_MEMORY_LIMIT=", "GOMEMLIMIT=512MiB"}, 1 << 30},
-		{"GOMEMLIMIT when unset", "", []string{"HARNESS_MEMORY_LIMIT=", "GOMEMLIMIT=512MiB"}, 512 << 20},
-		{"off when nothing is set", "", []string{"HARNESS_MEMORY_LIMIT=", "GOMEMLIMIT="}, math.MaxInt64},
+		{"file", `"1GiB"`, []string{"HARNESS_MEMORY_LIMIT=", "GOMEMLIMIT="}, 1 << 30, "limit=1GiB source=file"},
+		{"env over file", `"1GiB"`, []string{"HARNESS_MEMORY_LIMIT=768MiB", "GOMEMLIMIT="}, 768 << 20, "limit=768MiB source=env"},
+		{"file over GOMEMLIMIT", `"1GiB"`, []string{"HARNESS_MEMORY_LIMIT=", "GOMEMLIMIT=512MiB"}, 1 << 30, "limit=1GiB source=file overrides=GOMEMLIMIT"},
+		{"GOMEMLIMIT when unset", "", []string{"HARNESS_MEMORY_LIMIT=", "GOMEMLIMIT=512MiB"}, 512 << 20, "limit=512MiB source=GOMEMLIMIT"},
+		{"off when nothing is set", "", []string{"HARNESS_MEMORY_LIMIT=", "GOMEMLIMIT="}, math.MaxInt64, "limit=off source=default"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			metricsAddr := "127.0.0.1:" + freePort(t)
@@ -321,26 +324,40 @@ func TestDaemonBinaryMemoryLimitAndPprof(t *testing.T) {
 			}
 			cfg += fmt.Sprintf("\n[server]\nmetrics_listen = %q\n", metricsAddr)
 			env := append([]string{"HARNESS_PPROF_ADDR="}, tc.env...)
-			_, out, _ := runDaemonBinary(t, bin, cfg, env...)
+			cmd, out, _ := runDaemonBinary(t, bin, cfg, env...)
+			// The daemon writes out from exec's copy goroutine until it
+			// exits, so out is read only after stop (cmd.Wait also waits for
+			// that copy to finish).
+			stop := func() string {
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
+				return out.String()
+			}
 
-			waitHTTP(t, "http://"+metricsAddr+"/metrics", out)
+			waitHTTP(t, "http://"+metricsAddr+"/metrics", stop)
 			fams := scrapeURL(t, "http://"+metricsAddr+"/metrics")
+			var failures []string
 			if v, ok := sample(fams, "go_gc_gomemlimit_bytes"); !ok || v != tc.want {
-				t.Errorf("go_gc_gomemlimit_bytes = %v (present %v), want %v\n%s", v, ok, tc.want, out)
+				failures = append(failures, fmt.Sprintf("go_gc_gomemlimit_bytes = %v (present %v), want %v", v, ok, tc.want))
 			}
 			for _, name := range []string{"go_memory_classes_heap_objects_bytes", "go_gc_heap_goal_bytes", "go_goroutines"} {
 				if _, ok := fams[name]; !ok {
-					t.Errorf("%s missing from the daemon's endpoint", name)
+					failures = append(failures, name+" missing from the daemon's endpoint")
 				}
 			}
 
-			waitHTTP(t, "http://"+pprofAddr+"/debug/pprof/", out)
+			waitHTTP(t, "http://"+pprofAddr+"/debug/pprof/", stop)
 			code, body, err := httpGet(t, "http://"+pprofAddr+"/debug/pprof/heap?debug=1")
 			if err != nil || code != http.StatusOK || !strings.Contains(body, "heap profile") {
-				t.Errorf("daemon pprof heap = %d %v: %.200q", code, err, body)
+				failures = append(failures, fmt.Sprintf("daemon pprof heap = %d %v: %.200q", code, err, body))
 			}
-			if !strings.Contains(out.String(), "memory limit") {
-				t.Errorf("the daemon log does not report the memory limit:\n%s", out)
+
+			output := stop()
+			if !strings.Contains(output, "memory limit "+tc.wantLog) {
+				failures = append(failures, "the startup log lacks \"memory limit "+tc.wantLog+"\"")
+			}
+			if len(failures) > 0 {
+				t.Errorf("%s\ndaemon output:\n%s", strings.Join(failures, "\n"), output)
 			}
 		})
 	}
