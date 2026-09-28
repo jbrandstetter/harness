@@ -17,6 +17,7 @@ package main
 // https://github.com/stump-wtf/harness/issues/18.
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"math"
@@ -28,6 +29,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"charm.land/log/v2"
 
 	"github.com/stump-wtf/harness/internal/settings"
 )
@@ -134,6 +137,53 @@ func TestDaemonMemoryLimitUnsetLeavesGOMEMLIMIT(t *testing.T) {
 	}
 	if rt := debug.SetMemoryLimit(-1); rt != 768<<20 {
 		t.Errorf("runtime limit = %d, want GOMEMLIMIT's %d untouched", rt, int64(768<<20))
+	}
+}
+
+// The startup line names the limit in effect and its source, says when it
+// overrides GOMEMLIMIT, and a small bare number draws the bytes warning.
+func TestApplyDaemonMemoryLimitLogs(t *testing.T) {
+	keepRuntimeMemoryLimit(t)
+	var buf bytes.Buffer
+	level := log.GetLevel()
+	log.SetOutput(&buf)
+	log.SetLevel(log.InfoLevel)
+	t.Cleanup(func() {
+		log.SetOutput(os.Stderr)
+		log.SetLevel(level)
+	})
+	withGOMEMLIMIT := func(k string) string {
+		if k == "GOMEMLIMIT" {
+			return "512MiB"
+		}
+		return ""
+	}
+
+	applyDaemonMemoryLimit(1<<30, settings.SourceFile, withGOMEMLIMIT)
+	for _, want := range []string{"memory limit", "limit=1GiB", "source=file", "overrides=GOMEMLIMIT"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("startup log lacks %q:\n%s", want, buf.String())
+		}
+	}
+	if strings.Contains(buf.String(), "very small") {
+		t.Errorf("1GiB drew the small-limit warning:\n%s", buf.String())
+	}
+
+	buf.Reset()
+	applyDaemonMemoryLimit(2048, settings.SourceEnv, func(string) string { return "" })
+	for _, want := range []string{"limit=2KiB", "very small", "bare number is bytes"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("a 2048-byte limit's log lacks %q:\n%s", want, buf.String())
+		}
+	}
+
+	buf.Reset()
+	debug.SetMemoryLimit(math.MaxInt64)
+	applyDaemonMemoryLimit(0, settings.SourceDefault, func(string) string { return "" })
+	for _, want := range []string{"limit=off", "source=default"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("the unset limit's log lacks %q:\n%s", want, buf.String())
+		}
 	}
 }
 
