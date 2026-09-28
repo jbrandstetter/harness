@@ -92,6 +92,7 @@ func TestPlainDaemonUsageContent(t *testing.T) {
 		"--ssh",
 		"--ssh-listen H:P",
 		"--webhook-listen H:P",
+		"--compress-logs=false",
 		"--version",
 		"examples:",
 		"harness daemon start --detach",

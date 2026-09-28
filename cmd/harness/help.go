@@ -119,6 +119,7 @@ var daemonHelpText = struct {
 		{"--ssh", "enable the remote Wish SSH server"},
 		{"--ssh-listen H:P", "SSH bind address (overrides [server] listen)"},
 		{"--webhook-listen H:P", "webhook listener bind address (overrides [server] webhook_listen)"},
+		{"--compress-logs=false", "keep sealed logs plain (default: rotated backups and closed runs' logs are zstd-compressed to .zst; read with harness logs or zstd -dc; overrides [daemon] compress_logs)"},
 		{"--version", "print version and exit"},
 	},
 	exHead: "examples:",

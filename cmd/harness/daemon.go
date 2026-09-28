@@ -71,6 +71,19 @@ func daemonManagerOptions(reg *attach.Registry) supervisor.ManagerOptions {
 	}
 }
 
+// daemonManagerOptionsFor is daemonManagerOptions plus what the resolved
+// daemon settings decide: whether sealed logs are compressed (`[daemon]
+// compress_logs`, default true; ADR-0007 as amended). runDaemon builds its
+// Manager from exactly this, so TestDaemonCompressesLogsByDefault resolves the
+// settings the way a bare `harness daemon` does and asserts on the result.
+// daemonManagerOptions itself leaves compression off, because the wiring
+// tests that share it read per-run logs by path.
+func daemonManagerOptionsFor(reg *attach.Registry, o daemonOpts) supervisor.ManagerOptions {
+	opts := daemonManagerOptions(reg)
+	opts.CompressLogs = o.compressLogs
+	return opts
+}
+
 // daemonObserverOptions is the agent event observer configuration the daemon
 // runs with: production defaults throughout. It is a function, like
 // daemonManagerOptions, so the wiring test drives the observer the daemon
@@ -276,7 +289,7 @@ func runDaemon(o daemonOpts) {
 	// ADR-0007). The Registry's controller (the Manager) applies the
 	// smallest-attached-wins resize and delivers read-write keystrokes.
 	reg := attach.NewRegistry(o.ringLines)
-	mgr := supervisor.NewManager(cfg, daemonManagerOptions(reg))
+	mgr := supervisor.NewManager(cfg, daemonManagerOptionsFor(reg, o))
 	reg.SetController(mgr)
 
 	// The [notify] hook (SPEC-0003 REQ "Operator Notification", #725):

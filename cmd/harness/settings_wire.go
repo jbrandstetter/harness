@@ -127,11 +127,16 @@ func resolveDaemonSettings(cmd *cobra.Command, g *globalOpts, d *daemonOpts) err
 	if err != nil {
 		return err
 	}
+	compressLogs, err := r.Bool("compress-logs")
+	if err != nil {
+		return err
+	}
 
 	d.configPath, d.socketPath = configPath, socket
 	d.ringLines, d.sshEnable, d.sshListen = ring, sshEnable, sshListen
 	d.webhookListen = webhookListen
 	d.logLevel, d.logFile = logLevel, logFile
+	d.compressLogs = compressLogs
 
 	g.configPath, g.socket = configPath, socket
 	return nil

@@ -105,6 +105,9 @@ var Registry = []Setting{
 	{Name: "ssh-listen", Env: "HARNESS_SSH_LISTEN", FileKey: "server.listen", Kind: KindString, Default: "", Desc: "SSH bind address"},
 	{Name: "webhook-listen", Env: "HARNESS_WEBHOOK_LISTEN", FileKey: "server.webhook_listen", Kind: KindString, Default: "", Desc: "webhook listener bind address (empty = off)"},
 	{Name: "watch-config", Env: "HARNESS_WATCH_CONFIG", FileKey: "daemon.watch_config", Kind: KindBool, Default: true, Desc: "watch the config file for changes"},
+	// On by default (ADR-0007 as amended): a sealed log — a rotated backup, a
+	// closed run's log or raw stream — is compressed to <file>.zst.
+	{Name: "compress-logs", Env: "HARNESS_COMPRESS_LOGS", FileKey: "daemon.compress_logs", Kind: KindBool, Default: true, Desc: "compress sealed logs with zstd"},
 }
 
 // logLevels is the accepted set for log-level, listed in errors so a typo tells

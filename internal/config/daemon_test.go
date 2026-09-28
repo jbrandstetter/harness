@@ -42,6 +42,7 @@ var fileKeySamples = map[string]any{
 	"ssh-listen":     "127.0.0.1:2222",
 	"webhook-listen": "127.0.0.1:9000",
 	"watch-config":   false,
+	"compress-logs":  false,
 }
 
 func TestRegistryFileKeysLoad(t *testing.T) {
