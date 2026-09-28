@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 date: 2026-09-27
 implements: [ADR-0040]
 extends: [SPEC-0006]
@@ -73,7 +73,7 @@ remote.
 #### Scenario: Adding a stable clones before trusting
 
 - **WHEN** `harness agent stable add stump-wtf
-  https://gitea.stump.rocks/stump.wtf/harness-stable.git` is run and the clone
+  https://forge.example/your-org/harness-stable.git` is run and the clone
   fails (network error, no such repository)
 - **THEN** no `[stable.stump-wtf]` table is written to `harness.toml`
 
