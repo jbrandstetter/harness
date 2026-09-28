@@ -181,6 +181,49 @@ and `harness_flapping { name, restarts, next_retry_in }`.
 - **WHEN** any harness transitions between states
 - **THEN** subscribed clients receive `harness_state_changed` without polling
 
+### Requirement: Durable Log Rotation And Compression
+
+The daemon SHALL write each harness's durable log to
+`$XDG_STATE_HOME/harness/logs/<name>.log`. A project harness's log goes one
+directory down, at `logs/<project>/<name>.log`. The daemon SHALL rotate the
+active file once it would pass 8 MiB or is older than 24 hours. Rotation renames
+it to `<name>-<stamp>.log` and keeps the five newest backups (ADR-0007). Two
+rotations SHALL NOT share a stamp.
+
+A rotated backup is sealed. Unless `[daemon] compress_logs` is false
+(SPEC-0010), the daemon SHALL compress each backup to `<name>-<stamp>.log.zst`
+(zstd) in the background, off the PTY reader. It SHALL NOT compress the active
+file. A compression SHALL NOT be able to lose a backup. The compressed file
+appears only by an atomic rename after its contents are synced, and the plain
+file is removed only after that. When a backup is left plain, the next rotation
+and the next daemon boot SHALL compress it.
+
+Every reader of the durable log SHALL read a backup in either form, and SHALL
+read the plain file when both exist. That includes the lifecycle lines behind
+run correlation. The backup limit SHALL count a backup once, whatever form it is
+in, and pruning SHALL delete every form. Neither pruning nor project teardown
+SHALL touch a harness whose name merely starts with this harness's name.
+
+#### Scenario: A rotated backup is compressed
+
+- **WHEN** `web.log` rotates to `web-20260928T090000.000.log`
+- **THEN** that backup becomes `web-20260928T090000.000.log.zst`, which decodes
+  to the same bytes, and `web.log` itself stays plain
+
+#### Scenario: Pruning compressed backups leaves a sibling harness alone
+
+- **WHEN** harnesses `web` and `web-api` both have compressed backups and `web`
+  rotates past its limit
+- **THEN** `web` keeps its five newest backups in whatever form, and every
+  `web-api` file is untouched
+
+#### Scenario: Lifecycle lines survive compression
+
+- **WHEN** a harness's older backups are compressed and one is present in both
+  forms after a crash
+- **THEN** its lifecycle lines read back once each, oldest first, as they did
+  before compression
+
 ### Requirement: Operator Notification
 
 When a harness needs a person, the daemon SHALL tell one: if the global

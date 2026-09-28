@@ -21,6 +21,12 @@
 # log_level = "info"                        # debug, info, warn, error
 # log_file = "/var/log/harness.log"         # absent = stderr
 # socket = "/run/harness/harness.sock"      # absent = $XDG_RUNTIME_DIR/harness.sock
+# # compress_logs zstd-compresses sealed logs: each rotated backup of a
+# # harness's log (logs/NAME-STAMP.log.zst) and each closed run's log and raw
+# # stream (jobs/NAME/RUN_ID.log.zst). Active logs, and the log of a run still
+# # going, stay plain. Read a compressed log with `harness logs` or
+# # `zstd -dc FILE.zst`. Set false to keep every log plain.
+# compress_logs = true                      # default true
 
 # Optional agent telemetry export (ADR-0022, SPEC-0015). Nothing leaves the
 # daemon unless a destination below is on AND a harness is opted in with

@@ -342,12 +342,17 @@ $ harness logs pr-sweep --raw --lines 20
 a run as it happens, use `harness trigger NAME --wait` or `harness logs NAME
 --follow`.
 
-Each run's log is also a plain file, which makes history easy to grep:
+Each run's log is also a file on disk, which makes history easy to grep. Once
+a run closes its log is zstd-compressed, so search with `zstdgrep`, which reads
+plain and compressed files alike:
 
 ```sh
-ls ~/.local/state/harness/jobs/pr-sweep/          # 11.log 12.log …
-grep -h 'run finished' ~/.local/state/harness/jobs/pr-sweep/*.log
+ls ~/.local/state/harness/jobs/pr-sweep/          # 11.log.zst 12.log.zst … (13.log while it runs)
+zstdgrep -h 'run finished' ~/.local/state/harness/jobs/pr-sweep/*.log*
 ```
+
+See [Supervision → Logs on disk](/usage/supervision#logs-on-disk) for what is
+compressed and the `compress_logs` opt-out.
 
 The outcome on each `run finished` line is one of:
 
@@ -439,8 +444,8 @@ Then a run that exited 0 **without** the line is the one to look at:
 
 ```sh
 # runs that finished but never emitted the contract line
-grep -L 'SWEEP_RESULT:' ~/.local/state/harness/jobs/pr-sweep/*.log
-grep -h 'SWEEP_RESULT: blocked' ~/.local/state/harness/jobs/pr-sweep/*.log
+zstdgrep -L 'SWEEP_RESULT:' ~/.local/state/harness/jobs/pr-sweep/*.log*
+zstdgrep -h 'SWEEP_RESULT: blocked' ~/.local/state/harness/jobs/pr-sweep/*.log*
 ```
 
 ### Always send a summary; silence must mean nothing happened

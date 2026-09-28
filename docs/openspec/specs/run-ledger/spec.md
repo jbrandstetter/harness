@@ -378,7 +378,8 @@ the total is at most `max_mb`, never deleting today's file. Before deleting a fi
 that holds the `opened` line of a run still open, it SHALL write a fresh
 `opened` line for that run into today's file. `keep_runs` SHALL continue to bound
 per-run logs only; a record whose per-run log was deleted SHALL read
-`log_pruned: true`.
+`log_pruned: true`. A log compressed once its run closed (`<log>.zst`,
+SPEC-0008 REQ "Per-Run Logs") is not deleted, and SHALL NOT read as pruned.
 
 #### Scenario: Old files go
 

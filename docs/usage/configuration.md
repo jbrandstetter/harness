@@ -226,9 +226,11 @@ keep_runs = 30         # default 20
   `daemon_crash`) on the next boot; one a clean shutdown stopped reads
   `interrupted` (reason `shutdown`).
 - **Logs** are at `$XDG_STATE_HOME/harness/jobs/<name>/<run_id>.log` — the run's
-  output history and lifecycle lines, alongside the usual harness log.
-  `keep_runs` bounds these log files only: the oldest logs are deleted, and
-  their records stay in the ledger, marked `log_pruned`.
+  output history and lifecycle lines, alongside the usual harness log. Once the
+  run closes, its log is compressed to `<run_id>.log.zst` (unless
+  [`compress_logs = false`](#daemon-settings-daemon)); `harness logs <name> --run
+  N` reads either. `keep_runs` bounds these log files only: the oldest logs are
+  deleted, and their records stay in the ledger, marked `log_pruned`.
 
 :::note Upgrading from a release before the ledger
 The first daemon that has the ledger copies each harness's run history out of
@@ -722,6 +724,7 @@ scrollback   = 10000                     # per-harness scrollback ring depth, in
 log_level    = "info"                    # debug, info, warn, error
 log_file     = "/var/log/harness.log"    # absent = stderr
 socket       = "/run/harness/harness.sock"  # absent = $XDG_RUNTIME_DIR/harness.sock
+compress_logs = true                     # zstd-compress sealed logs (default true)
 ```
 
 Every key is optional. Apart from `watch_config`, each has a matching flag and
@@ -735,9 +738,14 @@ container entrypoint — without editing the service definition.
 - `socket` and `log_file` must be absolute paths; `~` is not expanded. The CLI
   reads `socket` from this file too, so `harness ls` finds a daemon on a
   non-default socket without a `--socket` flag.
-- `scrollback`, `log_level`, `log_file` and `socket` are read when the daemon
-  starts. Changing them needs a daemon restart, not a reload. Until you restart,
-  a changed `socket` points the CLI at a socket the running daemon is not on.
+- `compress_logs` compresses a log once nothing will write to it again: each
+  rotated backup of a harness's log, and each closed run's log and raw stream.
+  See [Supervision → Logs on disk](./supervision#logs-on-disk). Set it to
+  `false` to keep every log plain; files already compressed stay readable.
+- `scrollback`, `log_level`, `log_file`, `socket` and `compress_logs` are read
+  when the daemon starts. Changing them needs a daemon restart, not a reload.
+  Until you restart, a changed `socket` points the CLI at a socket the running
+  daemon is not on.
 - `harness doctor` shows which source supplied each value.
 
 `otel_endpoint` has been **removed**: it was accepted but never exported
@@ -1186,6 +1194,7 @@ without baking in a config file.
 | `HARNESS_SSH_LISTEN` | `--ssh-listen` | `[server] listen` | `host:port` | unset |
 | `HARNESS_WEBHOOK_LISTEN` | `--webhook-listen` | `[server] webhook_listen` | `host:port` | unset (no webhook listener) |
 | `HARNESS_WATCH_CONFIG` | — | `[daemon] watch_config` | bool | `true` |
+| `HARNESS_COMPRESS_LOGS` | `--compress-logs` | `[daemon] compress_logs` | bool | `true` (zstd-compress sealed logs) |
 
 `config` has no file key because it names the file. `json` has none because it
 is an output choice for one invocation: a file default would change what every

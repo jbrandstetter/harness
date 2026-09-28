@@ -238,6 +238,13 @@ harness logs <name> --run 3       # one run of a scheduled harness (see harness 
 When a log rotates or truncates, `--follow` reprints the current tail so you
 never silently lose context.
 
+`harness logs` reads the daemon's files for you, compressed or not. A rotated
+backup and a closed run's log are stored zstd-compressed (`.log.zst`) by
+default. Read one by hand with `zstd -dc FILE.zst`, or search plain and
+compressed logs together with `zstdgrep`. See
+[Supervision → Logs on disk](./supervision#logs-on-disk) for which files are
+compressed and when, and for the `compress_logs` opt-out.
+
 ## Profiles
 
 ```sh
