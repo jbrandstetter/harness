@@ -33,6 +33,11 @@ const (
 // than a long backlog.
 const queueCap = 256
 
+// A fresh session's queue must hold the snapshot plus a full scrollback replay,
+// or Attach itself would trip the coalescing meant for slow clients and drop
+// the tail it just queued. This fails to compile if the two drift apart.
+var _ [queueCap - 1 - maxTailFrames]struct{}
+
 // The bracketed-paste brackets a client wraps a paste in (DECSET ?2004).
 var (
 	bracketedPasteStart = []byte("\x1b[200~")
@@ -289,11 +294,21 @@ func (m *Mux) Write(p []byte) (int, error) {
 
 // Attach opens a new session (SPEC-0002 REQ "Attach Session"). It queues, in
 // order and before any live byte can reach this session, the current screen
-// snapshot then a bounded scrollback tail, then joins the live fan-out — all
-// under mu, so no Write can interleave a live chunk ahead of the snapshot. That
-// is the "full screen snapshot before any live bytes" guarantee. write sends one
-// ATTACH_DATA payload to the client; it may block (a slow client), which is
-// precisely what triggers coalescing without ever stalling Write.
+// snapshot then the scrollback tail, then joins the live fan-out — all under
+// mu, so no Write can interleave a live chunk ahead of the snapshot or the
+// tail. That is the "full screen snapshot before any live bytes" guarantee.
+// write sends one ATTACH_DATA payload to the client; it may block (a slow
+// client), which is precisely what triggers coalescing without ever stalling
+// Write.
+//
+// The tail is queued as views into the ring's storage, at most one storage
+// chunk each (ring.tailFrames), never as one copy of the whole ring. The copy
+// cost a ring-sized allocation per attach, and a tail past 16 MiB could not be
+// sent at all: it exceeded protocol.MaxFrameSize, the write failed, and the
+// session tore itself down straight after the snapshot. The frames share the
+// session's bounded queue with live output, so a client too slow to take them
+// is coalesced to a fresh snapshot like any other (SPEC-0002 REQ "Backpressure
+// Isolation").
 func (m *Mux) Attach(id uint32, mode protocol.AttachMode, cols, rows int, write func([]byte) error) *Session {
 	s := &Session{
 		id:        id,
@@ -308,8 +323,8 @@ func (m *Mux) Attach(id uint32, mode protocol.AttachMode, cols, rows int, write 
 	}
 	m.mu.Lock()
 	s.enqueueLocked(renderScreen(m.term)) // 1. screen snapshot
-	if tail := bytes.Join(m.ring.tailFrames(), nil); len(tail) > 0 {
-		s.enqueueLocked(tail) // 2. bounded scrollback tail
+	for _, f := range m.ring.tailFrames() {
+		s.enqueueLocked(f) // 2. scrollback tail, one storage chunk per frame
 	}
 	m.sessions[s] = struct{}{}
 	m.applyResizeLocked() // recompute smallest-attached-wins with this client
