@@ -52,6 +52,12 @@ func scheduledSh(name, script, workdir string) core.Harness {
 // the daemon wires it.
 func newJobsDaemon(t *testing.T, hs ...core.Harness) (*testDaemon, *scheduler.Scheduler, *core.Config) {
 	t.Helper()
+	return newJobsDaemonWith(t, nil, hs...)
+}
+
+// newJobsDaemonWith is newJobsDaemon with a hook on the Manager's options.
+func newJobsDaemonWith(t *testing.T, tune func(*supervisor.ManagerOptions), hs ...core.Harness) (*testDaemon, *scheduler.Scheduler, *core.Config) {
+	t.Helper()
 	cfg := &core.Config{Harnesses: map[string]core.Harness{}, Profiles: map[string]core.Profile{}}
 	for _, h := range hs {
 		cfg.Harnesses[h.Name] = h
@@ -65,13 +71,17 @@ func newJobsDaemon(t *testing.T, hs ...core.Harness) (*testDaemon, *scheduler.Sc
 	socket := filepath.Join(sockDir, "d.sock")
 
 	reg := attach.NewRegistry(1000)
-	mgr := supervisor.NewManager(cfg, supervisor.ManagerOptions{
+	opts := supervisor.ManagerOptions{
 		Policy:       supervisor.Policy{StopGrace: 200 * time.Millisecond},
 		StatePath:    filepath.Join(tmp, "state.json"),
 		LogDir:       filepath.Join(tmp, "logs"),
 		ExtraOutFor:  reg.WriterFor,
 		DropExtraOut: reg.Remove,
-	})
+	}
+	if tune != nil {
+		tune(&opts)
+	}
+	mgr := supervisor.NewManager(cfg, opts)
 	reg.SetController(mgr)
 	sched := scheduler.New(scheduler.Options{NextChanged: mgr.PublishScheduleChanged})
 	sched.Apply(cfg)

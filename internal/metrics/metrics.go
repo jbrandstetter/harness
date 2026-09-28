@@ -30,6 +30,9 @@
 //     block the supervisor (ADR-0007); loss on either feed is counted in
 //     harness_metrics_collection_errors_total rather than hidden.
 //
+// The trigger sources of SPEC-0014 join the same scrape (triggers.go), read at
+// scrape time from the source manager like supervisor state.
+//
 // Honest absence (SPEC-0013 REQ-6) runs through all of it: a value the daemon
 // cannot compute is omitted, never zeroed. A harness whose adapter writes no
 // transcript the observer can read (generic, or no workdir to attribute
@@ -37,7 +40,7 @@
 // zero; a harness that never succeeded has no last-success timestamp, rather
 // than 1970.
 //
-// Governing: ADR-0020; SPEC-0013 REQ-1..REQ-6; ADR-0007 (never block the
+// Governing: ADR-0020; SPEC-0013 REQ-1..REQ-7; ADR-0007 (never block the
 // supervisor on a slow consumer); ADR-0008 (no credentials, prompts or
 // environment in any label).
 //
@@ -46,6 +49,7 @@ package metrics
 
 import (
 	"net/http"
+	"regexp"
 	"sync"
 	"time"
 
@@ -53,6 +57,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/stump-wtf/harness/internal/adapter"
 	"github.com/stump-wtf/harness/internal/core"
 	"github.com/stump-wtf/harness/internal/observe"
 	"github.com/stump-wtf/harness/internal/supervisor"
@@ -108,9 +113,10 @@ const (
 	collectorSchedule   = "schedule"   // scrape-time next-run read
 	collectorObserver   = "observer"   // the agent event feed
 	collectorLifecycle  = "lifecycle"  // the Manager's lifecycle bus
+	collectorTriggers   = "triggers"   // scrape-time trigger source read
 )
 
-var collectorNames = []string{collectorSupervisor, collectorSchedule, collectorObserver, collectorLifecycle}
+var collectorNames = []string{collectorSupervisor, collectorSchedule, collectorObserver, collectorLifecycle, collectorTriggers}
 
 // Options configures Metrics. The zero value is production defaults with no
 // observer and no schedule reader.
@@ -121,6 +127,9 @@ type Options struct {
 	// NextRun reports a scheduled harness's next window (the scheduler's
 	// NextFire). Nil omits harness_scheduled_next_run_timestamp.
 	NextRun func(name string) (time.Time, bool)
+	// Triggers is the trigger source manager (SPEC-0014). Nil omits every
+	// harness_trigger_* series.
+	Triggers TriggerSource
 	// MaxHarnesses caps distinct harness label values (default
 	// DefaultMaxHarnesses).
 	MaxHarnesses int
@@ -211,10 +220,17 @@ func StateValue(s supervisor.Snapshot) string {
 // a workdir to correlate sessions against (runtrace.ErrNoWorkdir). For any
 // other harness the model-call series are uncomputable, so they are omitted
 // rather than reported as a zero that looks like a healthy, idle agent.
+//
+// The kind is the harness's TrajectoryKind, so a command harness bound with
+// `transcripts` is observable as the adapter it names (SPEC-0017 REQ-4). pi is
+// observable; omp is not until agent-trace reads its sessions
+// (adapter.PiFamily.Observed), and flips here with it.
 func Observable(h core.Harness) bool {
-	switch h.Adapter {
-	case "crush", "claude-code", "codex":
+	switch h.TrajectoryKind() {
+	case "crush", "claude-code", "codex", core.AdapterPi:
 		return h.Workdir != ""
+	case core.AdapterOMP:
+		return adapter.OMP.Observed() && h.Workdir != ""
 	}
 	return false
 }
@@ -240,7 +256,11 @@ func Observable(h core.Harness) bool {
 // @joestump-agent 09/23/2026 - claude-code flipped with the agent-trace
 // v0.4.0 bump, which parses its API-error records into error marks.
 func ErrorsObservable(h core.Harness) bool {
-	return Observable(h) && (h.Adapter == "crush" || h.Adapter == "claude-code")
+	switch h.TrajectoryKind() {
+	case "crush", "claude-code":
+		return Observable(h)
+	}
+	return false
 }
 
 // Outcomes of harness_model_calls_total and harness_scheduled_runs_total.
@@ -333,12 +353,38 @@ func New(src Source, opts Options) *Metrics {
 	// daemon is long-lived and its own growth is part of reading the rest
 	// (REQ-1).
 	m.reg.MustRegister(
-		collectors.NewGoCollector(),
+		collectors.NewGoCollector(runtimeMemoryMetrics),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		&collector{m: m},
 	)
 	return m
 }
+
+// runtimeMemoryMetrics adds the runtime/metrics memory breakdown to the Go
+// collector's defaults (SPEC-0013 REQ-7):
+//
+//   - /memory/classes/.* (go_memory_classes_*_bytes): where every mapped byte
+//     is, live heap objects apart from free and released heap, stacks and
+//     runtime metadata. It is the one view that tells a live leak (heap
+//     objects climb) from GC headroom (free heap climbs), and the two need
+//     different fixes.
+//   - /gc/heap/goal:bytes (go_gc_heap_goal_bytes): the heap size the GC is
+//     steering for. With GOGC=100 it sits near twice the live heap, which is
+//     why the footprint doubles a leak; a memory limit shows up as the goal
+//     flattening under it.
+//
+// The collector's defaults already carry go_goroutines, go_memstats_*
+// (heap objects among them) and go_gc_gomemlimit_bytes, the limit actually
+// in effect. Both families added here are fixed sets with no labels, about
+// fifteen series in all, so they do not move the cardinality budget
+// (REQ-5). The runtime's histograms stay off: each is a family of buckets.
+//
+// @joestump-agent 09/28/2026 - Added for GitHub
+// https://github.com/stump-wtf/harness/issues/18.
+var runtimeMemoryMetrics = collectors.WithGoCollectorRuntimeMetrics(
+	collectors.GoRuntimeMetricsRule{Matcher: regexp.MustCompile(`^/memory/classes/.*`)},
+	collectors.GoRuntimeMetricsRule{Matcher: regexp.MustCompile(`^/gc/heap/goal:bytes$`)},
+)
 
 // Registry is the private registry /metrics serves.
 func (m *Metrics) Registry() *prometheus.Registry { return m.reg }

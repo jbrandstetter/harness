@@ -25,12 +25,12 @@ package daemon
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/stump-wtf/harness/internal/core"
 	"github.com/stump-wtf/harness/internal/protocol"
+	"github.com/stump-wtf/harness/internal/sealedlog"
 	"github.com/stump-wtf/harness/internal/supervisor"
 	"github.com/stump-wtf/harness/internal/trigger"
 )
@@ -218,8 +218,19 @@ func (c *conn) opLogsRun(req protocol.ControlReq, snap supervisor.Snapshot, line
 			"harness %q has no run %d in its history (never run, or past the ledger's retention)", req.Name, req.Run)
 		return
 	}
-	text, hasLog := readRunLogTail(runLogOf(c.srv.mgr, req.Name, rec), lines)
+	logPath := runLogOf(c.srv.mgr, req.Name, rec)
+	text, hasLog := readRunLogTail(logPath, lines)
 	var notices []string
+	// A pipe run's output is its stream file; its run log follows once the
+	// run has ended (streamlog.go; ADR-0033).
+	streamPath := supervisor.StreamPathFor(logPath)
+	if stream, ok := readStreamTail(streamPath, lines); ok {
+		ended := rec.Outcome != supervisor.OutcomeRunning
+		text, hasLog = pipeRunText(streamPath, stream, logPath, text, ended), true
+		if !ended {
+			notices = append(notices, fmt.Sprintf("run %d runs on pipes: this is its stdout stream; its stderr and lifecycle lines are in %s, shown here once it ends", rec.RunID, logPath))
+		}
+	}
 	if !hasLog {
 		notices = append(notices, noRunLogNotice(rec))
 	}
@@ -296,7 +307,9 @@ func (c *conn) runInfo(name string, r supervisor.RunRecord) protocol.RunInfo {
 	// value (SPEC-0017 REQ-11). Reason itself is set below.
 	info.MissingPath = r.MissingPath
 	if path := runLogOf(c.srv.mgr, name, r); path != "" && !r.LogPruned {
-		if _, err := os.Stat(path); err == nil {
+		// Either form: a closed run's log is compressed beside its name
+		// (ADR-0007 as amended).
+		if _, err := sealedlog.Stat(path); err == nil {
 			info.HasLog = true
 		}
 	}
@@ -308,18 +321,25 @@ func (c *conn) runInfo(name string, r supervisor.RunRecord) protocol.RunInfo {
 
 // readRunLogTail returns the last lines of a run's log, and whether the log
 // exists at all.
+//
+// The log is read in whichever form it is on disk. A run still open writes
+// the plain file; once it closes the log is sealed and compressed to
+// <path>.zst in the background (ADR-0007 as amended; SPEC-0008 REQ "Per-Run
+// Logs"), and internal/sealedlog streams that through a ring of `lines` lines
+// instead of decompressing the whole run into memory. Governing: ADR-0007,
+// SPEC-0008 REQ "Per-Run Logs".
 func readRunLogTail(path string, lines int) (string, bool) {
 	if path == "" {
 		return "", false
 	}
-	data, err := os.ReadFile(path)
+	data, err := sealedlog.TailLines(path, lines)
 	if err != nil {
 		return "", false
 	}
 	// Masked like the harness-wide tail: a run log is the same durable output,
 	// and opLogsRun serves it on the events path too, not only for --raw
 	// (ADR-0008 as amended; issue #312).
-	return redactTail(tailLines(data, lines)), true
+	return redactTail(data), true
 }
 
 // noRunLogNotice explains a run with no log.

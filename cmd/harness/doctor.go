@@ -12,6 +12,9 @@ package main
 // common one); SPEC-0003 (the state glyphs distinguish healthy from
 // degraded harnesses — we map per-harness state into the doctor's
 // pass/warn/fail levels).
+//
+// @joestump-agent 09/27/2026 - Added the skill-repo serving-clone row
+// (SPEC-0007 REQ "Default-Branch Gate").
 
 import (
 	"encoding/json"
@@ -22,6 +25,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/spf13/cobra"
 
 	"github.com/stump-wtf/harness/internal/buildinfo"
 	"github.com/stump-wtf/harness/internal/client"
@@ -65,6 +69,9 @@ type doctorResult struct {
 	TelemetryCheck *checkResult `json:"telemetry_check,omitempty"`
 	// Notify is the [notify] hook row; NotifyTest is present only with
 	// --notify-test (SPEC-0003 REQ "Operator Notification").
+	// Skills is the skill-repo serving-clone row (SPEC-0007 REQ
+	// "Default-Branch Gate"); absent when no skill repo is declared.
+	Skills     *checkResult `json:"skills,omitempty"`
 	Notify     *checkResult `json:"notify,omitempty"`
 	NotifyTest *checkResult `json:"notify_test,omitempty"`
 	// Settings reports every process setting with the source that supplied it,
@@ -197,7 +204,7 @@ func runDoctorWith(o verbOpts, notifyTest bool) int {
 		// No point continuing further: every later check needs the daemon.
 		// Resolved process settings and where each came from. A resolve failure
 		// is non-fatal but reported — see resolvedSettings.
-		rows, resolved := resolvedSettings(rows)
+		rows, resolved := resolvedSettings(rows, o.cmd)
 
 		emitDoctor(os.Stdout, os.Stderr, rows, resolved, telem)
 		return 1
@@ -292,6 +299,14 @@ func runDoctorWith(o verbOpts, notifyTest bool) int {
 		}
 	}
 
+	// --- Check: skill repo serving clones -----------------------------------
+	// Governing: SPEC-0007 REQ "Default-Branch Gate". A clone off the default
+	// branch or dirty keeps its previous index, so doctor is the only place
+	// the condition is visible.
+	if r := skillsCheck(cfg, c); r != nil {
+		rows = append(rows, *r)
+	}
+
 	// --- Check 5: harnesses in healthy state -------------------------------
 	// Governing: SPEC-0003 (the state model and its healthy/degraded/failed
 	// tiers drive the per-row level here).
@@ -374,7 +389,7 @@ func runDoctorWith(o verbOpts, notifyTest bool) int {
 
 	// Resolved process settings and where each came from. A resolve failure is
 	// non-fatal but reported — see resolvedSettings.
-	rows, resolved := resolvedSettings(rows)
+	rows, resolved := resolvedSettings(rows, o.cmd)
 
 	emitDoctor(os.Stdout, os.Stderr, rows, resolved, telem)
 
@@ -556,6 +571,9 @@ func emitDoctorJSON(w io.Writer, rows []check, resolved []settings.Resolved, tel
 		case "operating_hours":
 			c := cr
 			res.OperatingHours = &c
+		case "skills":
+			c := cr
+			res.Skills = &c
 		case "triggers":
 			c := cr
 			res.Triggers = &c
@@ -685,8 +703,14 @@ func printDoctorTable(w io.Writer, rows []check) {
 // hold when doctor is the first thing they run.
 //
 // @joestump-agent 08/19/2026 - Surface the resolve failure instead of hiding it.
-func resolvedSettings(rows []check) ([]check, []settings.Resolved) {
-	resolved, err := resolveReport(nil)
+//
+// cmd is the doctor command, so a typed --config or --socket is ranked like
+// every other command ranks it. It was nil here, which left the report reading
+// the default config path under `harness --config X doctor` and attributing
+// every file-backed setting to "default". Tests that call runDoctor directly
+// pass no command and get the flagless ladder.
+func resolvedSettings(rows []check, cmd *cobra.Command) ([]check, []settings.Resolved) {
+	resolved, err := resolveReport(cmd)
 	if err != nil {
 		rows = append(rows, check{
 			name:   "settings",

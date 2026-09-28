@@ -131,10 +131,15 @@ It lives on disk too, so you can read it with ordinary tools:
 
 | File | Holds |
 |------|-------|
-| `~/.local/state/harness/logs/NAME.log` | everything a harness printed, across runs (rotated) |
-| `~/.local/state/harness/jobs/NAME/RUN_ID.log` | one scheduled run's output and lifecycle |
+| `~/.local/state/harness/logs/NAME.log` | everything a harness printed, across runs (rotated; backups are `NAME-STAMP.log.zst`) |
+| `~/.local/state/harness/jobs/NAME/RUN_ID.log.zst` | one scheduled run's output and lifecycle (`RUN_ID.log` while the run is going) |
 | `~/.local/state/harness/state.json` | intent, and each harness's last run id |
 | `~/.local/state/harness/ledger/YYYY-MM-DD.jsonl` | the run ledger: one record per one-shot run (scheduled or triggered); resident processes are not recorded yet |
+
+A `.zst` file is zstd-compressed. Read it with `zstd -dc FILE.zst`, or search
+plain and compressed logs together with `zstdgrep`. See
+[Supervision → Logs on disk](/usage/supervision#logs-on-disk) for which files
+are compressed and how to turn compression off.
 
 :::caution Check raw output before you share it
 

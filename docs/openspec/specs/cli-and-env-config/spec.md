@@ -11,10 +11,10 @@ requires: [SPEC-0002]
 ## Overview
 
 Harness resolves its **process settings** — socket path, config path, log level,
-log file, scrollback depth, SSH server enable and listen address, config
-watching, and JSON output — from four sources ranked in one fixed order:
-an explicit command-line flag, a `HARNESS_*` environment variable, the TOML
-file, then the compiled default.
+log file, scrollback budget and depth, SSH server enable and listen address,
+config watching, sealed-log compression, and JSON output — from four sources
+ranked in one fixed order: an explicit command-line flag, a `HARNESS_*`
+environment variable, the TOML file, then the compiled default.
 
 The command tree is built with Cobra; the precedence ladder is resolved by Viper
 bound to Cobra's flags. The **domain tables** (`[harness.*]`, `[profile.*]`)
@@ -39,18 +39,42 @@ corresponding flag name uppercased with hyphens replaced by underscores.
 
 The following variables SHALL be recognized:
 
-| Variable | Flag | Type | Default |
-|---|---|---|---|
-| `HARNESS_SOCKET` | `--socket` | path | `$XDG_RUNTIME_DIR/harness.sock` |
-| `HARNESS_CONFIG` | `--config` | path | `$XDG_CONFIG_HOME/harness/harness.toml` |
-| `HARNESS_JSON` | `--json` | bool | `false` |
-| `HARNESS_LOG_LEVEL` | `--log-level` | enum | `info` |
-| `HARNESS_LOG_FILE` | `--log-file` | path | *(stderr)* |
-| `HARNESS_SCROLLBACK` | `--scrollback` | int | `attach.DefaultRingLines` |
-| `HARNESS_SSH` | `--ssh` | bool | `false` |
-| `HARNESS_SSH_LISTEN` | `--ssh-listen` | host:port | *(unset)* |
-| `HARNESS_WEBHOOK_LISTEN` | `--webhook-listen` | host:port | *(unset)* |
-| `HARNESS_WATCH_CONFIG` | *(none)* | bool | `true` |
+| Variable | Flag | File key | Type | Default |
+|---|---|---|---|---|
+| `HARNESS_SOCKET` | `--socket` | `[daemon]` `socket` | path | `$XDG_RUNTIME_DIR/harness.sock` |
+| `HARNESS_CONFIG` | `--config` | *(none)* | path | `$XDG_CONFIG_HOME/harness/harness.toml` |
+| `HARNESS_JSON` | `--json` | *(none)* | bool | `false` |
+| `HARNESS_LOG_LEVEL` | `--log-level` | `[daemon]` `log_level` | enum | `info` |
+| `HARNESS_LOG_FILE` | `--log-file` | `[daemon]` `log_file` | path | *(stderr)* |
+| `HARNESS_SCROLLBACK` | `--scrollback` | `[daemon]` `scrollback` | int | `attach.DefaultRingLines` |
+| `HARNESS_SCROLLBACK_BYTES` | `--scrollback-bytes` | `[daemon]` `scrollback_bytes` | size | `attach.DefaultRingBytes` (1 MiB) |
+| `HARNESS_SSH` | `--ssh` | `[server]` `enabled` | bool | `false` |
+| `HARNESS_SSH_LISTEN` | `--ssh-listen` | `[server]` `listen` | host:port | *(unset)* |
+| `HARNESS_WEBHOOK_LISTEN` | `--webhook-listen` | `[server]` `webhook_listen` | host:port | *(unset)* |
+| `HARNESS_WATCH_CONFIG` | *(none)* | `[daemon]` `watch_config` | bool | `true` |
+| `HARNESS_COMPRESS_LOGS` | `--compress-logs` | `[daemon]` `compress_logs` | bool | `true` |
+| `HARNESS_MEMORY_LIMIT` | `--memory-limit` | `[daemon]` `memory_limit` | size | *(unset: `GOMEMLIMIT`, else off)* |
+| `HARNESS_PPROF_ADDR` | `--pprof-addr` | `[daemon]` `pprof_addr` | loopback host:port | *(unset: off)* |
+
+Every file key in this table SHALL be accepted by the config file loader. A key
+that the settings layer reads but the loader rejects as unknown makes the whole
+file fail to load, so the file source it names can never be used. In the file,
+`socket` and `log_file` SHALL be absolute paths and `scrollback` SHALL be at
+least 1, `memory_limit` SHALL be a size (REQ "Go Memory Limit"), and
+`pprof_addr` SHALL be empty or a loopback `host:port` (SPEC-0013 REQ-8). The
+loader SHALL reject any other value with the key's line number.
+`scrollback_bytes` SHALL be between 64 KiB and 1 GiB from every source: the
+loader SHALL reject a file value outside that range with its line number, and
+the daemon SHALL refuse to start on a flag, environment or file value outside
+it, naming the source.
+`config` has no file key because it names the file. `json` has none because it
+selects the output format for one invocation.
+
+`compress_logs` controls whether the daemon compresses sealed logs to
+`<file>.zst`: rotated backups of each durable log, and each closed run's log
+and raw stream (SPEC-0003 REQ "Durable Log Rotation And Compression", SPEC-0008
+REQ "Per-Run Logs"). Setting it false stops new compressions. Files already
+compressed stay readable.
 
 Harness MUST NOT read harness or profile definitions from the environment. No
 `HARNESS_*` variable SHALL define, modify, or remove a `[harness.*]` or
@@ -125,6 +149,27 @@ environment variable.
   `HARNESS_SSH_LISTEN` is set, and no `--ssh-listen` flag is given
 - **THEN** the SSH server SHALL bind `127.0.0.1:2222`
 
+#### Scenario: Daemon table supplies scrollback
+
+- **WHEN** the config file sets `[daemon]` `scrollback = 2000`, no
+  `HARNESS_SCROLLBACK` is set, and no `--scrollback` flag is given
+- **THEN** the daemon SHALL start, and each harness's scrollback ring SHALL hold
+  2000 lines
+
+#### Scenario: Daemon table supplies the scrollback budget
+
+- **WHEN** the config file sets `[daemon]` `scrollback_bytes = "4MiB"`, no
+  `HARNESS_SCROLLBACK_BYTES` is set, and no `--scrollback-bytes` flag is given
+- **THEN** the daemon SHALL start, and each harness's scrollback ring SHALL use
+  at most 4 MiB of storage
+
+#### Scenario: Daemon table supplies the socket to daemon and client
+
+- **WHEN** the config file sets `[daemon]` `socket = "/run/harness/h.sock"` and
+  neither `HARNESS_SOCKET` nor `--socket` is given
+- **THEN** the daemon SHALL bind `/run/harness/h.sock`, and a client reading the
+  same file SHALL dial it
+
 #### Scenario: Unchanged flag does not mask the environment
 
 - **WHEN** `HARNESS_LOG_LEVEL=debug` is set and the user runs
@@ -165,6 +210,17 @@ with the default.
 
 Booleans SHALL accept `1`, `0`, `true`, `false`, `yes`, `no`, `on`, and `off`,
 case-insensitively.
+
+Sizes SHALL accept a whole number of bytes, optionally followed by a unit:
+`B`, `KiB`, `MiB`, `GiB` or `TiB`, with `K`/`KB`/`Ki`, `M`/`MB`/`Mi`,
+`G`/`GB`/`Gi` and `T`/`TB`/`Ti` meaning the same 1024-based units,
+case-insensitively. A TOML integer in the file counts bytes.
+
+#### Scenario: Scrollback budget out of range
+
+- **WHEN** `HARNESS_SCROLLBACK_BYTES=16GiB` is set
+- **THEN** startup SHALL fail with an error naming `HARNESS_SCROLLBACK_BYTES`,
+  the value, and the accepted range of 64 KiB to 1 GiB
 
 #### Scenario: Non-numeric scrollback
 
@@ -250,6 +306,64 @@ SHALL behave as `harness daemon run`.
 - **THEN** the CLI SHALL exit non-zero with an error naming the unknown verb and
   pointing at `harness --help`
 
+### Requirement: Go Memory Limit
+
+The daemon SHALL apply a Go soft memory limit (`runtime/debug.SetMemoryLimit`)
+from `--memory-limit`, `HARNESS_MEMORY_LIMIT`, or `[daemon] memory_limit`,
+resolved by the Precedence Order above. It SHALL be applied at daemon start and
+SHALL take effect again only on a restart, like every process setting.
+
+The value is a size, in the form REQ "Environment Value Validation" defines
+(the 1024-based units match systemd's `MemoryMax=`), so a bare number is
+bytes. `0` SHALL mean no limit.
+
+`GOMEMLIMIT` is not in the `HARNESS_` namespace. The Go runtime applies it
+before the daemon's code runs. It SHALL rank **below** every source above and
+above the default:
+
+1. an explicit `--memory-limit`, `HARNESS_MEMORY_LIMIT`, or `[daemon]
+   memory_limit` SHALL replace whatever limit `GOMEMLIMIT` set, and an explicit
+   `0` SHALL remove it;
+2. with none of them set, the daemon SHALL leave the runtime's limit, and so
+   `GOMEMLIMIT`'s, untouched;
+3. with neither, there SHALL be no limit.
+
+The harness settings win because they are addressed to the daemon.
+`GOMEMLIMIT` is Go-wide. A shell profile or a platform may set it, and the
+daemon's environment is inherited by every harness it spawns.
+
+The default SHALL be off. A soft limit cannot free a live leak, and set below
+the live heap it keeps the GC running near-continuously. The right value
+depends on the host, which the daemon cannot see.
+
+The daemon SHALL log, at startup, the limit in effect (read back from the
+runtime) and its source: `flag`, `env`, `file`, `GOMEMLIMIT`, or `default`.
+
+#### Scenario: File limit applied
+
+- **WHEN** `[daemon] memory_limit = "2GiB"` is set and no flag or
+  `HARNESS_MEMORY_LIMIT` is given
+- **THEN** the daemon's Go memory limit SHALL be 2 GiB, and
+  `go_gc_gomemlimit_bytes` SHALL report 2147483648
+
+#### Scenario: Harness setting beats GOMEMLIMIT
+
+- **WHEN** `GOMEMLIMIT=512MiB` is in the daemon's environment and
+  `[daemon] memory_limit = "1GiB"` is set
+- **THEN** the limit SHALL be 1 GiB, and the startup log SHALL say that it
+  overrides `GOMEMLIMIT`
+
+#### Scenario: GOMEMLIMIT beats the default
+
+- **WHEN** `GOMEMLIMIT=512MiB` is set and no harness source names a limit
+- **THEN** the limit SHALL stay 512 MiB, logged with source `GOMEMLIMIT`
+
+#### Scenario: A bare number is bytes
+
+- **WHEN** `HARNESS_MEMORY_LIMIT=2048` is set
+- **THEN** the limit SHALL be 2048 bytes, and the daemon SHALL warn that the
+  limit is very small
+
 ### Requirement: Secrets Exclusion
 
 The `HARNESS_*` namespace SHALL NOT carry credentials. No variable in this spec
@@ -261,8 +375,8 @@ requires. Documentation for this capability SHALL state this explicitly.
 #### Scenario: No credential variables exist
 
 - **WHEN** the recognized-variable table is enumerated
-- **THEN** every entry SHALL be a path, boolean, integer, enum, or host:port,
-  and none SHALL be a credential
+- **THEN** every entry SHALL be a path, boolean, integer, size, enum, or
+  host:port, and none SHALL be a credential
 
 ### Requirement: Error Handling Standards
 

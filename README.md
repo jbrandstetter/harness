@@ -16,7 +16,9 @@ a general process manager. Run arbitrary processes under your init system
 A single `harness` binary has two faces:
 
 - **`harness daemon`** — long-lived supervisor. Owns every harness: the process,
-  its PTY, daemon-side scrollback, restart policy, and state.
+  its PTY, daemon-side scrollback, restart policy, and state. A stream-json
+  one-shot (`claude -p`) runs on pipes instead of a PTY, and its output is kept
+  per run as JSON lines.
 - **`harness`** — thin client. Open the keyboard-driven **dashboard** with no
   arguments, or run one-shot **verbs** (`list`, `start`, `logs`, ...) to script
   it. Locally over a Unix socket, or remotely over SSH
@@ -90,10 +92,13 @@ workdir = "~/src/my-project"
 enabled = true
 ```
 
-`harness` is required and names the kind. `crush`, `claude-code` and `codex`
-are the agents agent-trace can read. `command` runs any other program, with no
-shell: its `argv` array is the whole process, so each element reaches the
-program as one byte-identical argument.
+`harness` is required and names the kind. `crush`, `claude-code`, `codex`,
+`pi` and `omp` are agent CLIs with adapters of their own; agent-trace reads the
+sessions of all but `omp`, which is observed once it can. `command` runs any
+other program, with no shell: its `argv` array is the whole process, so each
+element reaches the program as one byte-identical argument. A `command`
+harness that hand-builds an agent's argv can set `transcripts` to that agent's
+kind to be observed as it.
 
 The `generic` kind, which ran an arbitrary `sh` command, is deprecated and is
 being removed (ADR-0033); a harness must be an agent agent-trace can read.

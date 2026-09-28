@@ -6,6 +6,10 @@ package daemon
 // structured ERROR frames carrying a machine code + human message. ADR-0002
 // (control is the same set of verbs the CLI and TUI expose). ADR-0006 (reload
 // keeps last-good config on a parse error).
+//
+// @joestump-agent 09/27/2026 - Added the skills_synced and skills_status ops
+// (SPEC-0007 REQ "Default-Branch Gate") and the skills refresh after a
+// successful reload.
 
 import (
 	"encoding/json"
@@ -65,6 +69,10 @@ func (c *conn) handleControl(payload []byte) {
 		c.opNotifyTest(req)
 	case protocol.OpTriggers:
 		c.respond(req, c.opTriggers())
+	case protocol.OpSkillsSynced:
+		c.opSkillsSynced(req)
+	case protocol.OpSkillsStatus:
+		c.respond(req, c.opSkillsStatus())
 	default:
 		_ = c.pc.WriteError(req.ID, protocol.ErrUnknownOp, "unknown op %q", req.Op)
 	}
@@ -113,6 +121,7 @@ func (c *conn) infoFor(snap supervisor.Snapshot) protocol.HarnessInfo {
 		info.Workdir = supervisor.Workdir(h)
 		info.Args = h.Args
 		info.Argv = h.Argv
+		info.Transcripts = h.Transcripts
 		info.Prompt = h.Prompt
 		info.PromptFile = h.PromptFile
 		info.Model = h.Model
@@ -199,7 +208,11 @@ func (c *conn) attachInfoFor(info *protocol.HarnessInfo) {
 	if !ok {
 		return
 	}
-	info.AttachViewport = fmt.Sprintf("%dx%d", ms.Cols, ms.Rows)
+	// A harness served by a line mux (a structured one-shot) has sessions but
+	// no terminal, so no viewport (internal/attach, lines.go).
+	if ms.Cols > 0 && ms.Rows > 0 {
+		info.AttachViewport = fmt.Sprintf("%dx%d", ms.Cols, ms.Rows)
+	}
 	sessions := make([]protocol.AttachSessionInfo, 0, len(ms.Sessions))
 	for _, s := range ms.Sessions {
 		sessions = append(sessions, protocol.AttachSessionInfo{
@@ -340,6 +353,11 @@ func (c *conn) opLogs(req protocol.ControlReq) {
 	}
 	text := readLogTail(c.srv.mgr.LogDir(), req.Name, lines)
 	data := protocol.LogsData{Name: req.Name, Text: text}
+	// A triggered structured one-shot writes its stdout to each run's stream
+	// file, not to this log (ADR-0033; streamlog.go).
+	if h, _, ok := c.srv.mgr.HarnessRecord(req.Name); ok && h.Triggered() && supervisor.RunsOnPipes(h) {
+		data.Notices = append(data.Notices, fmt.Sprintf("%s runs on pipes: this log holds its lifecycle and stderr lines; each run's stdout is in its stream file (harness logs %s --run N --raw)", req.Name, req.Name))
+	}
 	// SnapshotFor never materializes a Mux (#183), so a harness nobody has
 	// attached to and that has teed no output simply reports no viewport.
 	if ms, ok := c.srv.reg.SnapshotFor(req.Name); ok {
@@ -390,6 +408,11 @@ func (c *conn) opReload(req protocol.ControlReq) {
 		return
 	}
 	c.srv.broadcast(protocol.EventMsg{Kind: protocol.EvConfigReload})
+	// Skill repos and their serving settings live in the same config of
+	// record; refresh the serving manager so the index tracks the reload
+	// (SPEC-0007 REQ "Skill Repos"). Best-effort: a refresh failure keeps the
+	// previous index.
+	go c.srv.SyncSkillsManager()
 	c.respond(req, c.opList())
 }
 

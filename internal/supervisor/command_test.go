@@ -23,6 +23,7 @@ import (
 
 	"github.com/stump-wtf/harness/internal/core"
 	"github.com/stump-wtf/harness/internal/ledger"
+	"github.com/stump-wtf/harness/internal/sealedlog"
 )
 
 // argvProbeEnv, when set in a child's environment, turns this test binary into
@@ -49,6 +50,8 @@ func TestMain(m *testing.M) {
 	// Run history is read back from the ledger; see SkipSyncForTesting for
 	// why these tests must not wait on the runner's disk to see it.
 	ledger.SkipSyncForTesting()
+	// Likewise every compression a test waits on (sealed_logs_test.go).
+	sealedlog.SkipSyncForTesting()
 	os.Exit(m.Run())
 }
 

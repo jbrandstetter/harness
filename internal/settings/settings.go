@@ -27,6 +27,9 @@
 // "Environment Value Validation", REQ "Source Attribution".
 //
 // @joestump-agent 08/19/2026 - Introduced with the ADR-0016 environment layer.
+//
+// @joestump-agent 09/28/2026 - KindBytes: human byte sizes (bytes.go), for
+// settings that are amounts of memory.
 package settings
 
 import (
@@ -60,6 +63,9 @@ const (
 	KindString Kind = iota
 	KindBool
 	KindInt
+	// KindBytes is a human byte size ("2GiB", "512MiB", "0"), resolved to an
+	// int64 byte count. See bytes.go for the accepted units.
+	KindBytes
 )
 
 // ErrNoConfigFile reports that no file existed at the resolved path. It is a
@@ -86,24 +92,33 @@ type Setting struct {
 	Desc string
 }
 
-// Registry is the recognized set, in report order. Adding a setting here is the
-// only step needed to give it flag/env/file/default resolution and doctor
-// reporting.
+// Registry is the recognized set, in report order. Adding a setting here gives
+// it flag/env/file/default resolution and doctor reporting. A FileKey also
+// needs a field in internal/config's raw table, whose strict decode refuses
+// any key it does not know; TestRegistryFileKeysLoad fails until it has one.
 //
 // HARNESS_DETACH_READY_FD is deliberately absent: it is internal IPC between
 // `daemon --detach` and its forked child, not operator configuration, and
 // SPEC-0010 reserves rather than reuses it.
 var Registry = []Setting{
-	{Name: "socket", Env: "HARNESS_SOCKET", Kind: KindString, Desc: "daemon socket path"},
+	{Name: "socket", Env: "HARNESS_SOCKET", FileKey: "daemon.socket", Kind: KindString, Desc: "daemon socket path"},
 	{Name: "config", Env: "HARNESS_CONFIG", Kind: KindString, Desc: "harness.toml path"},
 	{Name: "json", Env: "HARNESS_JSON", Kind: KindBool, Default: false, Desc: "machine-readable output"},
 	{Name: "log-level", Env: "HARNESS_LOG_LEVEL", FileKey: "daemon.log_level", Kind: KindString, Default: "info", Desc: "log level"},
 	{Name: "log-file", Env: "HARNESS_LOG_FILE", FileKey: "daemon.log_file", Kind: KindString, Default: "", Desc: "log file (empty = stderr)"},
 	{Name: "scrollback", Env: "HARNESS_SCROLLBACK", FileKey: "daemon.scrollback", Kind: KindInt, Desc: "scrollback ring depth (lines)"},
+	{Name: "scrollback-bytes", Env: "HARNESS_SCROLLBACK_BYTES", FileKey: "daemon.scrollback_bytes", Kind: KindBytes, Desc: "scrollback ring storage per harness"},
 	{Name: "ssh", Env: "HARNESS_SSH", FileKey: "server.enabled", Kind: KindBool, Default: false, Desc: "remote SSH server enabled"},
 	{Name: "ssh-listen", Env: "HARNESS_SSH_LISTEN", FileKey: "server.listen", Kind: KindString, Default: "", Desc: "SSH bind address"},
 	{Name: "webhook-listen", Env: "HARNESS_WEBHOOK_LISTEN", FileKey: "server.webhook_listen", Kind: KindString, Default: "", Desc: "webhook listener bind address (empty = off)"},
 	{Name: "watch-config", Env: "HARNESS_WATCH_CONFIG", FileKey: "daemon.watch_config", Kind: KindBool, Default: true, Desc: "watch the config file for changes"},
+	// On by default (ADR-0007 as amended): a sealed log — a rotated backup, a
+	// closed run's log or raw stream — is compressed to <file>.zst.
+	{Name: "compress-logs", Env: "HARNESS_COMPRESS_LOGS", FileKey: "daemon.compress_logs", Kind: KindBool, Default: true, Desc: "compress sealed logs with zstd"},
+	// No Default: unset must stay distinguishable from an explicit "0", which
+	// turns off a limit GOMEMLIMIT set (SPEC-0010 REQ "Go Memory Limit").
+	{Name: "memory-limit", Env: "HARNESS_MEMORY_LIMIT", FileKey: "daemon.memory_limit", Kind: KindBytes, Desc: "Go soft memory limit (0 = off; unset = GOMEMLIMIT, else off)"},
+	{Name: "pprof-addr", Env: "HARNESS_PPROF_ADDR", FileKey: "daemon.pprof_addr", Kind: KindString, Default: "", Desc: "pprof listener, loopback only (empty = off)"},
 }
 
 // logLevels is the accepted set for log-level, listed in errors so a typo tells
@@ -122,6 +137,9 @@ type Resolved struct {
 func (r Resolved) String() string {
 	if r.Value == nil {
 		return ""
+	}
+	if n, ok := r.Value.(int64); ok && r.Setting.Kind == KindBytes {
+		return FormatBytes(n)
 	}
 	return fmt.Sprint(r.Value)
 }
@@ -273,6 +291,17 @@ func (r *Resolver) Int(name string) (int, error) {
 	return i, nil
 }
 
+// Bytes resolves a byte-size setting to a byte count. An unset setting with
+// no default is 0.
+func (r *Resolver) Bytes(name string) (int64, error) {
+	got, err := r.Resolve(name)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := got.Value.(int64)
+	return n, nil
+}
+
 // parse converts a raw string to the setting's type, naming the origin in any
 // error so an operator can tell HARNESS_SCROLLBACK=lots from --scrollback=lots.
 // SPEC-0010 REQ "Environment Value Validation" forbids coercing or ignoring a
@@ -293,6 +322,13 @@ func parse(s Setting, raw, origin string) (any, error) {
 			return nil, fmt.Errorf("%s: invalid value %q: expected an integer", origin, raw)
 		}
 		return i, nil
+
+	case KindBytes:
+		n, err := ParseBytes(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", origin, err)
+		}
+		return n, nil
 
 	default:
 		if s.Name == "log-level" {
@@ -335,6 +371,20 @@ func validLogLevel(raw string) bool {
 		}
 	}
 	return false
+}
+
+// CheckFileValue validates a value the TOML file supplies for fileKey, exactly
+// as Resolve would. internal/config calls it while loading, so a bad value is
+// reported with its source line and refused by a reload, rather than accepted
+// there and only discovered when the next daemon start fails.
+func CheckFileValue(fileKey string, value any) error {
+	for _, s := range Registry {
+		if s.FileKey == fileKey {
+			_, err := parse(s, fmt.Sprint(value), fileKey)
+			return err
+		}
+	}
+	return fmt.Errorf("settings: no setting has file key %q", fileKey)
 }
 
 func lookup(name string) (Setting, bool) {

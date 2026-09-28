@@ -1,7 +1,7 @@
 ---
 status: approved
 date: 2026-09-22
-implements: [ADR-0023]
+implements: [ADR-0023, ADR-0033]
 extends: [SPEC-0006, SPEC-0008, SPEC-0014]
 requires: [SPEC-0002, SPEC-0013]
 ---
@@ -20,6 +20,10 @@ This spec adds three things to the harness schema and the spawn path:
   metadata inline, a trusted actor after a check, and free text only by file
   path or through a logged, opt-in fence.
 * **First-class `pi` and `omp` adapters.**
+
+REQ-18 adds one more, from ADR-0033: a one-shot whose adapter declares a
+structured stream runs on pipes, with no PTY and no terminal emulator, and its
+stdout is kept per run as a masked `.stream.jsonl`.
 
 It also makes `harness = "generic"` with a prompt a config error. That is the
 first thing to ship.
@@ -767,6 +771,85 @@ spec governs:
   webhook
 - **THEN** its argv is byte-identical to a manual start's, as SPEC-0014
   requires
+
+### Requirement: REQ-18 — Structured One-Shots Run On Pipes
+
+A prompt one-shot whose adapter declares a structured prompt stream (SPEC-0006
+REQ "Structured Prompt Stream"; `claude-code`'s `stream-json` today) SHALL be
+spawned with stdout and stderr on pipes and stdin on `/dev/null`. It SHALL get
+no PTY and no terminal emulator, and SHALL have no controlling terminal. It
+SHALL still be a session leader, so stop, kill, timeout, replace and
+`SignalGroup` reach its whole process group exactly as they reach a PTY
+harness's. When the leader exits on its own, what remains of its group SHALL
+receive `SIGHUP`, as a PTY child's group does from its terminal. Every other
+harness keeps its PTY: a resident harness, a `command` harness whatever its
+argv (ADR-0033 admits no escape hatch), and a one-shot whose adapter declares no
+stream.
+
+Its stdout SHALL be read a line at a time. Each line SHALL be masked and written
+to `jobs/<name>/<run_id>.stream.jsonl`, created `0600`, beside the run's log.
+Masking SHALL keep a JSON line JSON and byte-identical outside the string
+literals that carried a credential. A run with no per-run log SHALL write those
+lines to the harness's durable log instead. A line longer than the line cap
+(16 MiB) SHALL be read to its end, not kept, and replaced by a JSON marker line;
+the daemon SHALL NOT buffer more than one line of a run at a time.
+
+Its stderr SHALL be read a line at a time. Each line SHALL be stripped of
+escape sequences, masked, and written to the run's log and the harness's durable
+log, and SHALL NOT reach the stream file.
+
+Both SHALL also reach the harness's attach sessions as CRLF-terminated lines,
+through an attach plane with no terminal emulator (SPEC-0002 REQ "Attach
+Session"). The spawn SHALL NOT ask the attach layer for a viewport, and the
+daemon SHALL build no emulator for such a harness at all.
+
+The run's exit code, record, timeout, budget and trigger handling SHALL be those
+of a PTY run. The exit path SHALL wait for the readers while they make progress
+(up to one minute) and SHALL close the stream file before the run's record is
+closed, so the stream is whole when the record says the run ended. `keep_runs`
+SHALL prune the stream file with the run's log.
+
+`harness logs NAME --run N --raw` on such a run SHALL print the stream file's
+tail, and, once the run has ended, its run log after it, each under a
+`==> path <==` header. While the run is live its text SHALL be the stream alone,
+so each poll of `harness trigger --wait` extends the text the previous poll
+printed. Each line shown SHALL be cut at 64 KiB with a note, and the whole tail
+at 8 MiB. `harness logs NAME --raw` on a triggered structured one-shot SHALL
+carry a notice that each run's stdout is in its stream file.
+
+#### Scenario: No terminal
+
+- **WHEN** a scheduled `claude-code` prompt one-shot runs
+- **THEN** its process has no controlling terminal and none of its standard
+  descriptors is a terminal, while a `crush` one-shot run the same way has both
+
+#### Scenario: The stream is kept, masked and whole
+
+- **WHEN** the run prints a tool call carrying `Authorization: token abc123`, a
+  5 MiB line, and two stderr lines, and exits 3
+- **THEN** `<run_id>.stream.jsonl` holds every stdout line in order, each valid
+  JSON, the 5 MiB line byte for byte and the token as `[REDACTED]`; the run log
+  and the durable log hold the stderr lines and no stdout; and the record reads
+  `failed` with exit code 3
+
+#### Scenario: No emulator
+
+- **WHEN** a structured one-shot runs to completion
+- **THEN** neither the supervisor nor the attach layer constructs a terminal
+  emulator for it, an attach session included, while a PTY harness constructs
+  one
+
+#### Scenario: Stop reaches the group
+
+- **WHEN** an operator stops the run while a child that ignores `SIGTERM` and
+  `SIGHUP` is running
+- **THEN** the child is killed once the stop grace runs out and the run reads
+  `cancelled`
+
+#### Scenario: keep_runs prunes the stream
+
+- **WHEN** a harness with `keep_runs = 2` has run four times
+- **THEN** only runs 3 and 4 still have a stream file
 
 ### Requirement: Error Handling Standards
 

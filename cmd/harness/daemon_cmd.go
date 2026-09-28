@@ -33,6 +33,7 @@ import (
 
 	"github.com/stump-wtf/harness/internal/attach"
 	"github.com/stump-wtf/harness/internal/buildinfo"
+	"github.com/stump-wtf/harness/internal/settings"
 )
 
 // daemonOpts carries the resolved daemon settings. Previously these were flag
@@ -43,6 +44,7 @@ type daemonOpts struct {
 	configPath string
 	socketPath string
 	ringLines  int
+	ringBytes  int64 // ADR-0007 ring budget; its string flag is read via the resolver
 	sshEnable  bool
 	sshListen  string
 	// webhookListen is the webhook listener address from --webhook-listen or
@@ -53,6 +55,17 @@ type daemonOpts struct {
 	logLevel      string
 	logFile       string
 	detach        bool
+	// compressLogs is `[daemon] compress_logs`: compress sealed logs
+	// (ADR-0007 as amended). Default true.
+	compressLogs bool
+	// memoryLimit is --memory-limit / HARNESS_MEMORY_LIMIT / [daemon]
+	// memory_limit in bytes (0 = off), and memoryLimitSource which of them
+	// supplied it, or settings.SourceDefault when none did and GOMEMLIMIT (if
+	// set) stays in charge. See daemon_memory.go.
+	memoryLimit       int64
+	memoryLimitSource settings.Source
+	// pprofAddr is the loopback pprof listener address; empty is off.
+	pprofAddr string
 }
 
 func newDaemonCmd(g *globalOpts) *cobra.Command {
@@ -73,12 +86,18 @@ func newDaemonCmd(g *globalOpts) *cobra.Command {
 	// Daemon-only flags. --socket, --config and --json come from the root's
 	// persistent set, so they work before or after the subcommand.
 	daemon.PersistentFlags().IntVar(&d.ringLines, "scrollback", attach.DefaultRingLines, "per-harness scrollback ring depth (lines)")
+	daemon.PersistentFlags().String("scrollback-bytes", settings.FormatBytes(attach.DefaultRingBytes), "per-harness scrollback ring storage, e.g. 4MiB (64KiB-1GiB)")
 	daemon.PersistentFlags().BoolVar(&d.sshEnable, "ssh", false, "enable the remote Wish SSH server (ADR-0004; overrides [server] enabled)")
 	daemon.PersistentFlags().StringVar(&d.sshListen, "ssh-listen", "", "SSH bind address host:port (overrides [server] listen)")
 	daemon.PersistentFlags().StringVar(&d.webhookListen, "webhook-listen", "", "webhook listener bind address host:port (SPEC-0014; overrides [server] webhook_listen)")
 	daemon.PersistentFlags().StringVar(&d.logLevel, "log-level", "", "log level: debug, info, warn, error")
 	daemon.PersistentFlags().StringVar(&d.logFile, "log-file", "", "append logs to this file instead of stderr")
+	daemon.PersistentFlags().BoolVar(&d.compressLogs, "compress-logs", true, "compress sealed logs (rotated backups, closed runs' logs) with zstd; --compress-logs=false keeps them plain (overrides [daemon] compress_logs)")
 	daemon.PersistentFlags().BoolVar(&d.detach, "detach", false, "fork into the background; redirect stdio to --log-file (dev convenience; prefer systemd in production)")
+	// Declared for parsing only: the settings ladder reads them back by name
+	// and resolves them into d (resolveDaemonSettings).
+	daemon.PersistentFlags().String("memory-limit", "", "Go soft memory limit, e.g. 2GiB (0 = off; overrides [daemon] memory_limit and GOMEMLIMIT)")
+	daemon.PersistentFlags().String("pprof-addr", "", "serve net/http/pprof on this loopback host:port (overrides [daemon] pprof_addr)")
 
 	// The daemon prints "harness daemon <version>"; Cobra only wires --version
 	// onto the root, so this one is declared explicitly.
@@ -159,6 +178,9 @@ func (d *daemonOpts) childArgs() []string {
 		"--socket", d.socketPath,
 		"--scrollback", strconv.Itoa(d.ringLines),
 	}
+	if d.ringBytes > 0 {
+		args = append(args, "--scrollback-bytes", settings.FormatBytes(d.ringBytes))
+	}
 	if d.sshEnable {
 		args = append(args, "--ssh")
 	}
@@ -173,6 +195,18 @@ func (d *daemonOpts) childArgs() []string {
 	}
 	if d.logFile != "" {
 		args = append(args, "--log-file", d.logFile)
+	}
+	// Always explicit: the resolved value may have come from HARNESS_* or the
+	// file, and the child must not re-resolve it against a different
+	// environment.
+	args = append(args, "--compress-logs="+strconv.FormatBool(d.compressLogs))
+	// Only an explicit limit is passed on. Passing the default would make it
+	// a flag in the child, outranking the GOMEMLIMIT the child inherits.
+	if d.memoryLimitSource != "" && d.memoryLimitSource != settings.SourceDefault {
+		args = append(args, "--memory-limit", settings.FormatBytes(d.memoryLimit))
+	}
+	if d.pprofAddr != "" {
+		args = append(args, "--pprof-addr", d.pprofAddr)
 	}
 	return args
 }

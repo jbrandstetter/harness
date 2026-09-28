@@ -146,6 +146,46 @@ So the "young emulator" risk is real but *instrumented*: we have conformance
 tests, a record/replay fixture harness, width tables, and — as the ultimate
 backstop — `backend = "tmux"`.
 
+### Memory cost of an x/vt emulator (added 2026-09-28)
+
+The option analysis above priced the emulator in robustness and missed its
+price in memory. An `x/vt` emulator (the version pinned in `go.mod`) costs:
+
+- **Parser buffer:** a fixed 4 MiB, allocated up front whatever the
+  emulator's size
+  ([charmbracelet/x#973](https://github.com/charmbracelet/x/issues/973)).
+- **Scrollback:** each of the emulator's two screens keeps a 10,000-row
+  scrollback of 112-byte cells, so a full main-screen scrollback is about
+  85 MiB at 80 columns. `SetScrollbackSize` caps only the main screen and
+  ignores values below 1. The alternate screen's scrollback cannot be capped
+  through the public API.
+- **Reply pump:** the emulator writes query replies into an unbuffered pipe.
+  The goroutine draining it keeps the emulator reachable for as long as it is
+  parked in `Read`. `Emulator.Close` would unpark it, but it races that `Read`
+  on an unsynchronised flag (stump.wtf/harness#142).
+
+The daemon creates two kinds of emulator: one per harness for the attach mux,
+and one per spawn for the log sanitizer (ADR-0007). The sanitizer's pump was
+never stopped, so every spawn left its emulator behind. After a 5 MiB
+stream-json run that was 98 MiB at 80 columns and 247 MiB at 200, plus one
+goroutine, and resident restarts leaked too
+([stump-wtf/harness#18](https://github.com/stump-wtf/harness/issues/18)).
+Nothing in Harness reads emulator scrollback: attach history comes from the
+raw-byte ring (ADR-0007). So the decision now carries three rules, stated as
+SPEC-0002 REQ "Emulator Memory":
+
+- Every emulator Harness creates calls `SetScrollbackSize(1)`. That covers the
+  daemon's sanitizer and mux and the TUI's views.
+- Every emulator's reply pump is released when its owner is done. It is
+  released by closing `InputPipe()`, never with `Emulator.Close`. A reply
+  written after the release fails immediately instead of blocking the writer.
+- An emulator is a screen, never a history store. Anything that must be
+  replayed belongs in the ring or the log.
+
+What remains per live emulator is the parser buffer, two screens, and any
+alternate-screen scrollback a full-screen guest fills. Removing those needs
+upstream changes.
+
 ## Related
 
 ADR-0001 (`x/vt`, `x/xpty` come from the chosen ecosystem), ADR-0002 (daemon owns

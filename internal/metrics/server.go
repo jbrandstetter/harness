@@ -42,6 +42,9 @@ package metrics
 // Governing: ADR-0020, SPEC-0013 REQ-1; ADR-0008; design.md "Listener".
 //
 // @joestump-agent 09/21/2026 - Added for harness#356.
+//
+// @joestump-agent 09/28/2026 - IsLoopback moved to internal/diag, shared with
+// the pprof listener (GitHub https://github.com/stump-wtf/harness/issues/18).
 
 import (
 	"context"
@@ -53,6 +56,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/stump-wtf/harness/internal/diag"
 )
 
 // DefaultPort is the pinned default metrics port; see the header for why.
@@ -109,17 +114,10 @@ func ResolveListener(listen, tokenFile string) (Listener, error) {
 }
 
 // IsLoopback reports whether host names only the loopback interface. An empty
-// host (":10229") binds every interface and is not loopback.
-func IsLoopback(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	if i := strings.IndexByte(host, '%'); i >= 0 {
-		host = host[:i] // an IPv6 zone does not change the address class
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
+// host (":10229") binds every interface and is not loopback. It is
+// diag.IsLoopback, so the metrics listener and the pprof listener (SPEC-0013
+// REQ-8) share one definition of loopback.
+func IsLoopback(host string) bool { return diag.IsLoopback(host) }
 
 // readToken reads and trims a token file. The value never appears in an error.
 func readToken(path string) (token string, loose bool, err error) {

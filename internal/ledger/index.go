@@ -22,10 +22,11 @@ package ledger
 import (
 	"cmp"
 	"errors"
-	"os"
 	"path/filepath"
 	"slices"
 	"time"
+
+	"github.com/stump-wtf/harness/internal/sealedlog"
 )
 
 type key struct {
@@ -298,13 +299,15 @@ func overlay(f, mem *Folded) {
 
 // markPruned sets LogPruned on records whose log has been deleted (REQ-12).
 // Read, not written: keep_runs deletes the file, and the file's absence is the
-// fact, so there is nothing for a line to get wrong.
+// fact, so there is nothing for a line to get wrong. A log compressed once its
+// run closed (<log>.zst; ADR-0007 as amended) is not pruned: only the absence
+// of both forms is.
 func markPruned(out []Folded) {
 	for i := range out {
 		if out[i].Log == "" {
 			continue
 		}
-		if _, err := os.Stat(out[i].Log); errors.Is(err, os.ErrNotExist) {
+		if sealedlog.Missing(out[i].Log) {
 			out[i].LogPruned = true
 		}
 	}

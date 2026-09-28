@@ -17,28 +17,36 @@ package main
 // Operation".
 //
 // @joestump-agent 08/19/2026 - Introduced with the ADR-0016 environment layer.
+//
+// @joestump-agent 09/28/2026 - memory-limit and pprof-addr (GitHub
+// https://github.com/stump-wtf/harness/issues/18); a non-loopback pprof
+// address is refused here, named by its source.
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/stump-wtf/harness/internal/attach"
 	"github.com/stump-wtf/harness/internal/cliui"
 	"github.com/stump-wtf/harness/internal/config"
+	"github.com/stump-wtf/harness/internal/diag"
 	"github.com/stump-wtf/harness/internal/protocol"
 	"github.com/stump-wtf/harness/internal/settings"
 )
 
 // newResolver builds a resolver seeded with the runtime-computed defaults. The
-// socket and config defaults depend on the XDG environment and scrollback comes
-// from the attach package, so none of the three can be a compile-time constant
-// in the registry.
+// socket and config defaults depend on the XDG environment and the scrollback
+// limits come from the attach package, so none of them can be a compile-time
+// constant in the registry.
 func newResolver(cmd *cobra.Command) *settings.Resolver {
 	r := settings.New()
 	r.SetDefault("socket", protocol.DefaultSocketPath())
 	r.SetDefault("config", config.DefaultPath())
 	r.SetDefault("scrollback", attach.DefaultRingLines)
+	r.SetDefault("scrollback-bytes", int64(attach.DefaultRingBytes))
 	if cmd != nil {
 		r.BindFlags(cmd.Flags())
 	}
@@ -99,6 +107,10 @@ func resolveDaemonSettings(cmd *cobra.Command, g *globalOpts, d *daemonOpts) err
 	if err != nil {
 		return err
 	}
+	ringBytes, err := resolveScrollbackBytes(r)
+	if err != nil {
+		return err
+	}
 	sshEnable, err := r.Bool("ssh")
 	if err != nil {
 		return err
@@ -127,14 +139,76 @@ func resolveDaemonSettings(cmd *cobra.Command, g *globalOpts, d *daemonOpts) err
 	if err != nil {
 		return err
 	}
+	compressLogs, err := r.Bool("compress-logs")
+	if err != nil {
+		return err
+	}
+	// The source is kept with the value: an unset limit leaves GOMEMLIMIT in
+	// charge, where an explicit one (even "0") overrides it (daemon_memory.go).
+	memLimit, err := r.Resolve("memory-limit")
+	if err != nil {
+		return err
+	}
+	pprof, err := r.Resolve("pprof-addr")
+	if err != nil {
+		return err
+	}
+	pprofAddr, _ := pprof.Value.(string)
+	if err := diag.CheckPprofAddr(pprofAddr); err != nil {
+		// Named by source, like every other bad value (SPEC-0010 REQ "Error
+		// Handling Standards"), and refused before anything starts.
+		return fmt.Errorf("%s: %w", settingOrigin(pprof), err)
+	}
 
 	d.configPath, d.socketPath = configPath, socket
-	d.ringLines, d.sshEnable, d.sshListen = ring, sshEnable, sshListen
+	d.ringLines, d.ringBytes, d.sshEnable, d.sshListen = ring, ringBytes, sshEnable, sshListen
 	d.webhookListen = webhookListen
 	d.logLevel, d.logFile = logLevel, logFile
+	d.compressLogs = compressLogs
+	d.memoryLimit, _ = memLimit.Value.(int64)
+	d.memoryLimitSource = memLimit.Source
+	d.pprofAddr = strings.TrimSpace(pprofAddr)
 
 	g.configPath, g.socket = configPath, socket
 	return nil
+}
+
+// settingOrigin names where a resolved value came from, spelled the way the
+// operator wrote it: --flag, HARNESS_VAR, or the file key.
+func settingOrigin(r settings.Resolved) string {
+	switch r.Source {
+	case settings.SourceFlag:
+		return "--" + r.Setting.Name
+	case settings.SourceEnv:
+		return r.Setting.Env
+	case settings.SourceFile:
+		return r.Setting.FileKey
+	}
+	return r.Setting.Name
+}
+
+// resolveScrollbackBytes resolves the scrollback ring's byte budget and holds it
+// to the range internal/config holds the file to, naming the source that
+// supplied it (SPEC-0010 REQ "Environment Value Validation"). This runs before
+// the daemon loads its config, so a bad file value stops startup here, named
+// by its key; config.Load would name its line.
+func resolveScrollbackBytes(r *settings.Resolver) (int64, error) {
+	got, err := r.Resolve("scrollback-bytes")
+	if err != nil {
+		return 0, err
+	}
+	n, _ := got.Value.(int64)
+	if err := config.CheckScrollbackBytes(n); err != nil {
+		origin := got.Setting.FileKey
+		switch got.Source {
+		case settings.SourceFlag:
+			origin = "--" + got.Setting.Name
+		case settings.SourceEnv:
+			origin = got.Setting.Env
+		}
+		return 0, fmt.Errorf("%s: %w", origin, err)
+	}
+	return n, nil
 }
 
 // resolveReport returns every setting with its winning source, for `harness

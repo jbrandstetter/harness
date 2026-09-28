@@ -83,40 +83,13 @@ const (
 	// than 12 refuses a project_up or scratchpad definition naming "command"
 	// as an unknown harness kind, so the new field is never silently dropped
 	// into a harness that runs something else.
-	// ProtoMinor 13 added the claude-code one-shot persona keys (SPEC-0018
-	// REQ-11): SystemPromptFile, MCPConfig and AllowedTools on ProjectHarness
-	// and HarnessInfo — additive only. A daemon older than 13 ignores them,
-	// and two of them are restrictions (allowed_tools, --strict-mcp-config),
-	// so the client refuses to send them to one rather than run a persona
-	// with more authority than it declared (see client.ProjectUp).
-	// ProtoMinor 14 added EnvFiles on ProjectHarness, the env_file list form
-	// (SPEC-0018 REQ-12) — additive only. The single-path EnvFile stays and
-	// an older daemon that ignores env_files still serves a one-element list
-	// through it, because the client sets both for that case. A longer list
-	// has no single-path spelling, so the client refuses to send one to a
-	// daemon older than 14 rather than start the harness with no env file
-	// (see client.ProjectUp).
-	// ProtoMinor 15 added operator notification (SPEC-0003 REQ "Operator
-	// Notification", #725): Notify on DaemonInfo and the notify_test op —
-	// additive only. A daemon older than 15 omits Notify, which a client
-	// reports as "unknown" rather than "off", and would answer notify_test
-	// with unknown_op, so the client refuses to send it (see
-	// client.SupportsNotify).
-	// ProtoMinor 16 added MissingPath on RunInfo and the template_unresolved
-	// value of Reason (SPEC-0017 REQ-11: a template_unresolved skip names the
-	// path it lacked) — additive only. A daemon older than 16 never sends
-	// either; a client older than 16 shows the reason without the path.
-	// ProtoMinor 17 added trigger visibility (SPEC-0014 REQ "Trigger
-	// Visibility", #476): the triggers op and TriggerSourceInfo; Triggers on
-	// HarnessInfo and JobInfo; the trigger_source_changed event with Source,
-	// SourceKind, State and Error on EventMsg, and Source on job_run_*;
-	// WebhookAddr and WebhookTLS on DaemonInfo. jobs now lists every
-	// TRIGGERED harness, so an entry may have an empty Schedule and no
-	// NextRun — additive only, since an older client renders an unknown
-	// empty schedule as a harness with no next window. A daemon older than
-	// 17 answers triggers with unknown_op, which the client reports as
-	// "restart the daemon" rather than an empty table.
-	ProtoMinor = 17
+	// ProtoMinor 18 added the pi and omp harness kinds and the command
+	// harness's transcripts binding (SPEC-0017 REQ-4, REQ-13): the "pi" and
+	// "omp" values of the harness enum, and Transcripts on ProjectHarness and
+	// HarnessInfo — additive only. A daemon older than 18 refuses a
+	// definition naming "pi" or "omp" as an unknown kind; one that drops
+	// Transcripts runs the same argv, unobserved.
+	ProtoMinor = 18
 )
 
 // ProtoVersion is the "major.minor" string carried in HELLO.
@@ -199,6 +172,13 @@ const (
 	// last event and error, its counters and the harnesses it fires.
 	// Governing: ADR-0021, SPEC-0014 REQ "Trigger Visibility".
 	OpTriggers Op = "triggers"
+
+	// OpSkillsSynced reports which serving clones `harness skills sync`
+	// created or fast-forwarded, so the daemon reindexes them (SPEC-0007 REQ
+	// "Default-Branch Gate"). OpSkillsStatus returns each skill repo's
+	// serving state for `harness doctor`.
+	OpSkillsSynced Op = "skills_synced"
+	OpSkillsStatus Op = "skills_status"
 )
 
 // ControlReq is a control-plane request. ID correlates the response; Name
@@ -233,6 +213,9 @@ type ControlReq struct {
 	// log, and the events view uses the run record's exact window, overriding
 	// Since/Until. Zero means the harness-wide behavior.
 	Run int `json:"run,omitempty"`
+	// Names carries the skill repo names a skills_synced report covers
+	// (SPEC-0007 REQ "Default-Branch Gate").
+	Names []string `json:"names,omitempty"`
 	// Limit caps the records runs returns, newest first. Zero means 20.
 	Limit int `json:"limit,omitempty"`
 
@@ -262,14 +245,17 @@ type ControlReq struct {
 type ProjectHarness struct {
 	Name string `json:"name"`
 	// Harness is the harness-kind enum ("crush", "claude-code", "codex",
-	// "generic", "command"); required, and re-validated by the daemon. It
-	// selects the adapter and the executable (ADR-0011).
+	// "pi", "omp", "generic", "command"); required, and re-validated by the
+	// daemon. It selects the adapter and the executable (ADR-0011).
 	Harness string   `json:"harness,omitempty"`
 	Args    []string `json:"args,omitempty"`
 	// Argv is a "command" harness's whole process, argv[0] first, carried
 	// verbatim and re-validated by the daemon (SPEC-0017 REQ-2, REQ-14).
 	// Set only with Harness = "command", which takes no Args.
 	Argv []string `json:"argv,omitempty"`
+	// Transcripts is a "command" harness's transcript binding (SPEC-0017
+	// REQ-4), re-validated by the daemon. Set only with Harness = "command".
+	Transcripts string `json:"transcripts,omitempty"`
 	// Prompt mirrors the schema's agent one-shot `prompt`: exactly one of
 	// harness/prompt defines the argv, and a prompt harness carries empty
 	// args — the daemon synthesizes its argv at spawn time (ADR-0011).
@@ -342,6 +328,22 @@ type ControlResp struct {
 	Data json.RawMessage `json:"data,omitempty"`
 }
 
+// SkillRepoStatus is one skill repo's serving state: the default-branch-gate
+// result, the indexed skill count, and reindex warnings naming malformed
+// files (SPEC-0007 REQ "Default-Branch Gate", REQ "Error Handling Standards").
+type SkillRepoStatus struct {
+	Name     string   `json:"name"`
+	State    string   `json:"state"`
+	Detail   string   `json:"detail,omitempty"`
+	Skills   int      `json:"skills"`
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+// SkillsStatusData is the skills_status response.
+type SkillsStatusData struct {
+	Repos []SkillRepoStatus `json:"repos"`
+}
+
 // HarnessInfo is one harness's state for list/describe (SPEC-0003 fields; the
 // glyph is derived client-side from State). It is the JSON projection of a
 // supervisor.Snapshot plus the config-derived Cmd/Backend/Description.
@@ -384,6 +386,11 @@ type HarnessInfo struct {
 	// as exec'd: `describe` shows it so an operator can see what runs
 	// (SPEC-0017 REQ-16).
 	Argv []string `json:"argv,omitempty"`
+	// Transcripts is a "command" harness's transcript binding (SPEC-0017
+	// REQ-4). It is on the wire for the same reason Workdir is: a client
+	// correlating a session back to its harness must treat a bound command
+	// harness as the agent it names, not as an arbitrary command.
+	Transcripts string `json:"transcripts,omitempty"`
 	// LastStarted / LastExitAt (RFC 3339) bound the harness's latest run, so a
 	// client can attribute a session to the harness whose run covers it, not
 	// merely to one sharing its workdir (SPEC-0006 REQ "Run Correlation";

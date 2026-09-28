@@ -17,10 +17,10 @@ package supervisor
 import (
 	"bufio"
 	"bytes"
-	"io"
-	"os"
 	"regexp"
 	"strings"
+
+	"github.com/stump-wtf/harness/internal/sealedlog"
 )
 
 // lastLineWindow is how much of the log's tail is read. The line wanted sits
@@ -40,25 +40,17 @@ var daemonLine = regexp.MustCompile(`^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} (?:DEB
 // LastOutputLine returns the last non-blank line of the log at path that the
 // harnessed program printed, trimmed and capped, or "" when there is none (no
 // log, an empty one, or only daemon lines in its tail).
+//
+// path may name a sealed run log that has since been compressed (ADR-0007 as
+// amended): a failed run's log is queued for compression the moment it closes,
+// which is the moment this is asked for it. internal/sealedlog reads whichever
+// form is there, streaming a compressed one through the same window.
 func LastOutputLine(path string) string {
-	f, err := os.Open(path)
+	buf, cut, err := sealedlog.Tail(path, lastLineWindow)
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return ""
-	}
-	off := info.Size() - lastLineWindow
-	if off < 0 {
-		off = 0
-	}
-	buf, err := io.ReadAll(io.NewSectionReader(f, off, info.Size()-off))
-	if err != nil {
-		return ""
-	}
-	if off > 0 {
+	if cut {
 		// The window almost certainly starts mid-line; drop the fragment.
 		if i := bytes.IndexByte(buf, '\n'); i >= 0 {
 			buf = buf[i+1:]

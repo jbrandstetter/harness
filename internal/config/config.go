@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -96,6 +97,11 @@ type rawHarness struct {
 	HoursShutdown        *string `toml:"hours_shutdown"`
 	HoursShutdownTimeout *string `toml:"hours_shutdown_timeout"`
 
+	// Transcripts binds a `command` harness to an adapter's trajectory
+	// discovery and observer attribution (SPEC-0017 REQ-4); rejected on every
+	// other kind.
+	Transcripts string `toml:"transcripts"`
+
 	// Removed keys, still decoded so their presence can be REJECTED with a
 	// migration error. TOML decoding here ignores unknown keys, so deleting
 	// these fields outright would make a pre-enum config load clean and then
@@ -143,12 +149,34 @@ type rawProfile struct {
 }
 
 // rawDaemon mirrors the [daemon] table before validation.
+//
+// Socket, LogLevel, LogFile, Scrollback, ScrollbackBytes, CompressLogs,
+// MemoryLimit and PprofAddr are process settings: their value is owned by
+// internal/settings, which resolves them flag > env > file > default
+// (ADR-0016). They are decoded here only so checkUndecoded accepts them and a
+// bad value fails with its line number. Without these fields the strict decode
+// refused every one of them as an unknown key, so the file layer the settings
+// registry promises for them could never be reached (GitHub
+// stump-wtf/harness#19). CompressLogs is ADR-0007's sealed-log compression,
+// and MemoryLimit and PprofAddr the daemon memory guardrails (GitHub
+// https://github.com/stump-wtf/harness/issues/18).
 type rawDaemon struct {
-	WatchConfig *bool `toml:"watch_config"`
+	WatchConfig *bool   `toml:"watch_config"`
+	Socket      *string `toml:"socket"`
+	LogLevel    *string `toml:"log_level"`
+	LogFile     *string `toml:"log_file"`
+	Scrollback  *int    `toml:"scrollback"`
+	// ScrollbackBytes is a TOML integer (bytes) or a size string ("4MiB").
+	ScrollbackBytes any   `toml:"scrollback_bytes"`
+	CompressLogs    *bool `toml:"compress_logs"`
 	// RemovedOTelEndpoint is decoded only so its presence can be REJECTED
 	// with a migration error (SPEC-0015 REQ-13), like rawHarness's removed
 	// keys: unknown keys fail anyway, but this one deserves the way forward.
 	RemovedOTelEndpoint *string `toml:"otel_endpoint"`
+
+	// MemoryLimit is untyped: a size string ("2GiB") or an integer of bytes.
+	MemoryLimit any     `toml:"memory_limit"`
+	PprofAddr   *string `toml:"pprof_addr"`
 }
 
 // rawServer mirrors the [server] table before validation (ADR-0004/0008 remote
@@ -257,7 +285,7 @@ func Parse(data []byte, filename string) (*core.Config, error) {
 
 	// Decode the [harness.*], [profile.*] and trigger-source namespaces
 	// lazily.
-	var harnessNS, profileNS, channelNS, webhookNS map[string]toml.Primitive
+	var harnessNS, profileNS, channelNS, webhookNS, skillRepoNS map[string]toml.Primitive
 	if p, ok := top["harness"]; ok {
 		if err := md.PrimitiveDecode(p, &harnessNS); err != nil {
 			return nil, newError(filename, lineOf(headers, "harness"), "[harness]: %v", err)
@@ -278,6 +306,11 @@ func Parse(data []byte, filename string) (*core.Config, error) {
 			return nil, newError(filename, lineOf(headers, "webhook"), "[webhook]: %v", err)
 		}
 	}
+	if p, ok := top["skill_repo"]; ok {
+		if err := md.PrimitiveDecode(p, &skillRepoNS); err != nil {
+			return nil, newError(filename, lineOf(headers, "skill_repo"), "[skill_repo]: %v", err)
+		}
+	}
 
 	cfg := &core.Config{
 		Harnesses:  map[string]core.Harness{},
@@ -292,7 +325,7 @@ func Parse(data []byte, filename string) (*core.Config, error) {
 		line    int
 	}
 	var pending []pendingProfile
-	var serverSeen, daemonSeen, telemetrySeen, mergeTrainSeen, ledgerSeen, notifySeen bool
+	var serverSeen, daemonSeen, telemetrySeen, mergeTrainSeen, ledgerSeen, notifySeen, skillsSeen bool
 	var harnessDPath string
 
 	// Sources and the harnesses that bind them form one config view across
@@ -349,6 +382,9 @@ func Parse(data []byte, filename string) (*core.Config, error) {
 			}
 			if rd.RemovedOTelEndpoint != nil {
 				return nil, removedOTelEndpointErr(filename, lineOfKeyInTable(data, "daemon", "otel_endpoint"))
+			}
+			if err := checkDaemonSettings(filename, data, rd); err != nil {
+				return nil, err
 			}
 			cfg.Daemon = core.DaemonConfig{WatchConfig: rd.WatchConfig}
 
@@ -418,6 +454,33 @@ func Parse(data []byte, filename string) (*core.Config, error) {
 				return nil, err
 			}
 			cfg.Notify = nc
+
+		case len(h.parts) == 2 && h.parts[0] == "skill_repo":
+			// A declared skill repo (SPEC-0007 REQ "Skill Repos").
+			name := h.parts[1]
+			var rr rawSkillRepo
+			if err := md.PrimitiveDecode(skillRepoNS[name], &rr); err != nil {
+				return nil, newError(filename, h.line, "[skill_repo.%s]: %v", name, err)
+			}
+			if err := addSkillRepo(cfg, filename, name, h.line, rr); err != nil {
+				return nil, err
+			}
+
+		case len(h.parts) == 1 && h.parts[0] == "skills":
+			// The global skill serving table (SPEC-0007 REQ "Skill Repos").
+			if skillsSeen {
+				return nil, newError(filename, h.line, "duplicate [skills] table")
+			}
+			skillsSeen = true
+			var rs rawSkills
+			if err := md.PrimitiveDecode(top["skills"], &rs); err != nil {
+				return nil, newError(filename, h.line, "[skills]: %v", err)
+			}
+			sc, err := buildSkills(filename, h.line, rs)
+			if err != nil {
+				return nil, err
+			}
+			cfg.Skills = sc
 
 		case len(h.parts) == 1 && h.parts[0] == "server":
 			// The optional remote-access front door (ADR-0004/0008).
@@ -599,7 +662,7 @@ func registerHarness(cfg *core.Config, filename, name string, line int, rh rawHa
 	// other error message would be a red herring.
 	if strings.TrimSpace(rh.RemovedCmd) != "" {
 		return newError(filename, line,
-			"harness %q: \"cmd\" was replaced by the \"harness\" enum — set harness = \"crush\"|\"claude-code\"|\"codex\" for an agent, or harness = \"command\" with argv = [%q, …] to run an arbitrary program",
+			"harness %q: \"cmd\" was replaced by the \"harness\" enum — set harness = \"crush\"|\"claude-code\"|\"codex\"|\"pi\"|\"omp\" for an agent, or harness = \"command\" with argv = [%q, …] to run an arbitrary program",
 			name, strings.TrimSpace(rh.RemovedCmd))
 	}
 	if strings.TrimSpace(rh.RemovedAgent) != "" {
@@ -621,17 +684,15 @@ func registerHarness(cfg *core.Config, filename, name string, line int, rh rawHa
 	switch {
 	case rh.Harness == "":
 		return newError(filename, line,
-			"harness %q: missing required key \"harness\" (want one of: crush, claude-code, codex, generic, command — use \"command\" with argv = [\"…\"] for an arbitrary program)",
-			name)
+			"harness %q: missing required key \"harness\" (want one of: %s — use \"command\" with argv = [\"…\"] for an arbitrary program)",
+			name, strings.Join(core.HarnessKinds, ", "))
 	case adapter == "":
 		return newError(filename, line, "harness %q: \"harness\" must not be blank", name)
 	}
-	switch adapter {
-	case "crush", "claude-code", "codex", "generic", core.AdapterCommand:
-	default:
+	if !slices.Contains(core.HarnessKinds, adapter) {
 		return newError(filename, line,
-			"harness %q: unknown harness kind %q (want one of: crush, claude-code, codex, generic, command)",
-			name, adapter)
+			"harness %q: unknown harness kind %q (want one of: %s)",
+			name, adapter, strings.Join(core.HarnessKinds, ", "))
 	}
 	// `generic` runs sh; it has no prompt synthesis. It used to borrow
 	// Crush's, so an operator whose CLI was not in the list wrote `generic` +
@@ -643,7 +704,7 @@ func registerHarness(cfg *core.Config, filename, name string, line int, rh rawHa
 		for _, k := range []struct{ key, val string }{{"prompt", rh.Prompt}, {"prompt_file", rh.PromptFile}} {
 			if k.val != "" {
 				return newError(filename, line,
-					"harness %q: \"generic\" runs sh and has no prompt synthesis, so it takes no %q; use harness = \"crush\"|\"claude-code\"|\"codex\" for a prompt one-shot, or harness = \"command\" with argv to run another program without a shell",
+					"harness %q: \"generic\" runs sh and has no prompt synthesis, so it takes no %q; use harness = \"crush\"|\"claude-code\"|\"codex\"|\"pi\"|\"omp\" for a prompt one-shot, or harness = \"command\" with argv to run another program without a shell",
 					name, k.key)
 			}
 		}
@@ -656,6 +717,12 @@ func registerHarness(cfg *core.Config, filename, name string, line int, rh rawHa
 			kind = tmpl.ErrGrammar
 		}
 		return newSentinelError(filename, line, kind, "harness %q: %v", name, err)
+	}
+	// `transcripts` binds a command harness's hand-built agent argv to that
+	// agent's transcripts; an adapter kind binds its own, so it is refused
+	// there. Governing: ADR-0023, SPEC-0017 REQ-4 "Transcript Binding".
+	if err := core.CheckTranscripts(adapter, rh.Transcripts); err != nil {
+		return newError(filename, line, "harness %q: %v", name, err)
 	}
 	prompt := strings.TrimSpace(rh.Prompt)
 	switch {
@@ -1176,6 +1243,7 @@ func registerHarness(cfg *core.Config, filename, name string, line int, rh rawHa
 		Adapter:          adapter,
 		Args:             rh.Args,
 		Argv:             rh.Argv,
+		Transcripts:      rh.Transcripts,
 		AutoAccept:       autoAccept,
 		MaxTurns:         maxTurns,
 		Model:            model,

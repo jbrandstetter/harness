@@ -43,6 +43,15 @@ import (
 	"github.com/stump-wtf/harness/internal/trigger/source"
 )
 
+// daemonAttachRegistry is the attach data plane the daemon actually runs with:
+// each harness's scrollback ring bounded by the resolved --scrollback lines and
+// --scrollback-bytes budget (ADR-0007). A function, like daemonManagerOptions
+// below, so a test can check the limits the daemon builds rather than ones it
+// constructs itself.
+func daemonAttachRegistry(o daemonOpts) *attach.Registry {
+	return attach.NewRegistryLimits(attach.RingLimits{Lines: o.ringLines, Bytes: int(o.ringBytes)})
+}
+
 // daemonManagerOptions is the ManagerOptions the daemon actually runs with.
 //
 // It is a function rather than a literal at the call site so a test can assert
@@ -71,6 +80,19 @@ func daemonManagerOptions(reg *attach.Registry) supervisor.ManagerOptions {
 		// the size of that client's viewport, not 80×24 (ADR-0003).
 		SizeFor: reg.SizeFor,
 	}
+}
+
+// daemonManagerOptionsFor is daemonManagerOptions plus what the resolved
+// daemon settings decide: whether sealed logs are compressed (`[daemon]
+// compress_logs`, default true; ADR-0007 as amended). runDaemon builds its
+// Manager from exactly this, so TestDaemonCompressesLogsByDefault resolves the
+// settings the way a bare `harness daemon` does and asserts on the result.
+// daemonManagerOptions itself leaves compression off, because the wiring
+// tests that share it read per-run logs by path.
+func daemonManagerOptionsFor(reg *attach.Registry, o daemonOpts) supervisor.ManagerOptions {
+	opts := daemonManagerOptions(reg)
+	opts.CompressLogs = o.compressLogs
+	return opts
 }
 
 // daemonObserverOptions is the agent event observer configuration the daemon
@@ -238,6 +260,11 @@ func runDaemon(o daemonOpts) {
 
 	configureDaemonLogger(o.logLevel, o.logFile)
 
+	// GitHub https://github.com/stump-wtf/harness/issues/18: the Go soft
+	// memory limit, before anything allocates in earnest. Off unless set;
+	// GOMEMLIMIT stays in charge when no harness setting names one.
+	applyDaemonMemoryLimit(o.memoryLimit, o.memoryLimitSource, os.Getenv)
+
 	// Refuse a live socket BEFORE anything with side effects runs. Listen
 	// probes again below, but by then Restore and Autostart have started this
 	// daemon's copies of the live daemon's harnesses, and the mgr.Close on
@@ -281,6 +308,11 @@ func runDaemon(o daemonOpts) {
 		os.Exit(1)
 	}
 
+	// SPEC-0013 REQ-8: opt-in pprof, loopback only (a non-loopback address
+	// was refused with the other settings). Bound after the refusals above,
+	// and stopped last, after the Manager.
+	pprofSrv := startDaemonPprof(o.pprofAddr)
+
 	// ADR-0032: the merge train, only when [mergetrain] enabled = true. Its
 	// preconditions (the token variable) are checked here, before any harness
 	// starts, so a train that cannot run refuses the start instead of
@@ -297,8 +329,8 @@ func runDaemon(o daemonOpts) {
 	// into its Mux via the ExtraOut hook, alongside the durable log (ADR-0003/
 	// ADR-0007). The Registry's controller (the Manager) applies the
 	// smallest-attached-wins resize and delivers read-write keystrokes.
-	reg := attach.NewRegistry(o.ringLines)
-	mgr := supervisor.NewManager(cfg, daemonManagerOptions(reg))
+	reg := daemonAttachRegistry(o)
+	mgr := supervisor.NewManager(cfg, daemonManagerOptionsFor(reg, o))
 	reg.SetController(mgr)
 
 	// The [notify] hook (SPEC-0003 REQ "Operator Notification", #725):
@@ -349,6 +381,10 @@ func runDaemon(o daemonOpts) {
 	// live config per firing, so a reload's change to a harness's `triggers`
 	// applies from the next event (REQ "Source Reconciliation On Reload").
 	sources := startDaemonSources(mgr, nil)
+	// Issue #480: the harness_trigger_* families read this manager's states
+	// and the counters it shares with the webhook listener (SPEC-0014 REQ
+	// "Trigger Metrics").
+	daemonMet.attachTriggers(sources)
 	// After startDaemonScheduler, which registered its own hook: this
 	// composes onto it rather than replacing it (see wireSourceReload).
 	wireSourceReload(mgr, sources)
@@ -382,6 +418,15 @@ func runDaemon(o daemonOpts) {
 	// REQ "Trigger Visibility"). Here, not at startDaemonSources: the
 	// server that broadcasts them does not exist until now.
 	wireTriggerVisibility(srv, sources, webhooks)
+
+	// SPEC-0007: index the serving clones of declared skill repos. Created or
+	// fast-forwarded only by `harness skills sync`; the daemon never writes a
+	// clone. Also refreshed on every config reload (skills.go).
+	go func() {
+		if err := srv.SyncSkillsManager(); err != nil {
+			log.Warn("skill serving index unavailable; searches stay empty until it is rebuilt", "err", err)
+		}
+	}()
 
 	log.Info("serving",
 		"socket", srv.SocketPath(),
@@ -520,6 +565,7 @@ func runDaemon(o daemonOpts) {
 	}
 	srv.Close()
 	mgr.Close()
+	stopDaemonPprof(pprofSrv)
 	<-telemetryDone
 }
 

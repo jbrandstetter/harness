@@ -14,6 +14,30 @@
 # # and auto-reloads. Default is true (on). Set to false to require an
 # # explicit `harness reload` or SIGHUP after config changes.
 # watch_config = true
+# # Process settings. A --flag or HARNESS_* variable beats each of these, and
+# # each is read at daemon start, so a change needs a restart, not a reload.
+# # Paths must be absolute. See docs/usage/configuration.md.
+# scrollback_bytes = "1MiB"                 # per-harness scrollback ring storage, 64KiB-1GiB
+# scrollback = 10000                        # and at most this many lines of it
+# log_level = "info"                        # debug, info, warn, error
+# log_file = "/var/log/harness.log"         # absent = stderr
+# socket = "/run/harness/harness.sock"      # absent = $XDG_RUNTIME_DIR/harness.sock
+# # compress_logs zstd-compresses sealed logs: each rotated backup of a
+# # harness's log (logs/NAME-STAMP.log.zst) and each closed run's log and raw
+# # stream (jobs/NAME/RUN_ID.log.zst). Active logs, and the log of a run still
+# # going, stay plain. Read a compressed log with `harness logs` or
+# # `zstd -dc FILE.zst`. Set false to keep every log plain.
+# compress_logs = true                      # default true
+# # Memory guardrails (both off by default). memory_limit is the Go runtime's
+# # SOFT limit: it makes the GC work harder near it, but cannot free a leak.
+# # Keep a hard cap too (systemd MemoryMax=, a container limit); that cap
+# # usually covers the agents as well, so size this for the daemon alone.
+# # Sizes are 1024-based ("2GiB", "512MiB"); a bare number is bytes; 0 = off.
+# # Unset, GOMEMLIMIT from the environment applies; set, it overrides it.
+# # pprof_addr serves net/http/pprof and binds loopback only (127.0.0.1, ::1,
+# # localhost); anything else is refused. Tunnel to it from other hosts.
+# memory_limit = "2GiB"
+# pprof_addr = "127.0.0.1:6060"
 
 # Optional agent telemetry export (ADR-0022, SPEC-0015). Nothing leaves the
 # daemon unless a destination below is on AND a harness is opted in with
@@ -71,7 +95,8 @@ enabled = false
 # An agent one-shot: give the harness a prompt instead of args and the
 # daemon synthesizes the agent invocation at spawn time from the harness's
 # adapter (claude-code: `claude -p … <prompt>`; crush: `crush run … <prompt>`;
-# codex: `codex exec … <prompt>`). `prompt` is mutually exclusive with
+# codex: `codex exec … <prompt>`; pi and omp: `pi --print … <prompt>`, `omp
+# --print … <prompt>`). `prompt` is mutually exclusive with
 # `args`. One-shots default to restart = "no" — a completed run must
 # not respawn; set restart explicitly to opt back into supervision.
 [harness.deploy-check]
@@ -80,14 +105,15 @@ prompt = "check the deployments and report anything unhealthy"
 model = "claude-opus-5"  # optional: which model the agent runs (requires prompt)
 # auto_accept runs the agent unattended (the adapter's own flag, synthesized at
 # spawn: --dangerously-skip-permissions for claude-code, --yolo for crush,
-# --full-auto for codex). WARNING: this bypasses ALL of the agent's permission
+# --full-auto for codex; nothing for pi and omp, which never prompt). WARNING:
+# this bypasses ALL of the agent's permission
 # prompts — only enable it for trusted, headless runs. Requires `prompt`; a
 # long-running harness passes its tool's own flag through `args` instead.
 auto_accept = true
 # max_turns caps how many iterations the agent may run before it stops — the
 # budget guard for unattended one-shots (requires `prompt`; a long-running harness
 # passes its tool's flag through `args`). 0 or omitted means unlimited. Only the
-# claude-code adapter has a turn-cap flag; crush and codex ignore this key.
+# claude-code adapter has a turn-cap flag; crush, codex, pi and omp ignore it.
 max_turns = 20
 # quiet runs the one-shot headless (suppresses agent output). It is the
 # default for a prompt harness, so set quiet = false to have the agent stream
@@ -174,8 +200,12 @@ enabled = false
 # harness.workdir, model, run.id, run.trigger, run.source, run.started_at and
 # run.date, and never event text. Each element renders to exactly one
 # argument. `model` is accepted only when an element references {{model}}.
-# This is also how Pi, OMP or another unlisted agent CLI runs.
-# Valid values: "crush", "claude-code", "codex", "generic", "command".
+# This is also how an unlisted agent CLI runs: `transcripts = "claude-code"`
+# (or crush, codex, pi, omp) on a command harness observes its sessions as
+# that agent's. Pi and OMP have adapters of their own ("pi", "omp"); both
+# are observed.
+# Valid values: "crush", "claude-code", "codex", "pi", "omp", "generic",
+# "command".
 #
 # harness = "claude-code"   # required on every [harness.*] table
 #
@@ -184,6 +214,12 @@ enabled = false
 # argv = ["/usr/local/bin/report", "--listen", ":8080", "--title", "Nightly report"]
 # workdir = "~/src/report"
 # enabled = true
+#
+# [harness.claude-by-hand]
+# harness = "command"
+# argv = ["claude", "--remote-control", "--continue"]
+# transcripts = "claude-code"
+# workdir = "~/src/app"
 #
 # [harness.nightly-report]
 # harness = "command"
@@ -270,7 +306,8 @@ description = "switchboard doorbells for my-agent"
 # `verify` picks the authentication scheme: bearer, hmac-sha256, github,
 # gitea, gitlab or standard-webhooks. The four presets fix their own header
 # names, so setting signature_header/event_header alongside one is an error
-# rather than a silently ignored override.
+# rather than a silently ignored override. standard-webhooks is accepted but
+# not verified yet: its route answers every delivery 401 until it is.
 #
 # `secret` must be exactly one ${NAME} reference — a literal is refused,
 # because harness.toml is routinely committed to a dotfiles repository.
@@ -376,3 +413,22 @@ autostart = true
 #
 # metrics_listen = "127.0.0.1:10229"
 # metrics_token_file = "~/.config/harness/metrics.token"
+
+# Skill serving (SPEC-0007, ADR-0030). Global-only tables: a project
+# harness.toml is refused them. With no [skill_repo.*] declared, the skill
+# tools are not registered and no index file is created.
+#
+# `harness skills sync` creates and fast-forwards each serving clone at
+# $XDG_STATE_HOME/harness/skills/<name>; the daemon indexes only the clone's
+# default branch and never writes a clone itself.
+#
+# [skills]
+# summary_max_chars  = 1000
+# retire_grace_days  = 30
+# retire_window_days = 60
+#
+# [skill_repo.go-stack]
+# remote   = "https://git.example.com/your-org/go-skills.git"
+# public   = false                    # unset is treated as public
+# path     = "skills"                 # where skills live inside the repo
+# serve_to = ["*"]                    # the bare star matches every harness

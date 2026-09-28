@@ -122,3 +122,18 @@ func TestVTViewCursorVisibilityTracksEmulator(t *testing.T) {
 		})
 	}
 }
+
+// TestVTViewKeepsNoScrollback: nothing in the TUI reads the view emulator's
+// scrollback, so it must not keep x/vt's default 10,000 rows (~85 MiB at 80
+// columns) per view — including across the RIS a reset sends on every hop
+// (SPEC-0002 REQ "Emulator Memory", client-side).
+func TestVTViewKeepsNoScrollback(t *testing.T) {
+	v := newVTView(80, 24)
+	v.reset(80, 24)
+	for i := 0; i < 60; i++ {
+		v.write([]byte("a line long enough to occupy most of the eighty column screen width\r\n"))
+	}
+	if n := v.term.ScrollbackLen(); n > 1 {
+		t.Fatalf("view emulator holds %d scrollback rows after 60 lines; want at most 1", n)
+	}
+}

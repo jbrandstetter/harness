@@ -5,10 +5,11 @@ package attach
 // session) and REQ "Backpressure Isolation" (the PTY reader MUST NOT block on
 // any client; bounded per-session queues; overflow coalesces to a fresh
 // snapshot); ADR-0003 (one x/vt emulator per harness; resize policy); ADR-0007
-// (ring + backpressure); ADR-0008 (read-only attach).
+// (byte-bounded ring + backpressure); ADR-0008 (read-only attach).
 
 import (
 	"bytes"
+	"io"
 	"sort"
 	"sync"
 	"time"
@@ -32,6 +33,11 @@ const (
 // modest: a client that falls this far behind is better served by one repaint
 // than a long backlog.
 const queueCap = 256
+
+// A fresh session's queue must hold the snapshot plus a full scrollback replay,
+// or Attach itself would trip the coalescing meant for slow clients and drop
+// the tail it just queued. This fails to compile if the two drift apart.
+var _ [queueCap - 1 - maxTailFrames]struct{}
 
 // The bracketed-paste brackets a client wraps a paste in (DECSET ?2004).
 var (
@@ -79,11 +85,18 @@ type Mux struct {
 	cols, rows int
 }
 
-// newMux builds a Mux for a harness. onResize is invoked when the
-// smallest-attached-wins size changes (to resize the real PTY); onInput
-// delivers read-write attach keystrokes to the PTY; onNudge re-delivers
-// SIGWINCH to the guest's process group (see reassertWinch). Any may be nil.
+// newMux builds a Mux whose ring keeps up to ringLines lines within the default
+// byte budget; see newMuxLimits.
 func newMux(name string, ringLines int, onResize func(cols, rows int), onInput func(p []byte), onNudge func()) *Mux {
+	return newMuxLimits(name, RingLimits{Lines: ringLines}, onResize, onInput, onNudge)
+}
+
+// newMuxLimits builds a Mux for a harness, its scrollback ring bounded by lim.
+// onResize is invoked when the smallest-attached-wins size changes (to resize
+// the real PTY); onInput delivers read-write attach keystrokes to the PTY;
+// onNudge re-delivers SIGWINCH to the guest's process group (see
+// reassertWinch). Any may be nil.
+func newMuxLimits(name string, lim RingLimits, onResize func(cols, rows int), onInput func(p []byte), onNudge func()) *Mux {
 	m := &Mux{
 		name:     name,
 		onResize: onResize,
@@ -97,12 +110,18 @@ func newMux(name string, ringLines int, onResize func(cols, rows int), onInput f
 		// an intermittent one, since it depends on which goroutines are still
 		// asleep).
 		nudgeDelays: winchNudgeDelays,
-		term:        vt.NewEmulator(defaultCols, defaultRows),
-		ring:        newRing(ringLines),
+		term:        newEmulator(defaultCols, defaultRows),
+		ring:        newRing(lim),
 		cols:        defaultCols,
 		rows:        defaultRows,
 		sessions:    make(map[*Session]struct{}),
 	}
+	// Nothing reads this emulator's scrollback: attach replays history from
+	// the raw-byte ring, and a snapshot renders only the screen. x/vt's
+	// default keeps 10,000 rows of 112-byte cells, ~85 MiB per harness at 80
+	// columns, so cap it (x/vt's minimum is 1; the alternate screen has no
+	// public knob). Governing: SPEC-0002 REQ "Emulator Memory".
+	m.term.SetScrollbackSize(1)
 	// Shadow the guest's bracketed-paste mode. Only the emulator on THIS side
 	// ever sees the guest's ?2004h: a client attaches to a screen snapshot
 	// (renderScreen emits cells, cursor and SGR — no modes), so a client-side
@@ -145,10 +164,10 @@ func newMux(name string, ringLines int, onResize func(cols, rows int), onInput f
 // with the OS process still alive — invisible to a liveness check like
 // `harness list` (stump.wtf/harness#142).
 //
-// Runs for the Mux's lifetime — nothing currently calls Close on the
-// emulator (Registry.Remove deliberately doesn't; see its doc comment), so in
-// practice this loop never returns. Accepted: unlike the deadlock it fixes,
-// the cost is one parked goroutine per Mux, not a frozen production agent.
+// Runs until Registry.Remove drops the Mux and calls releaseReplies, which
+// closes the emulator's input pipe so the Read below returns EOF. Before
+// that existed the loop never returned, and every Mux ever removed stayed
+// reachable through its parked goroutine.
 func (m *Mux) pumpReplies() {
 	buf := make([]byte, 4096)
 	for {
@@ -159,6 +178,20 @@ func (m *Mux) pumpReplies() {
 		if err != nil {
 			return
 		}
+	}
+}
+
+// releaseReplies ends pumpReplies by closing the emulator's input pipe: the
+// pump's parked Read returns EOF, and a reply the emulator synthesizes later
+// fails at once instead of blocking Write. It deliberately avoids
+// Emulator.Close, whose unsynchronised `closed` flag races the parked Read
+// (stump.wtf/harness#142). No lock is needed: m.term is never reassigned, and
+// io.Pipe is safe to close from any goroutine. Safe to call more than once.
+//
+// Governing: SPEC-0002 REQ "Emulator Memory"; ADR-0003.
+func (m *Mux) releaseReplies() {
+	if c, ok := m.term.InputPipe().(io.Closer); ok {
+		_ = c.Close()
 	}
 }
 
@@ -282,11 +315,21 @@ func (m *Mux) Write(p []byte) (int, error) {
 
 // Attach opens a new session (SPEC-0002 REQ "Attach Session"). It queues, in
 // order and before any live byte can reach this session, the current screen
-// snapshot then a bounded scrollback tail, then joins the live fan-out — all
-// under mu, so no Write can interleave a live chunk ahead of the snapshot. That
-// is the "full screen snapshot before any live bytes" guarantee. write sends one
-// ATTACH_DATA payload to the client; it may block (a slow client), which is
-// precisely what triggers coalescing without ever stalling Write.
+// snapshot then the scrollback tail, then joins the live fan-out — all under
+// mu, so no Write can interleave a live chunk ahead of the snapshot or the
+// tail. That is the "full screen snapshot before any live bytes" guarantee.
+// write sends one ATTACH_DATA payload to the client; it may block (a slow
+// client), which is precisely what triggers coalescing without ever stalling
+// Write.
+//
+// The tail is queued as views into the ring's storage, at most one storage
+// chunk each (ring.tailFrames), never as one copy of the whole ring. The copy
+// cost a ring-sized allocation per attach, and a tail past 16 MiB could not be
+// sent at all: it exceeded protocol.MaxFrameSize, the write failed, and the
+// session tore itself down straight after the snapshot. The frames share the
+// session's bounded queue with live output, so a client too slow to take them
+// is coalesced to a fresh snapshot like any other (SPEC-0002 REQ "Backpressure
+// Isolation").
 func (m *Mux) Attach(id uint32, mode protocol.AttachMode, cols, rows int, write func([]byte) error) *Session {
 	s := &Session{
 		id:        id,
@@ -301,8 +344,8 @@ func (m *Mux) Attach(id uint32, mode protocol.AttachMode, cols, rows int, write 
 	}
 	m.mu.Lock()
 	s.enqueueLocked(renderScreen(m.term)) // 1. screen snapshot
-	if tail := m.ring.Tail(); len(tail) > 0 {
-		s.enqueueLocked(tail) // 2. bounded scrollback tail
+	for _, f := range m.ring.tailFrames() {
+		s.enqueueLocked(f) // 2. scrollback tail, one storage chunk per frame
 	}
 	m.sessions[s] = struct{}{}
 	m.applyResizeLocked() // recompute smallest-attached-wins with this client

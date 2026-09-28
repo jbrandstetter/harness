@@ -329,6 +329,13 @@ func (m *Manager) attempt(
 		// The one place `connected` is set: the stream is open and about to
 		// be read.
 		openedAt = m.now()
+		if *firstDone {
+			// A return to `connected`, not the first arrival: what
+			// harness_trigger_reconnects_total counts. A reload-replaced
+			// session inherits firstDone, so its reconnect counts too — the
+			// stream did drop and come back.
+			m.counters.Reconnected(ref)
+		}
 		m.setState(ref, trigger.StateConnected, "")
 		m.log.Info("channel connected", "source", ref, "attempts", bo.Attempts())
 		m.onConnected(ref, src, firstDone, *downSince)
@@ -492,7 +499,12 @@ func (h *sessionHandler) Notification(content string, meta map[string]string) {
 }
 
 // Invalid records a dropped message. It fires nothing.
-func (h *sessionHandler) Invalid(reason string) { h.m.NoteOutcome(h.ref, trigger.OutcomeInvalid) }
+func (h *sessionHandler) Invalid(reason string) {
+	// Both ledgers: the stats the manager's own status reports, and the
+	// shared counters harness_trigger_events_total reads.
+	h.m.NoteOutcome(h.ref, trigger.OutcomeInvalid)
+	h.m.counters.Inc(h.ref, trigger.OutcomeInvalid)
+}
 
 // closeChannels ends every session and waits for them.
 func (m *Manager) closeChannels() {

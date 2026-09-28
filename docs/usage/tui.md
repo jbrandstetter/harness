@@ -46,19 +46,21 @@ back. If two clients are watching the same harness at different sizes, the
 smaller one wins — `harness describe <name>` lists every attached session and
 flags the one setting the minimum.
 
-A `claude-code` harness that runs headlessly prints its stream-json on the
-PTY, so the preview renders that backend's output readably instead of
+A `claude-code` one-shot prints stream-json, one JSON object per line. It runs
+on pipes rather than a PTY, so there is no terminal for the pane to size and no
+screen: its preview session gets the recent lines, then new ones as they
+arrive. The preview renders that backend's output readably instead of
 mirroring the raw feed (issue #13): heartbeat pings collapse into a single
 `[N heartbeats over Xs]` line that ticks while a tool runs, tool calls appear
-as their human-written description (`▸ Push branch to GitHub`), and the
-agent's messages show as plain text. Anything that is not modeled — shell
-errors, escape output, unknown event kinds — still passes through untouched.
-Every other adapter keeps the byte-faithful mirror.
+as their human-written description (`▸ Push branch to GitHub`), and the agent's
+messages show as plain text.
+Anything that is not modeled — stderr lines, unknown event kinds — still passes
+through untouched. Every other adapter keeps the byte-faithful mirror.
 
 A **one-shot** — any harness with a `prompt` or `prompt_file`, scheduled or
-not — is read rather than sat in, so its preview is not its PTY at all. It
-shows the run exactly as `harness logs <name>` prints it on a terminal: the run
-header, then every read, edit and command as one line each, with repeats
+not — is read rather than sat in, so its preview is not its live output at
+all. It shows the run exactly as `harness logs <name>` prints it on a terminal:
+the run header, then every read, edit and command as one line each, with repeats
 collapsed (`×2 11:45:31–11:45:45`) and failures marked. It refreshes every two
 seconds while the run is live. A daemon too old to build that view, or a
 harness whose agent keeps no transcript, falls back to the mirror.
@@ -132,6 +134,10 @@ mode, enter scrollback with `^b [` or `PgUp`:
   what the process produced, not a replay of its repaint traffic.
 - `harness scrollback` isn't a separate surface: scroll back in-place, then
   `q` returns you to the live stream.
+- The history comes from the harness's durable log, so it reaches back the same
+  distance whatever `[daemon] scrollback_bytes` is set to. That setting sizes
+  what an attach (and the dashboard preview) replays on open, not what you can
+  scroll to.
 
 ## Read-only attach
 

@@ -1,7 +1,7 @@
 ---
 status: draft
 date: 2026-07-18
-implements: [ADR-0002, ADR-0004, ADR-0007, ADR-0008]
+implements: [ADR-0002, ADR-0003, ADR-0004, ADR-0007, ADR-0008]
 requires: [SPEC-0003]
 ---
 
@@ -175,11 +175,50 @@ smallest-attached-client-wins policy (ADR-0003). `ATTACH_CLOSE` from either
 side SHALL tear down only that session — the harness and other attached
 sessions are untouched.
 
+The scrollback tail SHALL be the contents of the harness's byte-bounded ring
+of raw PTY output (ADR-0007), whole lines from the oldest retained, and SHALL
+be sent as frames no larger than one of the ring's storage chunks (about 1/64
+of its budget), never as one frame holding the whole ring. The daemon SHALL
+NOT copy the ring to send it. A replay SHALL occupy at most 128 frames: a
+budget larger than 128 chunks replays its newest 128 chunks' worth, starting on
+a line boundary. No live byte SHALL reach a session before the last tail frame.
+
+A harness whose runs have no terminal (a structured one-shot on pipes,
+SPEC-0017 REQ-18) SHALL be attached without an emulator. The session SHALL
+receive no screen snapshot: first its recent output lines, from a ring bounded
+as above, then the live lines, each CRLF-terminated, in frames of at most
+32 KiB. Its input SHALL be discarded, since the process's stdin is `/dev/null`.
+`ATTACH_RESIZE` SHALL be recorded for `describe` and resize nothing, and
+`describe` SHALL report no viewport for it. A session too slow to drain its
+queue SHALL have its backlog replaced by a one-line notice, since there is no
+screen to repaint. The frames and their order are otherwise as above, so a
+client needs no change.
+
+#### Scenario: Attaching to a structured one-shot
+
+- **WHEN** a client attaches to a `claude-code` prompt one-shot while it runs
+- **THEN** it receives the run's recent stream-json and stderr lines, then the
+  live ones, and the daemon builds no terminal emulator for the harness
+
 #### Scenario: Instant repaint on attach
 
 - **WHEN** a client attaches to a running harness
 - **THEN** it receives a full screen snapshot first, so the terminal is
   correct before any live bytes arrive
+
+#### Scenario: Attach while the harness is writing
+
+- **WHEN** a client attaches while the harness is producing output
+- **THEN** everything after the snapshot is one contiguous, line-aligned run of
+  the harness's output: the tail, then live bytes, with nothing lost, repeated
+  or reordered where they meet
+
+#### Scenario: Scrollback larger than a frame
+
+- **WHEN** a client attaches to a harness whose ring holds more than the
+  16 MiB frame limit
+- **THEN** it receives the ring as chunk-sized frames and then live output,
+  and the session is not torn down
 
 #### Scenario: Read-only attach
 
@@ -189,17 +228,25 @@ sessions are untouched.
 ### Requirement: Backpressure Isolation
 
 The daemon's PTY reader MUST NOT block on any client: output always reaches
-the emulator (screen + ring) and the on-disk log. Each attach session SHALL
-have a bounded outbound queue; when a slow client can't drain it, the daemon
-SHALL coalesce by dropping that session's queued incremental frames and
-sending a fresh snapshot instead. `PING`/`PONG` heartbeats SHALL detect dead
-clients so their sessions get reaped.
+the emulator's screen, the scrollback ring and the on-disk log. Each attach
+session SHALL have a bounded outbound queue, sized to hold a snapshot and a
+full scrollback replay; when a slow client can't drain it, the daemon SHALL
+coalesce by dropping that session's queued incremental frames, replayed
+scrollback included, and sending a fresh snapshot instead. `PING`/`PONG`
+heartbeats SHALL detect dead clients so their sessions get reaped.
 
 #### Scenario: Slow SSH client
 
 - **WHEN** a remote client stalls mid-stream
 - **THEN** the harness and all other clients continue at full speed, and the
   slow client eventually receives a snapshot repaint instead of the backlog
+
+#### Scenario: Slow client during replay
+
+- **WHEN** a client stops reading while its scrollback tail is still queued and
+  the harness keeps writing
+- **THEN** the PTY reader is not blocked, and once the client drains it
+  receives a fresh snapshot rather than the whole tail and backlog
 
 #### Scenario: Wedged client pinning the viewport
 
@@ -210,6 +257,35 @@ clients so their sessions get reaped.
   liveness timeout, tears down its attach sessions, and recomputes
   smallest-attached-wins over the survivors so the guest PTY is no longer
   clamped by it — a client that has never answered a `PING` is left alone
+
+### Requirement: Emulator Memory
+
+Every `x/vt` emulator the daemon creates — the attach mux's per harness and
+the log sanitizer's per spawn — MUST keep no scrollback the daemon does not
+read, and MUST have its reply pump released when its owner is done with it:
+the sanitizer's when that spawn's output stream ends, the mux's when its
+harness is removed. Release SHALL close the emulator's input pipe rather than
+call `Emulator.Close`, whose unsynchronised flag races the pump's parked
+`Read` (ADR-0003). After release a query reply SHALL fail rather than block the
+PTY reader, and a session still attached to a removed mux SHALL keep working:
+snapshots still render, and any output still written reaches it. The
+scrollback an attach replays SHALL come from the per-harness ring (ADR-0007),
+never from emulator scrollback.
+
+#### Scenario: A restarting harness does not accumulate memory
+
+- **WHEN** a resident harness prints a long stream, exits and is respawned
+  repeatedly
+- **THEN** once each spawn's output has ended, no reply pump from it remains
+  and none of its emulator stays reachable; after the harness shuts down the
+  daemon is back to its baseline goroutines and heap
+
+#### Scenario: A removed harness releases its mux
+
+- **WHEN** a project harness is deregistered while a client is still attached
+- **THEN** its mux's reply pump exits, the attached client keeps its session
+  (output still written reaches it, a snapshot still renders) until it
+  detaches, and a query in that output does not block the PTY reader
 
 ### Requirement: Transport Bindings
 

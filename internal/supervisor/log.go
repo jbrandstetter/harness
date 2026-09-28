@@ -5,14 +5,22 @@ package supervisor
 // $XDG_STATE_HOME/harness/logs/<name>.log (size/age rotation)"; SPEC-0003 REQ
 // "Lifecycle Events" observability. This backs `harness logs <name>` for live
 // and dead harnesses alike, independent of the in-memory ring (ADR-0003).
+//
+// A rotated backup is sealed — nothing writes it again — so it is compressed
+// in the background to <name>-<stamp>.log.zst (ADR-0007 as amended; SPEC-0003
+// REQ "Durable Log Rotation And Compression"). The active file never is. Every
+// reader of a backup goes through internal/sealedlog, which reads either form.
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/stump-wtf/harness/internal/sealedlog"
 )
 
 // rotatedStampLayout is the timestamp suffix stamped onto rotated log files.
@@ -31,6 +39,10 @@ type LogConfig struct {
 	MaxAge time.Duration
 	// MaxBackups caps how many rotated files are retained per harness.
 	MaxBackups int
+	// Sealer compresses each rotated backup in the background once it is
+	// renamed aside (ADR-0007 as amended). Nil leaves backups uncompressed:
+	// `[daemon] compress_logs = false`, and every test that does not ask.
+	Sealer *sealedlog.Compressor
 }
 
 const (
@@ -131,8 +143,7 @@ func (rl *rotatingLog) rotate() error {
 	}
 	// Only rename if there is content to preserve.
 	if rl.size > 0 {
-		stamp := time.Now().Format(rotatedStampLayout)
-		rotated := filepath.Join(rl.cfg.Dir, fmt.Sprintf("%s-%s.log", rl.name, stamp))
+		rotated := rl.rotatedPath(time.Now())
 		if err := os.Rename(rl.path(), rotated); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("supervisor: rotate log: %w", err)
 		}
@@ -141,43 +152,94 @@ func (rl *rotatingLog) rotate() error {
 	return rl.open()
 }
 
-// pruneBackups deletes the oldest rotated files beyond MaxBackups. Best-effort:
-// prune failures never fail a write.
-func (rl *rotatingLog) pruneBackups() {
-	pattern := filepath.Join(rl.cfg.Dir, rl.name+"-*.log")
-	globbed, err := filepath.Glob(pattern)
-	if err != nil {
-		return
+// rotatedPath is the name the active file is renamed to at now: its rotation
+// stamp, moved on a millisecond at a time past any backup that already holds
+// it. Two rotations inside one millisecond used to rename over the first
+// backup; with compression the collision is worse, because the second backup's
+// plain file would sit beside the first one's .zst under one name, and a reader
+// must never be left to guess which of two different logs a name means.
+func (rl *rotatingLog) rotatedPath(now time.Time) string {
+	for range 1000 {
+		p := filepath.Join(rl.cfg.Dir, fmt.Sprintf("%s-%s.log", rl.name, now.Format(rotatedStampLayout)))
+		if sealedlog.Missing(p) {
+			return p
+		}
+		now = now.Add(time.Millisecond)
 	}
-	// Filter to THIS harness's own backups. A bare glob on `<name>-*.log` also
-	// matches sibling harnesses whose name shares our prefix (e.g. pruning
-	// "web" would otherwise sweep up "web-api.log" and "web-api-<stamp>.log"),
-	// deleting another harness's logs. isOwnBackup keeps only files whose suffix
-	// parses as our rotation timestamp.
-	matches := globbed[:0]
-	for _, m := range globbed {
-		if rl.isOwnBackup(m) {
-			matches = append(matches, m)
+	return filepath.Join(rl.cfg.Dir, fmt.Sprintf("%s-%s.log", rl.name, now.Format(rotatedStampLayout)))
+}
+
+// pruneBackups deletes the oldest rotated backups beyond MaxBackups, and
+// queues every retained backup still in plain form for compression: the one
+// just rotated, and any an earlier daemon left behind (a crash, a failed
+// compression, or compression switched on after being off). Best-effort:
+// prune failures never fail a write, and the compression itself happens on the
+// Sealer's goroutine, never on the writer's.
+func (rl *rotatingLog) pruneBackups() {
+	backups := listBackups(rl.cfg.Dir, rl.name)
+	drop := max(len(backups)-rl.cfg.MaxBackups, 0)
+	for _, b := range backups[:drop] {
+		sealedlog.Remove(b.path)
+	}
+	for _, b := range backups[drop:] {
+		if b.plain {
+			rl.cfg.Sealer.Seal(b.path)
 		}
 	}
-	if len(matches) <= rl.cfg.MaxBackups {
-		return
-	}
-	// Glob returns lexical order; our timestamp suffix sorts chronologically,
-	// so the oldest are first.
-	for _, old := range matches[:len(matches)-rl.cfg.MaxBackups] {
-		_ = os.Remove(old)
-	}
 }
 
-// isOwnBackup reports whether path is one of THIS harness's rotated backups —
-// exactly `<name>-<timestamp>.log` — and not a sibling harness that merely
-// shares our name as a prefix.
-func (rl *rotatingLog) isOwnBackup(path string) bool {
-	return isBackupOf(rl.name, path)
+// backup is one rotation of a harness's durable log.
+type backup struct {
+	// path is the backup's plain name, <name>-<stamp>.log, whichever form is
+	// on disk; internal/sealedlog resolves it.
+	path string
+	// plain is set when the uncompressed form is present — not yet
+	// compressed, mid-compression, or left beside its .zst by a crash.
+	plain bool
 }
 
-// isBackupOf reports whether path is a rotated backup of the named harness.
+// listBackups returns the named harness's rotated backups, oldest first, one
+// entry per rotation whatever form it is in. Only THIS harness's own backups
+// count. A bare glob on `<name>-*.log` also matches sibling harnesses whose
+// name shares ours as a prefix (listing "web" would otherwise sweep up
+// "web-api.log" and "web-api-<stamp>.log.zst"); isBackupOf keeps only files
+// whose suffix parses as our rotation timestamp.
+func listBackups(dir, name string) []backup {
+	base := filepath.Join(dir, name)
+	var files []string
+	for _, pattern := range []string{base + "-*.log", base + "-*.log" + sealedlog.Ext} {
+		globbed, err := filepath.Glob(pattern)
+		if err != nil {
+			return nil
+		}
+		files = append(files, globbed...)
+	}
+	byPath := map[string]*backup{}
+	var out []*backup
+	for _, f := range files {
+		if !isBackupOf(name, f) {
+			continue
+		}
+		plainPath, compressed := sealedlog.Plain(f)
+		b := byPath[plainPath]
+		if b == nil {
+			b = &backup{path: plainPath}
+			byPath[plainPath] = b
+			out = append(out, b)
+		}
+		b.plain = b.plain || !compressed
+	}
+	// The timestamp suffix sorts chronologically, so the oldest are first.
+	slices.SortFunc(out, func(a, b *backup) int { return strings.Compare(a.path, b.path) })
+	backups := make([]backup, len(out))
+	for i, b := range out {
+		backups[i] = *b
+	}
+	return backups
+}
+
+// isBackupOf reports whether path is a rotated backup of the named harness,
+// in either form: `<name>-<stamp>.log` or `<name>-<stamp>.log.zst`.
 // The comparison uses the BASE of the (possibly namespaced) harness name: a
 // project harness "reduit/agent" rotates to <dir>/reduit/agent-<stamp>.log, so
 // after filepath.Base only "agent-<stamp>" remains to match (ADR-0009;
@@ -185,13 +247,13 @@ func (rl *rotatingLog) isOwnBackup(path string) bool {
 // impossible because callers glob within the name's own directory and the
 // suffix must parse as our exact rotation timestamp.
 func isBackupOf(name, path string) bool {
-	base := filepath.Base(path)
-	mid := strings.TrimSuffix(base, ".log")
-	if mid == base {
+	base, _ := sealedlog.Plain(filepath.Base(path))
+	mid, ok := strings.CutSuffix(base, ".log")
+	if !ok {
 		return false // no .log suffix
 	}
-	stamp := strings.TrimPrefix(mid, filepath.Base(name)+"-")
-	if stamp == mid {
+	stamp, ok := strings.CutPrefix(mid, filepath.Base(name)+"-")
+	if !ok {
 		return false // not `<name>-…`
 	}
 	_, err := time.Parse(rotatedStampLayout, stamp)
@@ -199,19 +261,23 @@ func isBackupOf(name, path string) bool {
 }
 
 // removeLogArtifacts deletes a harness's on-disk log tree: the active
-// <dir>/<name>.log, every rotated backup, and — for a namespaced project
-// harness — the project's log subdirectory if it is now empty. The Manager
-// calls this when a project harness is deregistered so torn-down projects do
-// not leak unreachable log files forever (SPEC-0004 REQ "Tear Down": the
-// daemon retains no record of the project afterward). Best-effort: removal
-// failures are ignored, exactly like pruneBackups.
+// <dir>/<name>.log, every rotated backup in either form (and the temp of a
+// compression a crash interrupted), and — for a namespaced project harness —
+// the project's log subdirectory if it is now empty. The Manager calls this
+// when a project harness is deregistered so torn-down projects do not leak
+// unreachable log files forever (SPEC-0004 REQ "Tear Down": the daemon retains
+// no record of the project afterward). Best-effort: removal failures are
+// ignored, exactly like pruneBackups.
 func removeLogArtifacts(dir, name string) {
 	active := filepath.Join(dir, name+".log")
 	_ = os.Remove(active)
-	if globbed, err := filepath.Glob(filepath.Join(dir, name+"-*.log")); err == nil {
-		for _, path := range globbed {
-			if isBackupOf(name, path) {
-				_ = os.Remove(path)
+	for _, b := range listBackups(dir, name) {
+		sealedlog.Remove(b.path)
+	}
+	if entries, err := os.ReadDir(filepath.Dir(active)); err == nil {
+		for _, e := range entries {
+			if orig, ok := sealedlog.TempOf(e.Name()); ok && isBackupOf(name, orig) {
+				_ = os.Remove(filepath.Join(filepath.Dir(active), e.Name()))
 			}
 		}
 	}

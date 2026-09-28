@@ -111,7 +111,56 @@ increase(harness_metrics_collection_errors_total[15m]) > 0
 
 # The endpoint is unreachable: the daemon is down, or the port could not bind.
 up{job="harness"} == 0
+
+# A trigger source has been deaf for ten minutes: a channel out of `connected`,
+# or a webhook source that is not being served.
+max_over_time(harness_trigger_source_up[10m]) == 0
+
+# Someone is knocking with the wrong credential, or a sender's secret rotated.
+increase(harness_trigger_events_total{outcome="unauthorized"}[15m]) > 0
+
+# A channel link that keeps dropping.
+increase(harness_trigger_reconnects_total[1h]) > 5
 ```
+
+`harness_trigger_source_up` is 0 for a source that is `disabled` or `unbound`
+as well, so scope the first rule to the sources you expect to be live, for
+example with `{source=~"channel.sb|webhook.gitea-pr"}`.
+
+### Daemon memory
+
+The daemon's own memory is on the same scrape. In September 2026 a daemon
+reached 12 GB because every spawn leaked a terminal emulator of about 98 MiB
+(https://github.com/stump-wtf/harness/issues/18). The **leak signature** is
+something that should return to a baseline climbing in step with the run
+count instead:
+
+- `go_goroutines` rising by a fixed step per spawn and never falling back;
+- `go_memory_classes_heap_objects_bytes` or `go_memstats_heap_objects`
+  rising in step with `harness_state_transitions_total{to="starting"}`, which
+  counts spawns.
+
+A high footprint with a flat live heap is GC headroom, not a leak:
+`go_memory_classes_heap_free_bytes` and `go_gc_heap_goal_bytes` are high, and
+`[daemon] memory_limit` is the lever. The two need different fixes, so graph
+them together:
+
+```promql
+# Live heap against the GC's target and the total mapped.
+go_memory_classes_heap_objects_bytes{job="harness"}
+go_gc_heap_goal_bytes{job="harness"}
+go_memory_classes_total_bytes{job="harness"}
+
+# Goroutines left behind per spawn over six hours. A healthy daemon hovers
+# near 0; a leak holds near a constant (1 or more per spawn).
+delta(go_goroutines{job="harness"}[6h])
+  / on(instance) clamp_min(sum by (instance) (increase(harness_state_transitions_total{job="harness",to="starting"}[6h])), 1)
+```
+
+An alert on the second expression at `> 0.5` fires on a per-spawn leak within
+a few dozen runs. Tune the window to how often your harnesses spawn. To find
+what is leaking, see
+[Diagnosing daemon memory](./production-observability#diagnosing-daemon-memory).
 
 ## What is exported
 
@@ -130,11 +179,22 @@ up{job="harness"} == 0
 | `harness_scheduled_runs_total{harness,outcome}` | counter | Scheduled harnesses only. `success`, or `failure` (a run that failed or timed out). Skipped, missed, cancelled and interrupted runs are not counted. |
 | `harness_scheduled_next_run_timestamp{harness}` | gauge | Scheduled harnesses only. Absent when there is no next window. |
 | `harness_template_render_failures_total{harness,reason}` | counter | `command` harnesses only, both reasons starting at zero. `unresolved`: a required `argv` template value was absent, so the run was recorded skipped (`template_unresolved`) or the start failed. `grammar`: a template did not parse at spawn. Nothing was exec'd either way. |
-| `harness_metrics_collection_errors_total{collector}` | counter | `supervisor`, `schedule`, `observer`, `lifecycle`. `observer` and `lifecycle` also count events the collector lost because it fell behind, so the matching counters read low. |
+| `harness_trigger_source_up{source,kind}` | gauge | Every declared `[channel.*]` and `[webhook.*]` source. 1 while a channel is `connected` or a webhook source is `listening`; 0 in every other state (`connecting`, `backoff`, `error`, `no_listener`, `disabled`, `unbound`). |
+| `harness_trigger_events_total{source,outcome}` | counter | `fired`, `ignored`, `duplicate`, `unauthorized`, `too_large`, `rate_limited`, `invalid`. Every declared source reports all seven, starting at zero. See below. |
+| `harness_trigger_last_event_timestamp{source}` | gauge | Unix seconds of the source's latest firing. **Absent** until it first fires in this daemon's lifetime. |
+| `harness_trigger_reconnects_total{source}` | counter | Channel sources only. Times the stream came back to `connected` after the first connection. |
+| `harness_metrics_collection_errors_total{collector}` | counter | `supervisor`, `schedule`, `observer`, `lifecycle`, `triggers`. `observer` and `lifecycle` also count events the collector lost because it fell behind, so the matching counters read low. |
 | `harness_metrics_harnesses_overflowed` | gauge | How many harnesses were folded into `__other__`. |
 | `harness_notify_deliveries_total{event,result}` | counter | Runs of the [`[notify]` hook](./notify): `ok`, `error`, `timeout`, and notifications that never ran it, `dropped` (queue full) and `suppressed` (inside the cooldown). |
 | `harness_observer_*` | mixed | Health of the transcript reader: delivered and dropped events, ambiguous and unattributed items, parse errors, scan errors, sessions tracked. |
-| `go_*`, `process_*` | | The daemon's own runtime. |
+| `go_goroutines` | gauge | The daemon's goroutines. It returns to a baseline between runs; a count that stays up by a fixed step per spawn is a leak. See [Daemon memory](#daemon-memory). |
+| `go_memory_classes_heap_objects_bytes` | gauge | Live heap: memory held by objects the program can still reach, plus garbage not yet swept. This is what a leak grows. |
+| `go_memory_classes_heap_free_bytes`, `go_memory_classes_heap_released_bytes` | gauge | Heap the GC has freed. `free` is still mapped; `released` has been returned to the OS. Growth here is GC headroom, not a leak. |
+| `go_memory_classes_*_bytes` | gauge | The rest of the runtime's breakdown: stacks, metadata, profiling buckets, other. `go_memory_classes_total_bytes` is all of it, which is close to what the OS sees as the daemon's Go memory. |
+| `go_gc_heap_goal_bytes` | gauge | The heap size the GC is steering for. With the default `GOGC=100` it sits near twice the live heap. Under `[daemon] memory_limit` it flattens below the limit. |
+| `go_gc_gomemlimit_bytes` | gauge | The soft memory limit in effect, from `memory_limit` or `GOMEMLIMIT`. `9.223372036854776e+18` (MaxInt64) means none. |
+| `go_memstats_heap_objects` | gauge | Allocated heap objects. It rises with a leak, in step with spawns. |
+| other `go_*`, `process_*` | | The rest of the Go collector's defaults (GC pauses, `go_memstats_*`, threads) and the process collector (`process_resident_memory_bytes`, CPU, file descriptors). |
 
 ### What "running" means
 
@@ -155,14 +215,16 @@ harness apart from one an operator stopped.
 ### Where the model-call numbers come from
 
 The daemon reads the transcript each agent writes: Claude Code's JSONL, Crush's
-SQLite store, or Codex's session files. It counts a **tool call** as a
+SQLite store, Codex's session files, or Pi's session files. It counts a **tool call** as a
 successful model call, because the model answered with work. It counts an
 **error mark** as a failed one. A turn that ends in plain text with no tool
 call is not counted.
 
 Only a harness whose adapter writes a readable transcript (`claude-code`,
-`crush`, `codex`) **and** that has a `workdir` gets model-call series. A
-`generic` or `command` harness, or an agent harness with no workdir, has none. The daemon
+`crush`, `codex`, `pi`, `omp`, or a `command` harness bound to one of those
+with `transcripts`) **and** that has a `workdir` gets model-call series. A
+`generic` harness, an unbound `command` harness, or an agent harness with no
+workdir, has none. The daemon
 omits values it cannot compute rather than reporting a zero, which would look
 like a healthy, idle agent.
 
@@ -174,7 +236,7 @@ counted, but its provider errors do not appear yet.
 Until an adapter's errors do appear, its harnesses have no error-side series:
 `harness_model_calls_total{outcome="error"}`, `harness_model_call_errors_total`
 and `harness_model_call_errors_unclassified_total` are **absent** for `codex`
-harnesses today, not zero. A zero would say "no quota
+and `pi` harnesses today, not zero. A zero would say "no quota
 errors" through the very outage the quota alert exists to catch. For those
 harnesses, the staleness alert on `harness_last_successful_call_timestamp` is
 the one that fires.
@@ -204,6 +266,27 @@ match provider wording:
 If the unclassified counter starts rising, a provider has probably changed its
 error wording.
 
+### Trigger outcomes
+
+Each webhook delivery to a served route, and each channel doorbell, is counted
+once, under how it ended:
+
+| `outcome` | Meaning |
+|---|---|
+| `fired` | Reached the bound harnesses. Each harness then starts, queues or skips the run, and that decision is in its run history, not here. |
+| `ignored` | A webhook event not in the source's `events` list, or an event for a source a reload had just unbound. Answered `202`, nothing runs. |
+| `duplicate` | A delivery ID that already fired on the route in the last 24 hours. |
+| `unauthorized` | Failed verification: `401`. |
+| `too_large` | Body over `max_body`: `413`. |
+| `rate_limited` | Over the route's `rate_limit`: `429`. |
+| `invalid` | A channel message that is not a well-formed doorbell, or a webhook body the sender stopped sending partway. |
+
+A request to a route that is not served (unknown, disabled or unbound) is a
+`404` and is not counted anywhere, so a stranger probing `/hooks/` cannot
+create series. A `405` and a `503` (the listener at its concurrency limit) are
+not counted either: they say something about the request or the listener, not
+about the source.
+
 ### Cardinality
 
 The `harness` label is capped at 50 distinct values. Harnesses beyond the cap
@@ -211,3 +294,8 @@ share `harness="__other__"`, where counters add up and `harness_harness_state`
 counts how many overflow harnesses are in each state. When a harness is
 removed, its slot is freed. Session IDs, prompts, model names, credentials and
 environment values never appear as labels.
+
+The `source` label takes only the names of sources your config declares, so it
+has no cap of its own. A source that a reload removes or renames disappears
+from the next scrape; the new name starts from zero. Delivery IDs, event names,
+payloads and doorbell text never appear as labels.

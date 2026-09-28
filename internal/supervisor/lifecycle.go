@@ -15,9 +15,14 @@ package supervisor
 // which can hide a session from `harness logs`, never misattribute one.
 //
 // Governing: ADR-0007 (amended, #279 — lifecycle events are charmbracelet/log
-// lines in the durable log), SPEC-0006 REQ "Run Correlation".
+// lines in the durable log; amended again — rotated backups are compressed),
+// SPEC-0006 REQ "Run Correlation", SPEC-0003 REQ "Durable Log Rotation And
+// Compression".
 //
 // @joestump-agent 09/11/2026 - Added for harness#302 and harness#89.
+//
+// @joestump-agent 09/28/2026 - Backups are read through internal/sealedlog, in
+// either form, for https://github.com/stump-wtf/harness/issues/18.
 
 import (
 	"bufio"
@@ -26,7 +31,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -34,6 +38,7 @@ import (
 	clog "github.com/charmbracelet/log"
 
 	"github.com/stump-wtf/harness/internal/core"
+	"github.com/stump-wtf/harness/internal/sealedlog"
 )
 
 // LifecycleEntry is one lifecycle line read back from a durable log.
@@ -65,22 +70,23 @@ var lifecycleLine = regexp.MustCompile(`^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}) I
 // ReadLifecycle returns the lifecycle lines of name's durable log — rotated
 // backups oldest first, then the active file — skipping any file last written
 // before since (a zero since reads everything). A missing log is no lines, not
-// an error.
+// an error. A backup is read in whichever form it is on disk, plain or
+// compressed (ADR-0007 as amended); compression keeps a backup's mtime, so
+// since skips the same files either way.
 func ReadLifecycle(dir, name string, since time.Time) ([]LifecycleEntry, error) {
 	if dir == "" {
 		return nil, nil
 	}
-	files, err := filepath.Glob(filepath.Join(dir, name+"-*.log"))
-	if err != nil {
-		return nil, fmt.Errorf("supervisor: list rotated logs for %s: %w", name, err)
+	backups := listBackups(dir, name)
+	files := make([]string, 0, len(backups)+1)
+	for _, b := range backups {
+		files = append(files, b.path)
 	}
-	files = slices.DeleteFunc(files, func(p string) bool { return !isBackupOf(name, p) })
-	slices.Sort(files) // the rotation stamp sorts chronologically
 	files = append(files, filepath.Join(dir, name+".log"))
 
 	var out []LifecycleEntry
 	for _, path := range files {
-		info, err := os.Stat(path)
+		info, err := sealedlog.Stat(path)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
@@ -92,6 +98,9 @@ func ReadLifecycle(dir, name string, since time.Time) ([]LifecycleEntry, error) 
 		}
 		entries, err := readLifecycleFile(path)
 		out = append(out, entries...)
+		if errors.Is(err, os.ErrNotExist) {
+			continue // pruned between the stat and the open
+		}
 		if err != nil {
 			return out, err
 		}
@@ -100,7 +109,7 @@ func ReadLifecycle(dir, name string, since time.Time) ([]LifecycleEntry, error) 
 }
 
 func readLifecycleFile(path string) ([]LifecycleEntry, error) {
-	f, err := os.Open(path)
+	f, err := sealedlog.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("supervisor: open log %s: %w", path, err)
 	}

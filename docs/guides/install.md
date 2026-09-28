@@ -158,8 +158,8 @@ harness                 # terminal 2: the dashboard (q to quit)
 | Config | `~/.config/harness/harness.toml` (honors `$XDG_CONFIG_HOME`) |
 | State and intent | `~/.local/state/harness/state.json` (honors `$XDG_STATE_HOME`) |
 | Run history (the run ledger) | `~/.local/state/harness/ledger/YYYY-MM-DD.jsonl` |
-| Per-harness logs | `~/.local/state/harness/logs/NAME.log` |
-| Per-run logs of scheduled harnesses | `~/.local/state/harness/jobs/NAME/RUN_ID.log` |
+| Per-harness logs | `~/.local/state/harness/logs/NAME.log`; rotated backups are `NAME-STAMP.log.zst` |
+| Per-run logs of scheduled harnesses | `~/.local/state/harness/jobs/NAME/RUN_ID.log`, then `RUN_ID.log.zst` once the run closes |
 | Control socket (Linux) | `$XDG_RUNTIME_DIR/harness.sock`, usually `/run/user/UID/harness.sock` |
 | Control socket (macOS, no `$XDG_RUNTIME_DIR`) | `~/.local/state/harness/harness.sock` |
 

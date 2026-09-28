@@ -25,6 +25,7 @@ import (
 	"github.com/stump-wtf/harness/internal/core"
 	"github.com/stump-wtf/harness/internal/ledger"
 	"github.com/stump-wtf/harness/internal/runtrace"
+	"github.com/stump-wtf/harness/internal/sealedlog"
 )
 
 // persistDebounce is how long the manager coalesces state-change writes before
@@ -66,6 +67,14 @@ type ManagerOptions struct {
 	// (SPEC-0008 REQ "Per-Run Logs"). Defaults to a "jobs" directory beside
 	// the log directory — $XDG_STATE_HOME/harness/jobs in production.
 	JobsDir string
+	// CompressLogs compresses sealed logs in the background: each rotated
+	// backup of a durable log, and each closed run's log and raw stream
+	// (ADR-0007 as amended; SPEC-0003 REQ "Durable Log Rotation And
+	// Compression"; SPEC-0008 REQ "Per-Run Logs"). The daemon passes the
+	// resolved `[daemon] compress_logs`, whose default is TRUE
+	// (daemonManagerOptions, pinned by its wiring test). The zero value here
+	// is off so a test Manager's logs stay where the test reads them.
+	CompressLogs bool
 	// LedgerDir is the run ledger's directory (SPEC-0022 REQ-1). Defaults to
 	// a "ledger" directory beside state.json — $XDG_STATE_HOME/harness/ledger
 	// in production.
@@ -144,6 +153,9 @@ type Manager struct {
 	legacyRuns map[string][]RunRecord
 	jobsDir    string
 	ledger     *ledger.Ledger
+	// sealer compresses sealed logs in the background; nil when
+	// compress_logs is off (ManagerOptions.CompressLogs).
+	sealer *sealedlog.Compressor
 	// journalMu makes a run id's allocation and its ledger line's enqueue
 	// one step (appendNew), so ids and seqs agree on order.
 	journalMu sync.Mutex
@@ -194,6 +206,14 @@ func NewManager(cfg *core.Config, opts ManagerOptions) *Manager {
 	if jobsDir == "" {
 		jobsDir = filepath.Join(filepath.Dir(logCfg.Dir), "jobs")
 	}
+	// One compressor for every harness: a single background goroutine and a
+	// single reused encoder, however many harnesses seal files. Nil (off)
+	// makes every Seal a no-op.
+	var sealer *sealedlog.Compressor
+	if opts.CompressLogs {
+		sealer = sealedlog.NewCompressor()
+	}
+	logCfg.Sealer = sealer
 
 	ledgerDir := opts.LedgerDir
 	if ledgerDir == "" {
@@ -211,6 +231,7 @@ func NewManager(cfg *core.Config, opts ManagerOptions) *Manager {
 		legacyRuns:    make(map[string][]RunRecord),
 		ledger:        lg,
 		jobsDir:       jobsDir,
+		sealer:        sealer,
 		policy:        policy,
 		statePath:     statePath,
 		logCfg:        logCfg,
@@ -262,12 +283,17 @@ func (m *Manager) addSupervisor(h core.Harness) {
 }
 
 // extraOut resolves the per-harness tee writer (the attach emulator/ring) from
-// the configured factory, or nil when none is set.
-func (m *Manager) extraOut(name string) io.Writer {
+// the configured factory, or nil when none is set. A writer that can prepare
+// for h's kind of run is told which it is (Primer, pipes.go).
+func (m *Manager) extraOut(h core.Harness) io.Writer {
 	if m.extraOutFor == nil {
 		return nil
 	}
-	return m.extraOutFor(name)
+	w := m.extraOutFor(h.Name)
+	if p, ok := w.(Primer); ok {
+		p.Prime(RunsOnPipes(h))
+	}
+	return w
 }
 
 // initialSizeFor binds the configured SizeFor hook to one harness name, or nil
@@ -838,6 +864,12 @@ func (m *Manager) Config() *core.Config {
 // <dir>/<name>.log to service the logs control op.
 func (m *Manager) LogDir() string { return m.logCfg.Dir }
 
+// WaitSealed blocks until every sealed log queued for compression so far has
+// been handled; it returns at once when compression is off. Nothing in the
+// daemon waits on compression — readers take either form — so this is for a
+// test that must see the compressed form on disk, without polling for it.
+func (m *Manager) WaitSealed() { m.sealer.Wait() }
+
 // ProfileResolved reports whether the active profile name resolves to a real
 // profile in the current config (issue #99). False means the persisted profile
 // was renamed or removed upstream (e.g. by a chezmoi config delivery) and the
@@ -1063,7 +1095,7 @@ func (m *Manager) addSupervisorLocked(h core.Harness) {
 		Policy:      m.policy,
 		Bus:         m.bus,
 		LogCfg:      m.logCfg,
-		ExtraOut:    m.extraOut(h.Name),
+		ExtraOut:    m.extraOut(h),
 		OnChange:    m.markDirty,
 		InitialSize: m.initialSizeFor(h.Name),
 		Runs:        m,
@@ -1081,7 +1113,7 @@ func (m *Manager) addEphemeralSupervisorLocked(h core.Harness) {
 		Policy:      m.policy,
 		Bus:         m.bus,
 		LogCfg:      m.logCfg,
-		ExtraOut:    m.extraOut(h.Name),
+		ExtraOut:    m.extraOut(h),
 		InitialSize: m.initialSizeFor(h.Name),
 	})
 	m.supervisors[h.Name] = s
@@ -1105,6 +1137,10 @@ func (m *Manager) Close() {
 		if err := m.ledger.Close(ledgerCloseTimeout); err != nil {
 			log.Error("run ledger did not drain at shutdown", "err", err)
 		}
+		// Last, after every supervisor has closed its runs and sealed their
+		// logs: whatever is still queued stays plain, and the next boot's
+		// sweep compresses it (sealLeftovers).
+		m.sealer.Close()
 	})
 }
 

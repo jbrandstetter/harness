@@ -22,6 +22,9 @@
 // @joestump 09/23/2026 - A harness whose operating_hours are closed at the
 // event's receive time is recorded skipped (outside_hours) instead of fired
 // (#484).
+//
+// @joestump 09/24/2026 - Counts fired and unbound events into the shared
+// trigger.OutcomeCounters (#480).
 package source
 
 import (
@@ -88,6 +91,11 @@ type Options struct {
 	//
 	// It is called without m.mu held, so a handler may call back in.
 	OnState func(Status)
+	// Counters is where every source's outcomes, last firing and channel
+	// reconnects are counted. Nil gets the manager its own. The daemon hands
+	// the same instance to the webhook listener, so a delivery's refusal and
+	// its firing land in one place for `harness triggers` and /metrics.
+	Counters *trigger.OutcomeCounters
 }
 
 // Decision is what happened to one harness in a fan-out. It is the shape a
@@ -122,6 +130,9 @@ type Manager struct {
 	dial dialer
 	// onState is notified of every source state change.
 	onState func(Status)
+	// counters is shared with whatever else counts or reads outcomes; see
+	// Options.Counters. Never nil.
+	counters *trigger.OutcomeCounters
 	// now, sleep and rand are the clock, the timer and the jitter source.
 	now   func() time.Time
 	sleep func(context.Context, time.Duration) bool
@@ -185,19 +196,28 @@ func New(opts Options) *Manager {
 	if sleep == nil {
 		sleep = realSleep
 	}
+	counters := opts.Counters
+	if counters == nil {
+		counters = &trigger.OutcomeCounters{}
+	}
 	return &Manager{
-		runner:  opts.Runner,
-		config:  cfg,
-		log:     logger,
-		dial:    dial,
-		onState: opts.OnState,
-		now:     now,
-		sleep:   sleep,
-		rand:    opts.Rand,
-		sources: map[string]*sourceState{},
-		stats:   map[string]*sourceStats{},
+		runner:   opts.Runner,
+		config:   cfg,
+		log:      logger,
+		dial:     dial,
+		onState:  opts.OnState,
+		counters: counters,
+		now:      now,
+		sleep:    sleep,
+		rand:     opts.Rand,
+		sources:  map[string]*sourceState{},
+		stats:    map[string]*sourceStats{},
 	}
 }
+
+// Counters are the per-source counts this manager keeps, and shares with the
+// webhook listener when the daemon wires one.
+func (m *Manager) Counters() *trigger.OutcomeCounters { return m.counters }
 
 // realSleep waits for d, returning false when ctx ends first.
 func realSleep(ctx context.Context, d time.Duration) bool {
@@ -283,6 +303,7 @@ func (m *Manager) Fire(ev *trigger.Envelope) []Decision {
 	if err := ev.Validate(); err != nil {
 		m.log.Warn("trigger event dropped: invalid envelope", "source", ev.Source, "err", err.Error())
 		m.NoteOutcome(ev.Source, trigger.OutcomeInvalid)
+		m.counters.Inc(ev.Source, trigger.OutcomeInvalid)
 		return nil
 	}
 
@@ -301,19 +322,25 @@ func (m *Manager) Fire(ev *trigger.Envelope) []Decision {
 		m.log.Debug("trigger event dropped: shutting down", "source", ev.Source)
 		return nil
 	}
-	// Counted here, once the event is valid and the manager is taking
-	// firings, and before the bound check: an event nobody is bound to still
-	// arrived, and REQ "Trigger Visibility"'s last event should say so.
-	m.NoteOutcome(ev.Source, trigger.OutcomeFired)
-
 	cfg := m.config()
 	bound := cfg.BoundHarnesses(ev.Source)
 	if len(bound) == 0 {
-		// Not an error: a source may be declared, connected and simply not
-		// bound yet. Counting it is #480's job; saying so is this one's.
+		// Not an error: a reload can unbind a source between a doorbell
+		// arriving and this read. Counted as ignored — heard and dropped —
+		// rather than fired, so `fired` never counts an event nothing ran for.
+		m.NoteOutcome(ev.Source, trigger.OutcomeIgnored)
+		m.counters.Inc(ev.Source, trigger.OutcomeIgnored)
 		m.log.Debug("trigger event fired nothing: no harness binds the source", "source", ev.Source)
 		return nil
 	}
+	// Counted here, once the event is valid, the manager is taking firings
+	// and something is bound: `fired` is "reached the harnesses", whatever
+	// each one then decides (a skip on overlap is a run record, not a lost
+	// event). The stats feed the manager's own status; the shared counters
+	// feed `harness_trigger_events_total` and its last-event stamp.
+	// Governing: SPEC-0014 REQ "Trigger Metrics".
+	m.NoteOutcome(ev.Source, trigger.OutcomeFired)
+	m.counters.Fired(ev.Source, ev.ReceivedAt)
 
 	runTrigger := supervisor.TriggerWebhook
 	if ev.Kind == trigger.KindChannel {

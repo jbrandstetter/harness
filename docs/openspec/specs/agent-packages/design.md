@@ -152,17 +152,17 @@ running at all, the same way hand-editing `harness.toml` does today.
 sequenceDiagram
     participant Op as Operator
     participant CLI as harness agent (client)
-    participant TapClone as stable clone (state dir)
+    participant StableClone as stable clone (state dir)
     participant Store as content-addressed store
     participant Cfg as harness.toml
     participant Daemon as daemon (config load)
 
     Op->>CLI: stable add stump-wtf <remote>
-    CLI->>TapClone: git clone
+    CLI->>StableClone: git clone
     CLI->>Cfg: write [stable.stump-wtf]
 
     Op->>CLI: agent install stump-wtf/pr-reviewer
-    CLI->>TapClone: read packages/pr-reviewer/package.toml at HEAD
+    CLI->>StableClone: read packages/pr-reviewer/package.toml at HEAD
     CLI->>CLI: resolve HEAD -> sha, run content scan
     CLI-->>Op: show manifest, requests, findings
     Op->>CLI: confirm

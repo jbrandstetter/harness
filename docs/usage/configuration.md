@@ -27,9 +27,10 @@ enabled = false
 
 | Field | Meaning |
 |-------|---------|
-| `harness` | **required** — the harness kind, an enum: `crush`, `claude-code`, `codex`, `generic`, `command`. There is no default; every harness says what it runs. It selects the adapter, which owns the executable a long-running harness runs — `args` are appended after it. `generic` runs `sh`, so its `args` are **sh's** args. To run any other program, use `command` with an `argv` — see [The `command` kind](#the-command-kind). `generic` takes no `prompt` or `prompt_file` — see [Agent adapters](#agent-adapters) |
+| `harness` | **required** — the harness kind, an enum: `crush`, `claude-code`, `codex`, `pi`, `omp`, `generic`, `command`. There is no default; every harness says what it runs. It selects the adapter, which owns the executable a long-running harness runs — `args` are appended after it. `generic` runs `sh`, so its `args` are **sh's** args. To run any other program, use `command` with an `argv` — see [The `command` kind](#the-command-kind). `generic` takes no `prompt` or `prompt_file` — see [Agent adapters](#agent-adapters) |
 | `args` | argument list appended after the adapter's executable. Not accepted on `command`, which takes `argv` instead |
 | `argv` | `command` only: the whole process, `argv[0]` first, exec'd **without a shell**. See [The `command` kind](#the-command-kind) |
+| `transcripts` | `command` only: observe the harness's sessions as those of `claude-code`, `crush`, `codex`, `pi` or `omp`. See [Binding transcripts](#binding-transcripts) |
 | `workdir` | working directory (**required** for most commands) |
 | `env_file` | optional `KEY=VALUE` file sourced before launch (secrets stay here, out of the config). Also accepts a **list** of files loaded in order, a later file winning a key collision — `env_file = ["claude.env", "reviewer.env"]` — so a shared credential file and a per-persona one compose without copying. A missing file is tolerated, exactly as a missing string is; an empty list is a load error |
 | `description` | free-text shown in the dashboard |
@@ -92,10 +93,37 @@ is dropped, not emulated:
 | `crush` | `crush [--yolo] run [--quiet] [--model M] <prompt>` | `max_turns` (Crush has no turn cap) |
 | `claude-code` | `claude -p [--dangerously-skip-permissions] [--model M] [--max-turns N] [--append-system-prompt-file F] [--mcp-config F --strict-mcp-config] [--allowedTools T…] --verbose --output-format stream-json <prompt>` | `quiet` (`-p` is already headless) |
 | `codex` | `codex exec [--model M] [--full-auto] <prompt>` | `quiet`, `max_turns` |
+| `pi` | `pi --print [--model M] <prompt>` | `auto_accept` (Pi has no permission prompts), `max_turns`, `quiet` (`--print` is already headless) |
+| `omp` | `omp --print [--model M] <prompt>` | `auto_accept`, `max_turns`, `quiet`, as for `pi` |
 | `generic` | none — a `prompt` or `prompt_file` on `generic` is a config error | — |
 
 ⚠️ `auto_accept` bypasses **ALL** of the agent's permission prompts. Only enable
 it on trusted, headless runs.
+
+### Stream-json one-shots run without a terminal
+
+A `claude-code` one-shot prints `stream-json`, one JSON object per line, so the
+daemon runs it on pipes rather than under a PTY
+([ADR-0033](/decisions/adr-0033-trace-first-run-records)). Every other kind
+keeps its PTY: `crush`, `codex`, `pi` and `omp` one-shots, every resident
+harness, and every `command` harness, whatever its `argv`.
+
+- **No terminal.** The process has no controlling terminal and its stdin is
+  `/dev/null`. The prompt is on the argv, so nothing waits on input. Stop,
+  `timeout`, `on_overlap = "replace"` and the budgets reach its whole process
+  group, as they do for a PTY harness.
+- **stdout** is kept per run as `jobs/<name>/<run_id>.stream.jsonl` (see
+  [Runs](#runs-history-logs-timeout-overlap)), masked line by line. A prompt
+  harness with no `schedule` or `triggers` has no per-run files, so its stdout
+  goes to its durable log (`logs/<name>.log`).
+- **stderr** goes to the run's log and the durable log, masked, with escape
+  sequences stripped.
+- **No emulator.** Neither the log sanitizer nor the attach plane builds a
+  terminal emulator for these runs, so the daemon's memory no longer grows with
+  how much a run prints, and the lines reach the logs as the agent wrote them.
+  There is no screen and no viewport: `harness attach` and the TUI preview show
+  the recent output lines, then new ones as they arrive; see
+  [CLI → Attach](./cli#attach).
 
 ### Prompts that live in a file
 
@@ -223,9 +251,18 @@ keep_runs = 30         # default 20
   `daemon_crash`) on the next boot; one a clean shutdown stopped reads
   `interrupted` (reason `shutdown`).
 - **Logs** are at `$XDG_STATE_HOME/harness/jobs/<name>/<run_id>.log` — the run's
-  output history and lifecycle lines, alongside the usual harness log.
-  `keep_runs` bounds these log files only: the oldest logs are deleted, and
-  their records stay in the ledger, marked `log_pruned`.
+  output history and lifecycle lines, alongside the usual harness log. Once the
+  run closes, its log is compressed to `<run_id>.log.zst` (unless
+  [`compress_logs = false`](#daemon-settings-daemon)); `harness logs <name> --run
+  N` reads either. `keep_runs` bounds these log files only: the oldest logs are
+  deleted, and their records stay in the ledger, marked `log_pruned`.
+- **Streams.** A [stream-json one-shot](#stream-json-one-shots-run-without-a-terminal)
+  also writes `jobs/<name>/<run_id>.stream.jsonl`: its stdout, one masked JSON
+  line per line, private to your user. Its `<run_id>.log` then holds the
+  lifecycle lines and the agent's stderr. The stream is compressed to
+  `<run_id>.stream.jsonl.zst` when the run closes, like the log. `keep_runs`
+  deletes a run's stream with its log. `harness logs <name> --run N --raw`
+  prints the stream, then the run log once the run has ended.
 
 :::note Upgrading from a release before the ledger
 The first daemon that has the ledger copies each harness's run history out of
@@ -392,13 +429,14 @@ columns carry it.
 ## Agent adapters
 
 The `harness` key is a **required** enum selecting the adapter (ADR-0011,
-SPEC-0006): `crush`, `claude-code` ([what it runs](/guides/claude-code)), `codex`, `generic`, `command`. It has no default —
+SPEC-0006): `crush`, `claude-code` ([what it runs](/guides/claude-code)), `codex`, `pi`, `omp`, `generic`, `command`. It has no default —
 what a harness runs is the most consequential thing it declares, so a table
 that omits the key is a config error rather than an agent nobody asked for:
 
 ```
 harness "web": missing required key "harness" (want one of: crush, claude-code,
-codex, generic, command — use "command" with argv = ["…"] for an arbitrary program)
+codex, pi, omp, generic, command — use "command" with argv = ["…"] for an arbitrary
+program)
 ```
  The
 adapter owns both the tool-specific behaviour (trajectory discovery) and the
@@ -416,7 +454,7 @@ scratchpad and the edit form refuse it too:
 
 ```
 harness "triage": "generic" runs sh and has no prompt synthesis, so it takes no
-"prompt"; use harness = "crush"|"claude-code"|"codex" for a prompt one-shot, or
+"prompt"; use harness = "crush"|"claude-code"|"codex"|"pi"|"omp" for a prompt one-shot, or
 harness = "command" with argv to run another program without a shell
 ```
 
@@ -468,7 +506,8 @@ enabled = true
   `schedule`, and so on).
 - `prompt` and `prompt_file` are refused for now: nothing delivers a prompt to
   a command harness's argv yet (issue #500).
-- Like `generic`, it reports no native trajectory (scrollback only).
+- Like `generic`, it reports no native trajectory (scrollback only), unless it
+  binds one with `transcripts` (below).
 - It works in a project `harness.toml`, through `harness up`, and in the TUI
   edit form, where `argv` is edited as the same TOML array. `harness describe`
   shows the kind and the argv exactly as written, templates included, never a
@@ -482,9 +521,9 @@ schedule = "CRON_TZ=Europe/Berlin 0 6 * * *"
 workdir = "~/src/report"
 ```
 
-Pi, OMP or any other agent CLI not listed above runs this way:
-`harness = "command"`, `argv = ["omp", …]`, resident, on a `schedule`, or on
-`triggers`.
+Any agent CLI not listed above runs this way: `harness = "command"`,
+`argv = ["…", …]`, resident, on a `schedule`, or on `triggers`. Pi and OMP
+have adapters of their own (below).
 
 #### Argv templates
 
@@ -544,6 +583,68 @@ Rendered values are never written anywhere: not to `state.json`, not to run
 records, not to protocol frames, not to logs. They exist only in the child's
 argv, which, like any argv, other local users can read with `ps`. Do not
 template secrets into it.
+Pi and OMP have adapters of their own (below). Any other agent CLI runs this
+way, as a resident harness, with `transcripts` if it writes one of the formats
+Harness reads.
+
+#### Binding transcripts
+
+A `command` harness that runs an agent CLI by hand can declare whose
+transcripts it writes, so the daemon discovers its sessions, correlates them
+to its runs, attributes its tool calls and counts them in the model-call
+metrics exactly as it does for that adapter's own harnesses (SPEC-0017 REQ-4):
+
+```toml
+[harness.claude-by-hand]
+harness = "command"
+argv = ["claude", "--remote-control", "--continue"]
+transcripts = "claude-code"
+workdir = "~/src/app"
+enabled = true
+```
+
+- The value is one of `claude-code`, `crush`, `codex`, `pi` or `omp`; anything
+  else fails to load, listing those.
+- It is accepted on `command` only. An adapter kind already binds its own
+  transcripts, so `transcripts` on `crush` (even `transcripts = "crush"`) is a
+  config error.
+- It changes what is observed, never what runs: the argv is exec'd exactly as
+  written. Store relocation follows the named adapter's rules, read from the
+  harness's `env_file` (`CLAUDE_CONFIG_DIR`, `CRUSH_GLOBAL_DATA`,
+  `CODEX_HOME`, `PI_CODING_AGENT_DIR`), and crush's `--data-dir` in `argv` is
+  not read.
+- It is the fallback when an adapter's flags drift from the CLI: run the CLI
+  with the flags it now takes, and keep the observation.
+- `harness describe` shows it next to the argv.
+
+### Pi and OMP
+
+`pi` runs the [Pi coding agent](https://github.com/badlogic/pi-mono) and `omp`
+runs OMP ([oh-my-pi](https://github.com/can1357/oh-my-pi)), a Pi fork. They are
+ordinary adapters: a resident harness runs `pi` or `omp` with `args` appended,
+and a prompt one-shot runs the print mode in the table above, with `model`
+passed as `--model` in the CLI's `provider/id` form. `auto_accept` and
+`max_turns` are accepted and add nothing, since neither CLI prompts for tool
+permission or has a turn budget.
+
+```toml
+[harness.omp-review]
+harness = "omp"
+model = "openrouter/z-ai/glm-5.3-flash"
+prompt = "review the open pull requests"
+schedule = "0 7 * * 1-5"
+workdir = "~/src/app"
+```
+
+The flags were checked against the source of Pi v0.87.1 and OMP v18.3.0.
+
+**Observation.** Both are observed. A `pi` or `omp` harness's sessions are read
+from `$PI_CODING_AGENT_DIR/sessions`, or `~/.pi/agent/sessions` /
+`~/.omp/agent/sessions` when the variable is unset, resolved from the harness's
+own `env_file`. They are attributed to it and counted in the model-call
+metrics. OMP's session files open with a fixed-width title line before the
+session header; the session reader accepts it, and labels OMP sessions `omp`
+so an `omp` harness claims exactly its own.
 
 ```toml
 [harness.my-agent]
@@ -650,10 +751,97 @@ exporting to a collector is a different audience, gated by `export_telemetry`
 
 ```toml
 [daemon]
-watch_config = true   # auto-reload on config file changes (default true)
+watch_config = true                      # auto-reload on config file changes (default true)
+scrollback_bytes = "1MiB"                # per-harness scrollback ring storage (64KiB–1GiB)
+scrollback   = 10000                     # and at most this many lines of it
+log_level    = "info"                    # debug, info, warn, error
+log_file     = "/var/log/harness.log"    # absent = stderr
+socket       = "/run/harness/harness.sock"  # absent = $XDG_RUNTIME_DIR/harness.sock
+compress_logs = true                     # zstd-compress sealed logs (default true)
+memory_limit = "2GiB"                    # Go soft memory limit; absent = GOMEMLIMIT or off
+pprof_addr   = "127.0.0.1:6060"          # net/http/pprof, loopback only; absent = off
 ```
 
-`watch_config` is the only daemon setting.
+Every key is optional. Apart from `watch_config`, each has a matching flag and
+`HARNESS_*` variable (see [Environment variables](#environment-variables)), and
+either one beats the file. Setting them here is how you tune a daemon you do not
+launch yourself — a Homebrew `brew services` daemon, a launchd agent, a
+container entrypoint — without editing the service definition.
+
+- `scrollback_bytes` is the memory each running harness's scrollback ring may
+  use: its recent raw output, which an attach replays after the screen
+  snapshot. It is the lever for daemon memory use. Write a size (`"512KiB"`,
+  `"4MiB"`, `"1GiB"`; every unit is 1024-based) or a whole number of bytes. It
+  must be between 64 KiB and 1 GiB. The default, 1 MiB, is about 13,000 lines
+  of ordinary terminal output. Raising it makes every attach, and every
+  dashboard preview, replay more before going live.
+- `scrollback` must be at least 1. It caps the lines the ring keeps, whatever
+  their size; the byte budget usually binds first.
+- A line longer than the per-line cap (64 KiB, or a quarter of
+  `scrollback_bytes` if that is smaller) keeps only its head, followed by
+  `…[harness: truncated N bytes]`, where N counts what was cut. Only the replay
+  is truncated: live output and `harness logs` are not.
+- In-TUI scroll and search read the durable log, not this ring, so neither
+  setting changes how far back they reach.
+- `socket` and `log_file` must be absolute paths; `~` is not expanded. The CLI
+  reads `socket` from this file too, so `harness ls` finds a daemon on a
+  non-default socket without a `--socket` flag.
+- `compress_logs` compresses a log once nothing will write to it again: each
+  rotated backup of a harness's log, and each closed run's log and raw stream.
+  See [Supervision → Logs on disk](./supervision#logs-on-disk). Set it to
+  `false` to keep every log plain; files already compressed stay readable.
+- `scrollback_bytes`, `scrollback`, `log_level`, `log_file`, `socket`,
+  `compress_logs`, `memory_limit` and `pprof_addr` are read when the daemon
+  starts. Changing them needs a daemon restart, not a reload. Until you
+  restart, a changed `socket` points the CLI at a socket the running daemon is
+  not on.
+- `harness doctor` shows which source supplied each value.
+
+### Memory limit and profiler
+
+Both are off by default. They are guardrails for the daemon's own memory, not
+for the agents it runs.
+
+`memory_limit` sets the Go runtime's **soft** memory limit
+(`--memory-limit`, `HARNESS_MEMORY_LIMIT`). As the heap nears the limit, the GC
+runs harder so the daemon stays under it, instead of growing to about twice its
+live heap, which is the default (`GOGC=100`).
+
+- Write a size, such as `"2GiB"` or `"1536MiB"` (see
+  [sizes](#environment-variables); the units are 1024-based, as in systemd's
+  `MemoryMax=`). A bare number, or a TOML integer, is **bytes**, so
+  `memory_limit = 2048` is 2 KiB and the daemon warns. `"0"` or `0` means no
+  limit.
+- It cannot free memory the daemon is still holding. A leak still grows, only
+  with less headroom on top of it. Set below the live heap, it keeps the GC
+  running almost continuously. Keep the hard cap in the init system (systemd
+  `MemoryMax=`, a container limit). That cap usually covers every agent the
+  daemon spawns as well, so size `memory_limit` for the daemon alone, well under
+  it.
+- `GOMEMLIMIT` in the daemon's environment is honoured when none of
+  `--memory-limit`, `HARNESS_MEMORY_LIMIT` and `memory_limit` is set. Any of
+  them overrides it, and an explicit `0` removes it. Prefer `memory_limit`:
+  every harness the daemon spawns inherits `GOMEMLIMIT`, and Go agents read it
+  too.
+- The daemon logs the limit in effect and where it came from at startup
+  (`memory limit limit=2GiB source=file`), and `/metrics` reports it as
+  `go_gc_gomemlimit_bytes`.
+
+`pprof_addr` serves Go's profiler (`--pprof-addr`, `HARNESS_PPROF_ADDR`) at
+`http://<addr>/debug/pprof/`.
+
+- It binds **loopback only**: `127.0.0.1`, `::1` or `localhost`. Any other
+  address fails the config load (and any reload) with its line number, or stops
+  `harness daemon` at startup when it comes from the flag or the variable.
+  No token unlocks a remote bind, as `metrics_token_file` does for `/metrics`.
+  Heap profiles and goroutine dumps describe the daemon's internals, so reach
+  them from another host through a tunnel:
+  `ssh -L 6060:127.0.0.1:6060 host`.
+- A port that is already taken is logged, and the daemon runs without the
+  profiler.
+
+See [Diagnosing daemon memory](./production-observability#diagnosing-daemon-memory)
+for how to use both.
 
 `otel_endpoint` has been **removed**: it was accepted but never exported
 anything. A config that still sets it fails to load, with an error pointing
@@ -1027,14 +1215,48 @@ After verification, each delivery goes through three filters, in order:
 A reload keeps a route's bucket and de-duplication set as long as its name and
 `rate_limit` are unchanged; changing `rate_limit` starts both afresh.
 
-:::warning Only bearer is verified so far
-**Only `verify = "bearer"` is implemented so far.** A route using
-`hmac-sha256`, `github`, `gitea`, `gitlab` or `standard-webhooks` loads,
-logs a warning, and answers **every** delivery `401` until its verifier
-lands. It never accepts an unverified delivery.
+#### Verification schemes
 
-A non-loopback `webhook_listen` without TLS starts with a warning: bearer
-tokens then cross the network in cleartext. Bind loopback behind a
+`verify` picks how a delivery proves it came from whoever holds the secret.
+The check runs over the body bytes exactly as they arrived, before anything
+parses them. The four presets fix their header names, so a GitHub, Gitea or
+GitLab route is three lines:
+
+```toml
+[webhook.gh]
+verify = "github"
+env_file = "~/.config/harness/triggers.env"   # GH_HOOK_SECRET=...
+secret = "${GH_HOOK_SECRET}"
+```
+
+| `verify` | Credential the sender presents | Event header | Delivery header |
+|---|---|---|---|
+| `bearer` | `Authorization: Bearer <secret>` | `event_header` | `delivery_header` |
+| `hmac-sha256` | hex HMAC-SHA256 of the body, keyed by the secret, in `signature_header` after `signature_prefix` | `event_header` | `delivery_header` |
+| `github` | `X-Hub-Signature-256: sha256=<hex HMAC-SHA256>` | `X-GitHub-Event` | `X-GitHub-Delivery` |
+| `gitea` | `X-Gitea-Signature: <hex HMAC-SHA256>` | `X-Gitea-Event` | `X-Gitea-Delivery` |
+| `gitlab` | `X-Gitlab-Token: <secret>` | `X-Gitlab-Event` | `X-Gitlab-Event-UUID` |
+| `standard-webhooks` | not implemented yet; see below | — | — |
+
+For `github` and `gitea`, set the same value as the forge hook's **Secret**;
+for `gitlab`, as its **Secret token**. A missing signature header, two of
+them, a wrong prefix, anything but 64 hex digits, or a MAC that does not
+match is a `401`. The event header becomes the event name `events` matches,
+and the delivery header becomes the run's `event_id`. The event file carries
+only `Content-Type`, `User-Agent` and those two headers, never the signature
+or token.
+
+A `gitlab` token is a shared password, not a signature: it proves the sender
+knows the secret, but does not cover the body. Prefer `gitea`- or
+`github`-style signing where the sender offers it, and TLS either way.
+
+:::warning standard-webhooks is not verified yet
+A route using `verify = "standard-webhooks"` loads, logs a warning, and
+answers **every** delivery `401` until its verifier lands. It never accepts
+an unverified delivery.
+
+A non-loopback `webhook_listen` without TLS starts with a warning: bearer and
+GitLab tokens then cross the network in cleartext. Bind loopback behind a
 TLS-terminating proxy, or set both TLS files.
 :::
 
@@ -1055,20 +1277,35 @@ the SSH server is on — can come from the environment instead of a flag or this
 file. That is what makes Harness deployable as a container or a systemd unit
 without baking in a config file.
 
-| Variable | Flag | Type | Default |
-|---|---|---|---|
-| `HARNESS_SOCKET` | `--socket` | path | `$XDG_RUNTIME_DIR/harness.sock` |
-| `HARNESS_CONFIG` | `--config` | path | `$XDG_CONFIG_HOME/harness/harness.toml` |
-| `HARNESS_JSON` | `--json` | bool | `false` |
-| `HARNESS_LOG_LEVEL` | `--log-level` | `debug`/`info`/`warn`/`error` | `info` |
-| `HARNESS_LOG_FILE` | `--log-file` | path | stderr |
-| `HARNESS_SCROLLBACK` | `--scrollback` | int | 10000 |
-| `HARNESS_SSH` | `--ssh` | bool | `false` |
-| `HARNESS_SSH_LISTEN` | `--ssh-listen` | `host:port` | unset |
-| `HARNESS_WEBHOOK_LISTEN` | `--webhook-listen` | `host:port` | unset (no webhook listener) |
-| `HARNESS_WATCH_CONFIG` | — | bool | `true` |
+| Variable | Flag | `harness.toml` key | Type | Default |
+|---|---|---|---|---|
+| `HARNESS_SOCKET` | `--socket` | `[daemon] socket` | path | `$XDG_RUNTIME_DIR/harness.sock` |
+| `HARNESS_CONFIG` | `--config` | — | path | `$XDG_CONFIG_HOME/harness/harness.toml` |
+| `HARNESS_JSON` | `--json` | — | bool | `false` |
+| `HARNESS_LOG_LEVEL` | `--log-level` | `[daemon] log_level` | `debug`/`info`/`warn`/`error` | `info` |
+| `HARNESS_LOG_FILE` | `--log-file` | `[daemon] log_file` | path | stderr |
+| `HARNESS_SCROLLBACK` | `--scrollback` | `[daemon] scrollback` | int | 10000 |
+| `HARNESS_SCROLLBACK_BYTES` | `--scrollback-bytes` | `[daemon] scrollback_bytes` | size (`4MiB`, bytes) | `1MiB` |
+| `HARNESS_SSH` | `--ssh` | `[server] enabled` | bool | `false` |
+| `HARNESS_SSH_LISTEN` | `--ssh-listen` | `[server] listen` | `host:port` | unset |
+| `HARNESS_WEBHOOK_LISTEN` | `--webhook-listen` | `[server] webhook_listen` | `host:port` | unset (no webhook listener) |
+| `HARNESS_WATCH_CONFIG` | — | `[daemon] watch_config` | bool | `true` |
+| `HARNESS_COMPRESS_LOGS` | `--compress-logs` | `[daemon] compress_logs` | bool | `true` (zstd-compress sealed logs) |
+| `HARNESS_MEMORY_LIMIT` | `--memory-limit` | `[daemon] memory_limit` | size (`2GiB`; `0` = off) | unset (`GOMEMLIMIT`, else off) |
+| `HARNESS_PPROF_ADDR` | `--pprof-addr` | `[daemon] pprof_addr` | loopback `host:port` | unset (no profiler) |
+
+`GOMEMLIMIT` is not a Harness variable, but the daemon honours it when no source
+above sets a memory limit. See [Memory limit and profiler](#memory-limit-and-profiler).
+
+`config` has no file key because it names the file. `json` has none because it
+is an output choice for one invocation: a file default would change what every
+script parsing Harness's output receives.
 
 Booleans accept `1`, `0`, `true`, `false`, `yes`, `no`, `on`, `off`.
+
+Sizes accept a whole number of bytes or a number with a unit: `B`, `KiB`,
+`MiB`, `GiB`, `TiB`, with `K`/`KB`, `M`/`MB`, `G`/`GB`, `T`/`TB` as the same
+1024-based units. Case does not matter.
 
 ### Precedence
 
@@ -1092,6 +1329,9 @@ A bad value is a hard failure, never a silent fallback:
 ```
 HARNESS_SCROLLBACK=lots harness daemon run
 # HARNESS_SCROLLBACK: invalid value "lots": expected an integer
+
+HARNESS_SCROLLBACK_BYTES=16GiB harness daemon run
+# HARNESS_SCROLLBACK_BYTES: must be between 64KiB and 1GiB, got 16GiB
 ```
 
 ### Which source won?

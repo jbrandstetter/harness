@@ -261,3 +261,90 @@ one warning per signal per failure kind per minute, with a running count — a
 rejected credential (401/403) is visible within a minute without flooding the
 log. On shutdown the daemon spends up to `shutdown_timeout` flushing, and logs
 in one line what, if anything, was lost.
+
+## Diagnosing daemon memory
+
+The agents are the daemon's children and have memory of their own. This section
+is about the daemon process itself. In September 2026 one reached 12 GB because
+every spawn leaked a terminal emulator
+(https://github.com/stump-wtf/harness/issues/18). With nothing but `ps` to go
+on, it took hours to find. With the steps below it takes minutes.
+
+**1. Measure the right number.** On macOS, do not trust `ps` RSS or `top`.
+macOS compresses idle pages, and RSS leaves compressed memory out, so a leaking
+daemon's RSS can sit still while its real footprint climbs. Use `footprint`,
+which reports the same number as Activity Monitor's Memory column and the one
+the kernel acts on:
+
+```sh
+harness daemon status                          # prints the daemon's PID
+footprint --noCategories -p <pid>              # one reading
+footprint --noCategories -p <pid> --sample 60  # one a minute, to see a trend
+```
+
+On Linux, `VmRSS` in `/proc/<pid>/status` is fair, and `smem` separates shared
+pages.
+
+**2. Tell a leak from headroom.** Read the daemon's own series on `/metrics`
+([Metrics → Daemon memory](./metrics#daemon-memory)).
+
+- `go_memory_classes_heap_objects_bytes` is the live heap.
+  `go_gc_heap_goal_bytes` is where the GC lets it grow, about twice the live
+  heap by default.
+- A live heap or `go_goroutines` climbing in step with spawns is a leak. File
+  it with the profile from step 3.
+- A flat live heap under a high footprint is headroom. `[daemon] memory_limit`
+  trims it.
+
+**3. Profile it.** Turn on the profiler, which binds loopback only, and restart
+the daemon:
+
+```toml
+[daemon]
+pprof_addr = "127.0.0.1:6060"
+```
+
+Then ask what is holding memory right now:
+
+```sh
+go tool pprof -sample_index=inuse_space http://127.0.0.1:6060/debug/pprof/heap
+# (pprof) top 20     largest holders
+# (pprof) list <fn>  the lines that allocated
+```
+
+For a leak per spawn, diff two snapshots taken a few runs apart. Whatever grew
+is what leaked:
+
+```sh
+curl -so heap-1.pb.gz http://127.0.0.1:6060/debug/pprof/heap
+# ...let a few harnesses start and stop...
+curl -so heap-2.pb.gz http://127.0.0.1:6060/debug/pprof/heap
+go tool pprof -sample_index=inuse_space -base heap-1.pb.gz heap-2.pb.gz
+```
+
+Goroutines that pile up are grouped by stack, with a count on each. A stack
+whose count matches the number of runs is the leak:
+
+```sh
+curl -s 'http://127.0.0.1:6060/debug/pprof/goroutine?debug=1' | head -60
+```
+
+From another machine, tunnel in: `ssh -L 6060:127.0.0.1:6060 <host>`, then use
+the same URLs.
+
+**4. Cap it.** `[daemon] memory_limit` (or `HARNESS_MEMORY_LIMIT`) sets the Go
+runtime's soft limit. Near the limit the GC runs harder, so the daemon holds
+less headroom above its live heap. It cannot free a leak, and set below the
+live heap it keeps the GC busy almost continuously. Keep a hard cap in the init
+system as well. A systemd unit's `MemoryMax=` covers every agent the daemon
+spawns too, so size `memory_limit` for the daemon alone, well under the unit's
+cap:
+
+```toml
+[daemon]
+memory_limit = "1GiB"
+```
+
+The daemon logs the limit in effect at startup (`memory limit limit=1GiB
+source=file`), and `go_gc_gomemlimit_bytes` reports it. See
+[Configuration → Memory limit and profiler](./configuration#memory-limit-and-profiler).

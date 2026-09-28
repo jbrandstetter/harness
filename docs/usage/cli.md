@@ -238,6 +238,23 @@ harness logs <name> --run 3       # one run of a scheduled harness (see harness 
 When a log rotates or truncates, `--follow` reprints the current tail so you
 never silently lose context.
 
+A [stream-json one-shot](./configuration#stream-json-one-shots-run-without-a-terminal)
+(a `claude-code` prompt harness) has no terminal, and its stdout is not in its
+durable log. `harness logs <name> --raw` shows that log's lifecycle and stderr
+lines, with a note saying where the output went. `harness logs <name> --run N
+--raw` prints run N's `.stream.jsonl` tail, each line cut at 64 KiB, and once
+the run has ended, its run log after it, each under a `==> path <==` header.
+`harness trigger <name> --wait` streams the same text as the run goes. The file
+itself is whole: read it with `jq` for anything longer.
+
+`harness logs` reads the daemon's files for you, compressed or not. A rotated
+backup and a closed run's log and stream are stored zstd-compressed
+(`.log.zst`, `.stream.jsonl.zst`) by default. Read one by hand with
+`zstd -dc FILE.zst`, or search plain and compressed logs together with
+`zstdgrep`. See
+[Supervision → Logs on disk](./supervision#logs-on-disk) for which files are
+compressed and when, and for the `compress_logs` opt-out.
+
 ## Profiles
 
 ```sh
@@ -270,6 +287,14 @@ harness attach <name> --ro    # read-only: attach but ignore keystrokes
 
 `attach` reuses the same full-window terminal the dashboard uses, with the
 1-line status bar and tmux-style detach chords. See [Cockpit TUI](./tui).
+
+A stream-json one-shot has no terminal to attach to, and the daemon keeps no
+screen for it. Attaching shows its output as lines: its recent lines first,
+then new ones as they arrive, stdout's JSON lines masked, with its stderr lines
+between them. Keystrokes go nowhere, since its stdin is `/dev/null`, and
+resizing the window changes nothing for it. A client too slow to keep up sees
+an `output dropped` line where it fell behind; the run's `.stream.jsonl` has
+everything. `harness describe` lists the sessions, with no viewport.
 
 ## Scratchpads (`harness run`)
 
@@ -337,8 +362,23 @@ harness daemon status         # one-shot: daemon info
 harness daemon --detach       # fork into the background (dev convenience)
 ```
 
-Daemon flags: `--config`, `--socket`, `--scrollback N` (per-harness ring depth),
-`--ssh`, `--ssh-listen`, `--webhook-listen`, `--log-level`, `--log-file`, `--detach`.
+Daemon flags: `--config`, `--socket`, `--scrollback-bytes SIZE` (per-harness
+scrollback ring storage, default `1MiB`), `--scrollback N` (and at most N lines
+of it), `--ssh`, `--ssh-listen`, `--webhook-listen`, `--log-level`, `--log-file`,
+`--memory-limit SIZE`, `--pprof-addr H:P`, `--detach`.
+All but `--config` and `--detach` can also be set in `harness.toml`
+(`[daemon]` / `[server]`) or a `HARNESS_*` variable; see
+[Configuration → Environment variables](./configuration#environment-variables).
+
+- `--memory-limit` (`HARNESS_MEMORY_LIMIT`, `[daemon] memory_limit`) sets the
+  daemon's Go soft memory limit, e.g. `2GiB`; `0` is off. Any of the three
+  overrides `GOMEMLIMIT`. With none set, `GOMEMLIMIT` applies if present, and
+  otherwise there is no limit.
+- `--pprof-addr` (`HARNESS_PPROF_ADDR`, `[daemon] pprof_addr`) serves
+  `/debug/pprof/` on a loopback address. A non-loopback address makes the daemon
+  refuse to start.
+
+See [Memory limit and profiler](./configuration#memory-limit-and-profiler).
 
 ## Exit codes & error handling
 
