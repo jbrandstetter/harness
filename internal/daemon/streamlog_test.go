@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/stump-wtf/harness/internal/core"
+	"github.com/stump-wtf/harness/internal/protocol"
 	"github.com/stump-wtf/harness/internal/testwait"
 )
 
@@ -122,6 +123,56 @@ echo '{"type":"result"}'
 	if !strings.HasPrefix(ld.Text, live) || !strings.Contains(ld.Text[len(live):], "early stderr") {
 		t.Errorf("the finished text does not extend the live text with the run log:\nlive:\n%s\nfinished:\n%s", live, ld.Text)
 	}
+}
+
+// Attaching over the wire to a stream-json one-shot gets its lines as CRLF
+// lines (the daemon picks the line mux from the definition before the first
+// run), and describe lists the session with no viewport.
+func TestAttachToAPipeRunOverTheWire(t *testing.T) {
+	dir := t.TempDir()
+	gate := filepath.Join(dir, "go")
+	fakeClaude(t, `echo '{"type":"system","subtype":"init"}'
+echo 'warning: from stderr' >&2
+while [ ! -e '`+gate+`' ]; do sleep 0.02; done
+echo '{"type":"result","subtype":"success"}'
+`)
+	td, _, _ := newJobsDaemon(t, pipeOneShot("sweep", dir))
+	att := td.dial(t, nil)
+	if err := att.AttachOpen(1, "sweep", 120, 40, protocol.AttachRO); err != nil {
+		t.Fatal(err)
+	}
+	ctl := td.dial(t, nil)
+	if _, err := ctl.Trigger("sweep"); err != nil {
+		t.Fatal(err)
+	}
+	var got strings.Builder
+	pc := att.Conn()
+	_ = att.SetReadDeadline(time.Now().Add(testwait.Budget(t, 10*time.Second)))
+	for !strings.Contains(got.String(), "warning: from stderr\r\n") || !strings.Contains(got.String(), "{\"type\":\"system\",\"subtype\":\"init\"}\r\n") {
+		f, err := pc.ReadFrame()
+		if err != nil {
+			t.Fatalf("reading attach frames (got %q): %v", got.String(), err)
+		}
+		switch f.Type {
+		case protocol.TypeAttachData:
+			if _, data, err := protocol.DecodeAttach(f.Payload); err == nil {
+				got.Write(data)
+			}
+		case protocol.TypePing:
+			_ = pc.WriteFrame(protocol.TypePong, nil)
+		}
+	}
+	info, err := ctl.Describe("sweep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.AttachViewport != "" || len(info.AttachSessions) != 1 {
+		t.Errorf("describe: viewport %q, sessions %+v; want no viewport and the one session", info.AttachViewport, info.AttachSessions)
+	}
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitRunsOver(t, ctl, "sweep", finishedN(1))
 }
 
 // streamTail bounds what it returns: n lines, each cut at lineMax with a note,

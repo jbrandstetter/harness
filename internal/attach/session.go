@@ -21,7 +21,7 @@ import (
 type Session struct {
 	id    uint32
 	mode  protocol.AttachMode
-	mux   *Mux
+	mux   sessionHost
 	write func([]byte) error
 
 	// cols/rows are guarded by mux.mu (set in Attach/Resize, read in
