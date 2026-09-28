@@ -89,7 +89,7 @@ func newPtyHistory(out io.Writer, cols, rows int) *ptyHistory {
 	if rows < 1 {
 		rows = defaultPTYRows
 	}
-	term := vt.NewEmulator(cols, rows)
+	term := newEmulator(cols, rows)
 	h := &ptyHistory{term: term, out: out, prev: blankScreen(cols, rows)}
 	go h.drainReplies(term)
 	return h
@@ -200,7 +200,7 @@ func (h *ptyHistory) feedLocked(chunk []byte) {
 			if cols < 1 || rows < 1 {
 				cols, rows = defaultPTYCols, defaultPTYRows
 			}
-			term := vt.NewEmulator(cols, rows)
+			term := newEmulator(cols, rows)
 			h.term = term
 			h.prev = blankScreen(cols, rows)
 			go h.drainReplies(term)
