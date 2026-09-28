@@ -221,8 +221,10 @@ func (m *Manager) reindexRepo(name string) {
 
 	if err := m.index.ReindexRepo(rc.Name, entries); err != nil {
 		// The transaction already rolled back: the previous index stays
-		// queryable. Record the failure so doctor can surface it.
-		m.record(name, CloneInfo{State: CloneDirty, DefaultBranch: info.DefaultBranch, Head: info.Head,
+		// queryable. Record the failure so doctor can surface it — as an
+		// index error, not CloneDirty: the working tree is clean, and a
+		// dirty diagnosis would send the operator to fix the wrong thing.
+		m.record(name, CloneInfo{State: CloneIndexError, DefaultBranch: info.DefaultBranch, Head: info.Head,
 			Detail: err.Error()}, warnings, m.repoSkillCount(name), m.wasIndexed(name))
 		return
 	}

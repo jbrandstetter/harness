@@ -66,6 +66,10 @@ const (
 	CloneDetached CloneState = "detached"
 	// CloneDirty: HEAD is the default branch but the working tree is dirty.
 	CloneDirty CloneState = "dirty"
+	// CloneIndexError: the clone passed the gate but its reindex failed (a
+	// database error, not a clone condition). The previous index keeps
+	// serving; the detail names the cause.
+	CloneIndexError CloneState = "index_error"
 )
 
 // CloneInfo is the result of one read-only inspection of a serving clone.
