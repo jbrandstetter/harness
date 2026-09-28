@@ -208,7 +208,11 @@ func (c *conn) attachInfoFor(info *protocol.HarnessInfo) {
 	if !ok {
 		return
 	}
-	info.AttachViewport = fmt.Sprintf("%dx%d", ms.Cols, ms.Rows)
+	// A harness served by a line mux (a structured one-shot) has sessions but
+	// no terminal, so no viewport (internal/attach, lines.go).
+	if ms.Cols > 0 && ms.Rows > 0 {
+		info.AttachViewport = fmt.Sprintf("%dx%d", ms.Cols, ms.Rows)
+	}
 	sessions := make([]protocol.AttachSessionInfo, 0, len(ms.Sessions))
 	for _, s := range ms.Sessions {
 		sessions = append(sessions, protocol.AttachSessionInfo{

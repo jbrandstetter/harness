@@ -17,6 +17,7 @@ import (
 
 	"github.com/stump-wtf/harness/internal/attach"
 	"github.com/stump-wtf/harness/internal/protocol"
+	"github.com/stump-wtf/harness/internal/supervisor"
 )
 
 // conn is one live client connection: the framed transport plus its attach
@@ -329,7 +330,11 @@ func (c *conn) handleAttachOpen(payload []byte) {
 	if mode != protocol.AttachRO {
 		mode = protocol.AttachRW
 	}
-	mux := c.srv.reg.Mux(open.Name)
+	// A structured one-shot has no terminal, so it is attached through the
+	// registry's emulator-less line mux (internal/attach, lines.go; ADR-0033).
+	// Its definition decides only until its first run says which it uses.
+	h, _, _ := c.srv.mgr.HarnessRecord(open.Name)
+	mux := c.srv.reg.AttachTarget(open.Name, supervisor.RunsOnPipes(h))
 	writeFn := func(data []byte) error {
 		return c.pc.WriteFrame(protocol.TypeAttachData, protocol.EncodeAttach(id, data))
 	}

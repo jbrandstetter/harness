@@ -210,6 +210,22 @@ func drainOutput(p *pipeProgress, done <-chan struct{}) {
 	p.drain(done)
 }
 
+// LineOuter is implemented by an ExtraOut that takes a pipe run's output lines
+// somewhere other than its PTY sink: the attach registry's per-harness Output,
+// whose LineOut is a mux with no terminal emulator. readPipes asks for it once
+// per pipe run; an ExtraOut without it gets the lines through Write.
+type LineOuter interface {
+	LineOut() io.Writer
+}
+
+// Primer is implemented by an ExtraOut that prepares for a harness's runs when
+// its supervisor is built, told whether they run on pipes. The attach registry
+// builds a terminal harness's mux then, as it always has, and nothing for a
+// structured one-shot, whose runs never need an emulator.
+type Primer interface {
+	Prime(pipes bool)
+}
+
 // resize applies an attach viewport to the PTY. A pipe run has no terminal to
 // size, so it is a no-op.
 func (p *process) resize(cols, rows int) {
@@ -328,6 +344,11 @@ func (s *Supervisor) readPipes(proc *process, done chan struct{}) {
 	}
 	s.stream = stream
 	logOut, tee := s.historyOut(), s.extraOut
+	if lo, ok := tee.(LineOuter); ok {
+		// The attach registry serves a pipe run from a mux with no
+		// emulator (internal/attach, lines.go).
+		tee = lo.LineOut()
+	}
 
 	prog := proc.progress
 	stdout, stderr := prog.track(proc.stdout), prog.track(proc.stderr)

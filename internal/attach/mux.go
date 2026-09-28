@@ -110,7 +110,7 @@ func newMuxLimits(name string, lim RingLimits, onResize func(cols, rows int), on
 		// an intermittent one, since it depends on which goroutines are still
 		// asleep).
 		nudgeDelays: winchNudgeDelays,
-		term:        vt.NewEmulator(defaultCols, defaultRows),
+		term:        newEmulator(defaultCols, defaultRows),
 		ring:        newRing(lim),
 		cols:        defaultCols,
 		rows:        defaultRows,

@@ -156,6 +156,40 @@ starts at the daemon's start. It is attached to the collector later, together
 with the scheduler's `NextFire`, and the listener binds only after that. A
 scrape therefore never sees a collector that is missing its observer.
 
+### Runtime memory and the profiler
+
+Recorded 2026-09-28 with REQ-7 and REQ-8, after a daemon reached 12 GB
+through an emulator leaked per spawn and nobody could say from the scrape
+whether it was a leak or GC headroom
+(https://github.com/stump-wtf/harness/issues/18).
+
+REQ-7 is two `collectors.WithGoCollectorRuntimeMetrics` rules on the existing
+Go collector, `^/memory/classes/.*` and `^/gc/heap/goal:bytes$`, about fifteen
+unlabelled series. The collector's defaults already include `go_goroutines`,
+the MemStats family and `go_gc_gomemlimit_bytes`; a test pins the ones the
+usage docs name, so a client_golang bump cannot drop them quietly.
+
+The pprof listener lives in `internal/diag` beside the memory limit, not in
+this package: `internal/config` validates `pprof_addr` at load, and config
+cannot import `internal/metrics`, which imports the supervisor. `IsLoopback`
+moved there for the same reason, and `metrics.IsLoopback` delegates to it,
+so every listener shares one definition of loopback. Importing
+`net/http/pprof` registers its handlers on `http.DefaultServeMux`. That is
+harmless only while no server in the binary serves it, and a test pins that
+`/metrics` answers 404 for `/debug/pprof/`.
+
+REQ-8 refuses a non-loopback address at three points, each reporting in its
+own way. `internal/config` refuses a file value at load and on reload, with
+the key's line. Without that, a reload would accept the value, and the next
+restart would refuse to start long after anyone connected the two.
+`resolveDaemonSettings` refuses a flag or environment value before
+`runDaemon`, naming the source. `ListenPprof` checks again and re-checks the
+bound address.
+
+The pprof server has no write timeout, because `/debug/pprof/profile` and
+`/trace` stream for as long as the request asks. Shutdown gives in-flight
+requests five seconds, then closes.
+
 ## Testing
 
 * A test asserting the 2026-09-14 shape: state `running` = 1, quota errors
@@ -169,3 +203,8 @@ scrape therefore never sees a collector that is missing its observer.
   increments the unclassified counter as well as `class="other"`.
 * A startup test: non-loopback bind with no token refuses to start.
 * A cardinality test: harnesses beyond the cap collapse into `__other__`.
+* The REQ-7 families present on the scrape, unlabelled and bounded, and
+  `go_gc_gomemlimit_bytes` tracking the runtime's limit.
+* The real binary: its own `go_gc_gomemlimit_bytes` for each memory-limit
+  precedence case, pprof serving a heap profile on the configured loopback
+  port, and a non-loopback `HARNESS_PPROF_ADDR` refusing the start.

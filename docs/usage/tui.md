@@ -47,12 +47,13 @@ smaller one wins — `harness describe <name>` lists every attached session and
 flags the one setting the minimum.
 
 A `claude-code` one-shot prints stream-json, one JSON object per line. It runs
-on pipes rather than a PTY, so there is no terminal for the pane to size, and
-its preview session receives those lines as they arrive. The preview renders
-that backend's output readably instead of mirroring the raw feed (issue #13):
-heartbeat pings collapse into a single `[N heartbeats over Xs]` line that ticks
-while a tool runs, tool calls appear as their human-written description
-(`▸ Push branch to GitHub`), and the agent's messages show as plain text.
+on pipes rather than a PTY, so there is no terminal for the pane to size and no
+screen: its preview session gets the recent lines, then new ones as they
+arrive. The preview renders that backend's output readably instead of
+mirroring the raw feed (issue #13): heartbeat pings collapse into a single
+`[N heartbeats over Xs]` line that ticks while a tool runs, tool calls appear
+as their human-written description (`▸ Push branch to GitHub`), and the agent's
+messages show as plain text.
 Anything that is not modeled — stderr lines, unknown event kinds — still passes
 through untouched. Every other adapter keeps the byte-faithful mirror.
 

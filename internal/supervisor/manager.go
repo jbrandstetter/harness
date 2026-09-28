@@ -262,12 +262,17 @@ func (m *Manager) addSupervisor(h core.Harness) {
 }
 
 // extraOut resolves the per-harness tee writer (the attach emulator/ring) from
-// the configured factory, or nil when none is set.
-func (m *Manager) extraOut(name string) io.Writer {
+// the configured factory, or nil when none is set. A writer that can prepare
+// for h's kind of run is told which it is (Primer, pipes.go).
+func (m *Manager) extraOut(h core.Harness) io.Writer {
 	if m.extraOutFor == nil {
 		return nil
 	}
-	return m.extraOutFor(name)
+	w := m.extraOutFor(h.Name)
+	if p, ok := w.(Primer); ok {
+		p.Prime(RunsOnPipes(h))
+	}
+	return w
 }
 
 // initialSizeFor binds the configured SizeFor hook to one harness name, or nil
@@ -1063,7 +1068,7 @@ func (m *Manager) addSupervisorLocked(h core.Harness) {
 		Policy:      m.policy,
 		Bus:         m.bus,
 		LogCfg:      m.logCfg,
-		ExtraOut:    m.extraOut(h.Name),
+		ExtraOut:    m.extraOut(h),
 		OnChange:    m.markDirty,
 		InitialSize: m.initialSizeFor(h.Name),
 		Runs:        m,
@@ -1081,7 +1086,7 @@ func (m *Manager) addEphemeralSupervisorLocked(h core.Harness) {
 		Policy:      m.policy,
 		Bus:         m.bus,
 		LogCfg:      m.logCfg,
-		ExtraOut:    m.extraOut(h.Name),
+		ExtraOut:    m.extraOut(h),
 		InitialSize: m.initialSizeFor(h.Name),
 	})
 	m.supervisors[h.Name] = s
