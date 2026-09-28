@@ -131,6 +131,10 @@ func (c *conn) infoFor(snap supervisor.Snapshot) protocol.HarnessInfo {
 		info.MCPConfig = h.MCPConfig
 		info.AllowedTools = h.AllowedTools
 		info.Quiet = h.Quiet
+		// The pin reference rides the wire so a TUI edit of a harness whose
+		// file cannot be re-read still round-trips `source` instead of
+		// silently converting the table to a bare one (SPEC-0026 REQ-7).
+		info.Source = h.PackageSource
 		info.Backend = string(h.Backend)
 		info.Description = h.Description
 		info.Schedule = h.Schedule

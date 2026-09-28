@@ -152,13 +152,16 @@ const (
 type Harness struct {
 	// Name is the table name, unique across the config.
 	Name string
-	// Source, when set, names the installed agent package pin this harness
-	// is defined by: "<stable>/<package>@<sha>" (SPEC-0026 REQ-7). The
-	// package's [harness] values were applied at config load, with any key
-	// set directly on the table overriding them. Kept on the struct so
+	// PackageSource, when set, names the installed agent package pin this
+	// harness is defined by: "<stable>/<package>@<sha>" (SPEC-0026 REQ-7).
+	// The package's [harness] values were applied at config load, with any
+	// key set directly on the table overriding them. Kept on the struct so
 	// list, describe and doctor can attribute fields without re-reading the
-	// manifest. Governing: ADR-0040; SPEC-0026 REQ-7, REQ-12.
-	Source string
+	// manifest. Named PackageSource, not Source, because this package's
+	// SourceKind* constants already mean trigger sources and a bare Source
+	// reads as one of them (#809). Governing: ADR-0040; SPEC-0026 REQ-7,
+	// REQ-12.
+	PackageSource string
 	// Args are the command arguments, appended after the adapter's
 	// executable; {workdir} placeholders are expanded at spawn time by the
 	// supervisor, not here. Never set on a "command" harness, whose Argv

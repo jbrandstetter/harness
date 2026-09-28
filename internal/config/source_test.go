@@ -57,8 +57,8 @@ args = ["--help"]
 	if !ok {
 		t.Fatal("harness pr not registered")
 	}
-	if h.Source != "stump-wtf/pr-reviewer@"+testSHA {
-		t.Errorf("source: %q", h.Source)
+	if h.PackageSource != "stump-wtf/pr-reviewer@"+testSHA {
+		t.Errorf("source: %q", h.PackageSource)
 	}
 	if h.Adapter != "crush" || len(h.Args) != 1 || h.Args[0] != "--help" {
 		t.Errorf("resolved harness: %+v", h)

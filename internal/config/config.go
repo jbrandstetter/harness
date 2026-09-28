@@ -1246,7 +1246,7 @@ func registerHarness(cfg *core.Config, filename, name string, line int, rh rawHa
 
 	h := core.Harness{
 		Name:             name,
-		Source:           sourceValue,
+		PackageSource:    sourceValue,
 		Adapter:          adapter,
 		Args:             rh.Args,
 		Argv:             rh.Argv,

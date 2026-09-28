@@ -725,7 +725,7 @@ func editInputsFor(path string, sel protocol.HarnessInfo) formInputs {
 	fi.harness = h.Adapter
 	// Round-trip only: the file is the truth here, since a stale HarnessInfo
 	// would pin an upgraded harness to its old sha on an unrelated edit.
-	fi.source = h.Source
+	fi.source = h.PackageSource
 	fi.prompt = h.Prompt
 	fi.promptFile = h.PromptFile
 	fi.systemPromptFile = h.SystemPromptFile
