@@ -16,8 +16,24 @@ package ledger
 // files. That is the difference between "this harness has 3 runs" and "this
 // harness has 3 runs that I happen to remember".
 //
+// A record it trimmed can still receive lines: a skip record is one `decided`
+// line, closed and so trimmable, while the supervisor coalesces firings into it
+// for as long as the run in flight lasts, which can outlast the window. The
+// index does not take it back. A committed `updated` or `closed` line for a key
+// it does not hold, above floor 1, continues a record below the floor; folded
+// alone it would be a stub with no outcome, filed at the line's own seq as the
+// harness's newest run. The files hold the line, and Get, Pending and Query's
+// file path fold it with the rest of its record. Pending reads the files for
+// any record the index does not hold whole: one file read per firing, paid only
+// by a skip older than the window and beyond the tail.
+//
 // Governing: SPEC-0022 REQ-2, REQ-7, REQ-15; design "The fold and the in-memory
-// index".
+// index"; SPEC-0014 REQ "Overlap Skip Coalescing".
+//
+// @joestump-agent 09/28/2026 - A committed line no longer turns a record the
+// index trimmed into a Partial stub that Records and Query listed as the newest
+// run, and Pending reads the files for a record the index does not hold whole
+// rather than folding its queue over nothing.
 
 import (
 	"cmp"
@@ -86,6 +102,27 @@ func (x *index) apply(l Line) {
 	}
 }
 
+// commit folds in a line the writer just committed. It differs from apply in
+// one case: a line continuing a record (`updated`, `closed`) for a key the
+// index does not hold, of a harness whose floor is above 1. That record's first
+// line is below the floor, trimmed or never read, so the line is left to the
+// files (see the header). A scan cannot do the same: backfill reads older files
+// after newer ones, and completes a continuation it folded first.
+//
+// Loading the record from the files here instead would scan them in the
+// writer's commit path, under the lock every Append waits on. A continuation
+// whose first line the files have lost too (a pruned day file) folds there as
+// REQ-2's partial record, which only the file readers then show.
+func (x *index) commit(l Line) {
+	if l.Type == TypeUpdated || l.Type == TypeClosed {
+		if _, held := x.recs[key{l.Harness, l.RunID}]; !held && x.floorOf(l.Harness) > 1 {
+			x.maxRunID[l.Harness] = max(x.maxRunID[l.Harness], l.RunID)
+			return
+		}
+	}
+	x.apply(l)
+}
+
 func (x *index) floorOf(h string) uint64 {
 	if f, ok := x.floor[h]; ok {
 		return f
@@ -95,7 +132,8 @@ func (x *index) floorOf(h string) uint64 {
 
 // trim drops closed records that are both outside the window and beyond each
 // harness's tail, raising the floors past what it dropped. Open records are
-// never dropped: reconciliation and the close path need them.
+// never dropped: reconciliation and the close path need them. A closed one can
+// still receive lines (a coalesced skip); commit leaves those to the files.
 func (x *index) trim(now time.Time, window time.Duration, tail int) {
 	cutoff := now.Add(-window)
 	for h, list := range x.by {
@@ -349,6 +387,11 @@ func (l *Ledger) Get(harness string, id int) (Folded, bool, error) {
 // writer's own read-your-writes, for a caller that computes its next line from
 // its last (a coalesced skip counting firings), and never a view to publish:
 // what it adds is not on disk yet.
+//
+// A record the index does not hold whole (trimmed, or Partial from the boot
+// scan) is read from the files, as Get reads it, and the queue folded over
+// that: folded over nothing, the queue alone is a record with no outcome,
+// trigger or start.
 func (l *Ledger) Pending(harness string, id int) (Folded, bool, error) {
 	// One lock hold for the index and the queue: the writer moves a line from
 	// one to the other under this lock, so reading them apart could see it in
@@ -359,18 +402,25 @@ func (l *Ledger) Pending(harness string, id int) (Folded, bool, error) {
 	if ok {
 		f = *mem
 	}
+	var queued []Line
 	for _, p := range l.queue {
 		if p.line.Harness == harness && p.line.RunID == id {
-			f.apply(p.line)
-			ok = true
+			queued = append(queued, p.line)
 		}
 	}
 	l.mu.Unlock()
-	if ok {
-		return f, true, nil
+	if !ok || f.Partial() {
+		// The queue was read first, so a line the writer commits in between
+		// is in both, and folding a line twice changes nothing.
+		var err error
+		if f, ok, err = l.Get(harness, id); err != nil {
+			return Folded{}, false, err
+		}
 	}
-	// Not in memory at all: an old record, which has nothing queued either.
-	return l.Get(harness, id)
+	for _, ln := range queued {
+		f.apply(ln)
+	}
+	return f, ok || len(queued) > 0, nil
 }
 
 // Records returns every record of harness the index holds, oldest first: the

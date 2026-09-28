@@ -424,8 +424,9 @@ func (l *Ledger) Enqueue(ln Line, sync bool) (uint64, func() error, error) {
 // mu.
 func (l *Ledger) commitLocked(n int) {
 	for _, p := range l.queue[:n] {
-		l.idx.apply(p.line)
+		l.idx.commit(p.line)
 		l.publishLocked(p.line)
+		l.idx.commit(p.line)
 	}
 	l.queue = l.queue[n:]
 	if day := startOfDay(l.opts.Now()); !day.Equal(l.idx.trimmedDay) {
