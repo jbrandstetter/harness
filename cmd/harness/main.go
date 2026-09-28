@@ -17,6 +17,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/spf13/cobra"
+
 	"github.com/stump-wtf/harness/internal/buildinfo"
 	"github.com/stump-wtf/harness/internal/client"
 	"github.com/stump-wtf/harness/internal/cliui"
@@ -61,6 +63,10 @@ type verbOpts struct {
 	eventFile  string // trigger --event: an event envelope to replay (SPEC-0014)
 	limit      int    // runs --limit
 	forDur     string // start --for: after-hours lease length (SPEC-0012)
+	// cmd is the invoking command, for doctor's settings report: only its
+	// flag set knows whether --config or --socket was typed, which the
+	// report's source column ranks above the environment (SPEC-0010).
+	cmd *cobra.Command
 }
 
 // run dispatches one verb. Every verb dials the daemon fresh (thin client,

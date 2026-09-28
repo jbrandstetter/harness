@@ -262,8 +262,10 @@ ledger and the merge train.
    journal, reconciliation at run close, rebuild and the digest test,
    retention, `graph show`, `graph neighbors`, `harness why`, the neighborhood
    browser, and `harness graph sync` with ingest, `depends_on` and the anchor
-   data SPEC-0028 needs. `ran` edges wait on agent-trace: its `classify.Event`
-   does not yet expose the executable an `exec` call ran.
+   data SPEC-0028 needs. `ran` edges need agent-trace's `classify.Event.Programs`
+   (agent-trace#147), which names the programs a shell call runs, and a
+   Harness bump to the release that carries it. Agent versions (REQ-25) need
+   no agent-trace change: the daemon probes the binary it exec'd.
 3. **ConnectRPC (ADR-0034).** `GraphService` proper, `Watch` as a server stream,
    TCP tiers. The phase 1 op becomes a thin shim over `Presence`.
 4. **Gateway (ADR-0035).** The three tools, caller scoping, the wrapper, and

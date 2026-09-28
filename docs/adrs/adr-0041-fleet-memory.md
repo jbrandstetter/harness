@@ -238,7 +238,7 @@ context; it never counts toward a candidate.
 | path and line span | blob SHA and span | the lines in the span change on the default branch |
 | path | blob SHA | the file changes or is deleted |
 | dependency | module and version | the version changes |
-| tool or agent version | agent CLI version, runner image tag | the version changes |
+| agent version | the agent CLI version the writing run's daemon probed at spawn | a later run of that agent in the repository records a different version |
 | grounding pull request | number and merge SHA | the pull request is reverted: the fact **ends** |
 
 * **Suspect is not ended.** A suspect fact is served at reduced weight and marked

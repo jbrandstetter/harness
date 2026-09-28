@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/spf13/cobra"
 
 	"github.com/stump-wtf/harness/internal/buildinfo"
 	"github.com/stump-wtf/harness/internal/client"
@@ -197,7 +198,7 @@ func runDoctorWith(o verbOpts, notifyTest bool) int {
 		// No point continuing further: every later check needs the daemon.
 		// Resolved process settings and where each came from. A resolve failure
 		// is non-fatal but reported — see resolvedSettings.
-		rows, resolved := resolvedSettings(rows)
+		rows, resolved := resolvedSettings(rows, o.cmd)
 
 		emitDoctor(os.Stdout, os.Stderr, rows, resolved, telem)
 		return 1
@@ -374,7 +375,7 @@ func runDoctorWith(o verbOpts, notifyTest bool) int {
 
 	// Resolved process settings and where each came from. A resolve failure is
 	// non-fatal but reported — see resolvedSettings.
-	rows, resolved := resolvedSettings(rows)
+	rows, resolved := resolvedSettings(rows, o.cmd)
 
 	emitDoctor(os.Stdout, os.Stderr, rows, resolved, telem)
 
@@ -685,8 +686,14 @@ func printDoctorTable(w io.Writer, rows []check) {
 // hold when doctor is the first thing they run.
 //
 // @joestump-agent 08/19/2026 - Surface the resolve failure instead of hiding it.
-func resolvedSettings(rows []check) ([]check, []settings.Resolved) {
-	resolved, err := resolveReport(nil)
+//
+// cmd is the doctor command, so a typed --config or --socket is ranked like
+// every other command ranks it. It was nil here, which left the report reading
+// the default config path under `harness --config X doctor` and attributing
+// every file-backed setting to "default". Tests that call runDoctor directly
+// pass no command and get the flagless ladder.
+func resolvedSettings(rows []check, cmd *cobra.Command) ([]check, []settings.Resolved) {
+	resolved, err := resolveReport(cmd)
 	if err != nil {
 		rows = append(rows, check{
 			name:   "settings",

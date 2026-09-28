@@ -151,7 +151,8 @@ Two launchd specifics worth knowing:
   restores it on boot, and re-attaches to intended running set regardless of how
   it restarted.
 - **Daemon-owned scrollback (ADR-0007)**: each harness's PTY output is tee'd
-  into an in-memory ring (depth configurable with `harness daemon --scrollback N`)
+  into an in-memory ring (depth configurable with `[daemon] scrollback` in `harness.toml`,
+  `HARNESS_SCROLLBACK`, or `harness daemon --scrollback N`)
   plus a durable log, so you can read back output even while detached.
 
 ## Flapping a.k.a. crash-loop protection

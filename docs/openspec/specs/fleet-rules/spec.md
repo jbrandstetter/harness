@@ -718,9 +718,9 @@ version.
 ### Requirement: REQ-18 — CLI
 
 The CLI SHALL provide `harness rules list`, `show <name>`, `backtest <file>`
-(REQ-8), `propose` (REQ-16), `clear <harness> [--rule <name>]` and `explain
-<fire-id>|--harness <name>`, and `harness policy sync [name]` (REQ-1). Every
-command SHALL accept `--json`.
+(REQ-8), `propose` (REQ-16), `lint [<dir>]` (REQ-21), `clear <harness> [--rule
+<name>]` and `explain <fire-id>|--harness <name>`, and `harness policy sync
+[name]` (REQ-1). Every command SHALL accept `--json`.
 
 * `list` SHALL show each rule's name, source (`starter` or `policy:<name>`),
   short hash, mode (`shadow until <time>`, `active`, or `disabled: <reason>`),
@@ -792,6 +792,67 @@ id, digest, expression or message.
 - **WHEN** the evaluator stalls while rows keep being journaled
 - **THEN** `harness_rule_journal_lag_seconds` rises, rather than fires quietly
   stopping
+
+### Requirement: REQ-21 — Policy Repo Lint
+
+`harness rules lint [<dir>]` SHALL check a policy repo checkout (default: the
+current directory) without a daemon, a store, network access or a credential,
+so a policy repo's CI can reject a broken rule before it merges. It SHALL run
+the same code the daemon runs when it loads a rule set (REQ-2, REQ-3 and REQ-6):
+the schema check, the CEL environment for the rule's `on`, the AST validators,
+and the static cost estimate against the 5,000-unit limit. A file lint accepts
+SHALL therefore load, and a file the daemon would disable SHALL fail lint with
+the same reason.
+
+Lint SHALL also report:
+
+* two files under `rules/` with the same `name`, as an error;
+* a rule whose `name` matches a starter rule (REQ-14), as a notice that it will
+  replace the embedded copy;
+* a rule declaring `hold` or `stop`, as a warning that it acts at that level only
+  when listed in `[memory.rules] enforce` (REQ-10), since enforcement is never
+  granted by the policy repo;
+* each file under `weights/` checked against SPEC-0028 REQ "Model Weights",
+  including its content hash, as errors.
+
+Each finding SHALL print as `<file>:<line>:<column>: <severity>: <reason>:
+<message>`, with the position of the offending key or CEL token where one is
+known, and `--json` SHALL print the same findings as a list. Lint SHALL exit 0
+when it finds no errors (warnings and notices allowed), 1 when it finds any
+error, and 2 when it cannot read the directory. `--strict` SHALL count warnings
+as errors. `harness rules propose` (REQ-16) SHALL run these checks on every
+proposal and SHALL NOT open a pull request for one that fails them.
+
+#### Scenario: CI rejects a rule that would not load
+
+- **WHEN** a pull request against the policy repo adds `rules/churn.toml` whose
+  `when` is `count({"path": event.path}, duration("1h")) >`
+- **THEN** `harness rules lint` prints `rules/churn.toml:4:49: error: compile:
+  …` and exits 1, and the policy repo's required check fails
+
+#### Scenario: Lint and load agree on cost
+
+- **WHEN** a rule's estimated maximum cost is 6,200 units
+- **THEN** lint reports it with reason `cost_estimate`, the reason `harness
+  rules list` would show had it merged
+
+#### Scenario: It needs nothing but the checkout
+
+- **WHEN** lint runs in a CI container with no Harness configuration, no
+  daemon, and no network
+- **THEN** it completes and exits by the findings alone
+
+#### Scenario: A hold rule warns, and strict mode fails it
+
+- **WHEN** a valid rule declares `level = "hold"`
+- **THEN** lint prints a warning that it needs `[memory.rules] enforce` and
+  exits 0, and exits 1 under `--strict`
+
+#### Scenario: A tampered weights snapshot fails
+
+- **WHEN** `weights/models.toml` has a score edited after its content hash was
+  computed
+- **THEN** lint reports a hash mismatch as an error and exits 1
 
 ### Requirement: Error Handling Standards
 
