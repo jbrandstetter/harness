@@ -38,9 +38,13 @@ func TestRuntimeMemoryMetricsExported(t *testing.T) {
 		"go_memstats_heap_objects",
 		"go_gc_gomemlimit_bytes",
 	} {
-		if v := fams.must(t, name, nil); v <= 0 && name != "go_memory_classes_heap_released_bytes" {
-			// Released heap can legitimately be 0 in a young process; every
-			// other series here is non-zero in any running Go program.
+		// Free and released heap are legitimately 0 in a young process: the
+		// runtime reports 0 for both until its first heap sweep, and a
+		// freshly started test process has not had one. Only their presence
+		// is asserted. Every other series here is non-zero in any running Go
+		// program.
+		v := fams.must(t, name, nil)
+		if v <= 0 && name != "go_memory_classes_heap_free_bytes" && name != "go_memory_classes_heap_released_bytes" {
 			t.Errorf("%s = %v, want > 0", name, v)
 		}
 	}
