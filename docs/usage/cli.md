@@ -288,10 +288,13 @@ harness attach <name> --ro    # read-only: attach but ignore keystrokes
 `attach` reuses the same full-window terminal the dashboard uses, with the
 1-line status bar and tmux-style detach chords. See [Cockpit TUI](./tui).
 
-A stream-json one-shot has no terminal to attach to. Attaching shows its
-output as lines: stdout's JSON lines, masked, with its stderr lines between
-them as they arrive. Keystrokes go nowhere, since its stdin is `/dev/null`, and
-resizing the window changes nothing for it.
+A stream-json one-shot has no terminal to attach to, and the daemon keeps no
+screen for it. Attaching shows its output as lines: its recent lines first,
+then new ones as they arrive, stdout's JSON lines masked, with its stderr lines
+between them. Keystrokes go nowhere, since its stdin is `/dev/null`, and
+resizing the window changes nothing for it. A client too slow to keep up sees
+an `output dropped` line where it fell behind; the run's `.stream.jsonl` has
+everything. `harness describe` lists the sessions, with no viewport.
 
 ## Scratchpads (`harness run`)
 

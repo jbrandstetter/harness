@@ -798,7 +798,10 @@ Its stderr SHALL be read a line at a time. Each line SHALL be stripped of
 escape sequences, masked, and written to the run's log and the harness's durable
 log, and SHALL NOT reach the stream file.
 
-Both SHALL also reach the harness's attach sessions as CRLF-terminated lines.
+Both SHALL also reach the harness's attach sessions as CRLF-terminated lines,
+through an attach plane with no terminal emulator (SPEC-0002 REQ "Attach
+Session"). The spawn SHALL NOT ask the attach layer for a viewport, and the
+daemon SHALL build no emulator for such a harness at all.
 
 The run's exit code, record, timeout, budget and trigger handling SHALL be those
 of a PTY run. The exit path SHALL wait for the readers while they make progress
@@ -832,8 +835,9 @@ carry a notice that each run's stdout is in its stream file.
 #### Scenario: No emulator
 
 - **WHEN** a structured one-shot runs to completion
-- **THEN** the supervisor constructs no terminal emulator for it, while a PTY
-  harness's run constructs one
+- **THEN** neither the supervisor nor the attach layer constructs a terminal
+  emulator for it, an attach session included, while a PTY harness constructs
+  one
 
 #### Scenario: Stop reaches the group
 

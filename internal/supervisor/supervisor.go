@@ -760,7 +760,9 @@ func (s *Supervisor) beginStart() {
 // spawnSize resolves the PTY size a fresh process should start at: the attach
 // layer's authoritative viewport when one is wired, else the 80×24 default.
 func (s *Supervisor) spawnSize() (int, int) {
-	if s.initSize == nil {
+	// A pipe run has no PTY to size, and asking would build the attach
+	// layer's terminal mux for a harness that never uses it (pipes.go).
+	if s.initSize == nil || RunsOnPipes(s.harness) {
 		return defaultPTYCols, defaultPTYRows
 	}
 	cols, rows := s.initSize()
