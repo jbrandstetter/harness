@@ -12,6 +12,11 @@ package supervisor
 // Record Fields"; amends SPEC-0008 REQ "Overlap Policy".
 //
 // @joestump 09/22/2026 - Introduced with SPEC-0014 firing fan-out (#457).
+//
+// @joestump-agent 09/28/2026 - TestCoalesceRunCountsAheadOfTheWriter also
+// reads the decisions, while the ledger writer is held: the count each firing
+// answers with is the one the history reaches once the queue drains, and it
+// is checked there too.
 
 import (
 	"os"
@@ -378,6 +383,59 @@ func TestAProcessWithNoRunDoesNotLeaveASkipOpen(t *testing.T) {
 	}
 	if skips[0].Coalesced != 1 || skips[1].Coalesced != 1 {
 		t.Errorf("coalesced counts = %d and %d, want 1 and 1", skips[0].Coalesced, skips[1].Coalesced)
+	}
+}
+
+// TestCoalesceRunCountsAheadOfTheWriter: each coalesced firing counts from the
+// one before it even when the ledger has written none of them. An increment is
+// a buffered line, so a burst can outrun the writer by any number of firings,
+// and a count taken from committed history would read the same base for all of
+// them and keep one increment of the lot. The writer is held here, so every
+// increment after the first skip is still queued when the next one counts.
+//
+// The history, meanwhile, reads the committed count: that is why a test that
+// reads it right after a burst must wait for the queue to drain first.
+func TestCoalesceRunCountsAheadOfTheWriter(t *testing.T) {
+	e := newRunsEnv(t)
+	h := coalesceSweep("busy")
+	h.OnOverlap = core.OverlapSkip
+	m, _ := e.manager(t, sweepCfg(h), fastPolicy())
+
+	req := RunRequest{Trigger: TriggerWebhook, Source: "webhook.gh"}
+	m.StartRun("busy", req)
+	waitRuns(t, m, "busy", "the run is in flight", outcomesAre(OutcomeRunning))
+	if d, _ := m.StartRun("busy", req); d.Kind != DecisionSkipped || d.Run.Coalesced != 1 {
+		t.Fatalf("the first firing during the run = %+v, want a skip counting 1", d)
+	}
+	waitRuns(t, m, "busy", "the skip record is committed", func(rs []RunRecord) bool {
+		return len(skippedRecords(rs)) == 1
+	})
+
+	const firings = 30
+	release := m.Ledger().HoldWritesForTesting()
+	t.Cleanup(release)
+	for want := 2; want <= firings; want++ {
+		d, _ := m.StartRun("busy", req)
+		if d.Kind != DecisionSkipped || d.Run.Coalesced != want {
+			t.Fatalf("firing %d = %s counting %d, want a skip counting %d", want, d.Kind, d.Run.Coalesced, want)
+		}
+	}
+	if q := m.Ledger().Stats().Queued; q != firings-1 {
+		t.Fatalf("queued = %d, want every increment (%d) still queued behind the held writer", q, firings-1)
+	}
+	if skips := skippedRecords(m.Runs("busy")); len(skips) != 1 || skips[0].Coalesced != 1 {
+		t.Errorf("history with every increment queued = %+v, want the committed skip counting 1", skips)
+	}
+
+	release()
+	waitFor(t, 5*time.Second, "the ledger commits every queued line", func() bool {
+		return m.Ledger().Stats().Queued == 0
+	})
+	switch skips := skippedRecords(m.Runs("busy")); {
+	case len(skips) != 1:
+		t.Errorf("the history holds %d skipped records, want exactly 1", len(skips))
+	case skips[0].Coalesced != firings:
+		t.Errorf("coalesced = %d once the queue drains, want %d", skips[0].Coalesced, firings)
 	}
 }
 

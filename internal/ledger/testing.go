@@ -2,6 +2,7 @@ package ledger
 
 import (
 	"os"
+	"sync"
 	"testing"
 )
 
@@ -29,4 +30,24 @@ func SkipSyncForTesting() {
 		panic("ledger: SkipSyncForTesting called outside a test binary")
 	}
 	syncFileFn = func(*os.File) error { return nil }
+}
+
+// HoldWritesForTesting stops l's writer before its next write and returns the
+// release. Lines appended meanwhile stay queued, as they do behind a disk that
+// has fallen behind: Pending folds them in, and Records, Get and Query do not
+// see them until the release lets the writer commit them. A synced Append waits
+// as it would on a slow disk, up to SyncTimeout, so hold only around buffered
+// ones. Release before closing l, or Close waits out its timeout.
+//
+// It panics outside a test binary.
+func (l *Ledger) HoldWritesForTesting() (release func()) {
+	if !testing.Testing() {
+		panic("ledger: HoldWritesForTesting called outside a test binary")
+	}
+	h := make(chan struct{})
+	l.hold.Store(&h)
+	return sync.OnceFunc(func() {
+		l.hold.Store(nil)
+		close(h)
+	})
 }

@@ -26,6 +26,10 @@ package ledger
 // one, so the torn fragment can never swallow the line after it.
 //
 // Governing: SPEC-0022 REQ-1, REQ-6, REQ-20; ADR-0028.
+//
+// @joestump-agent 09/28/2026 - A test can hold the writer before its next
+// write (HoldWritesForTesting), so lines stay queued for as long as the test
+// needs rather than for as long as a race happens to last.
 
 import (
 	"errors"
@@ -36,6 +40,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"charm.land/log/v2"
@@ -148,6 +153,10 @@ type Ledger struct {
 	wake chan struct{}
 	quit chan struct{}
 	done chan struct{}
+
+	// hold, while set, stops the writer before its next write, until it is
+	// closed: HoldWritesForTesting. Never set outside a test binary.
+	hold atomic.Pointer[chan struct{}]
 
 	// closeHook supplies fields for every closed line (usage.go).
 	hookMu    sync.Mutex
@@ -623,6 +632,9 @@ func (l *Ledger) ack(batch []*pending) {
 
 // writeLine appends one line to the file of its UTC day.
 func (l *Ledger) writeLine(p *pending) error {
+	if h := l.hold.Load(); h != nil {
+		<-*h
+	}
 	day := dayName(p.line.At)
 	if l.f == nil || l.fday != day {
 		if err := l.openDay(day, p.line.Seq); err != nil {

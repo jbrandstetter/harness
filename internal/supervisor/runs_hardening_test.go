@@ -12,6 +12,11 @@ package supervisor
 // "Run Timeout"; issue #119.
 //
 // @joestump-agent 09/11/2026 - Added in review of PR #310.
+//
+// @joestump-agent 09/28/2026 - TestRunHistoryUnderConcurrency reads the
+// history only once the ledger has committed every queued line. It read at
+// once, and a burst whose last firings were coalesced counted 77-79 of 80: the
+// increments were queued, not lost.
 
 import (
 	"fmt"
@@ -219,6 +224,15 @@ func TestRunHistoryUnderConcurrency(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+	// Every firing is decided, but not every line is committed yet: a
+	// coalesced firing's `updated` line is buffered, so CoalesceRun returns
+	// before the writer takes it, and Runs reads only what the writer has
+	// committed (SPEC-0022 REQ-6). An empty queue means every line appended
+	// above is in the history, so the counts below are exact rather than
+	// racing the writer for the tail of the burst.
+	waitFor(t, 5*time.Second, "the ledger commits every queued line", func() bool {
+		return m.Ledger().Stats().Queued == 0
+	})
 
 	rs := m.Runs("busy")
 	if len(rs) == 0 || rs[0].RunID != 1 || rs[0].Outcome != OutcomeRunning {

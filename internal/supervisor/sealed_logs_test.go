@@ -304,6 +304,12 @@ func TestRunLogCompressedWhenTheRunCloses(t *testing.T) {
 	m.sealer.Wait()
 
 	path := m.RunLogPath("sweep", 1)
+	// The outcome becomes readable once CloseRun's synced append commits, a
+	// beat before the same call queues the log for compression, so even a
+	// drained sealer does not prove the seal happened. Wait for the seal.
+	waitFor(t, 5*time.Second, "the closed run's log is compressed", func() bool {
+		return !present(path) && present(sealedlog.Compressed(path))
+	})
 	if present(path) || !present(sealedlog.Compressed(path)) {
 		t.Fatalf("after close: plain %v, compressed %v; want only the compressed log", present(path), present(sealedlog.Compressed(path)))
 	}
