@@ -68,7 +68,19 @@ changelog:
   filters:
     exclude:
       - '^(docs|test|chore)(\([^)]*\))?!?:'
-      - "^Merge pull request"
+      - '^Merge '
+      - 'Merge branch'
+      - 'Merge remote-tracking branch'
+  groups:
+    - title: Features
+      regexp: '^feat'
+    - title: Fixes
+      regexp: '^fix'
+    - title: Security
+      regexp: '^sec'
+    - title: Performance
+      regexp: '^perf'
+    - title: Other
 
 gitea_urls:
   api: https://gitea.stump.rocks/api/v1
