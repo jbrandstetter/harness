@@ -107,8 +107,9 @@ func (d *daemonWebhooks) serve() {
 		log.Error("webhook listener disabled", "addr", settings.Addr, "err", err)
 		return
 	}
-	// Warned here, not only at config load: an address from the flag or the
-	// environment never passes through the config parser's check.
+	// Warned here, at the bind, and not at config load: an address from the
+	// flag or the environment never passes through the config parser, so
+	// only the bind knows what is actually served.
 	if !settings.TLS() {
 		if host, _, err := net.SplitHostPort(settings.Addr); err == nil && !metrics.IsLoopback(host) {
 			log.Warn("webhook listener is not on loopback and serves no TLS: deliveries and their credentials cross the network in cleartext",

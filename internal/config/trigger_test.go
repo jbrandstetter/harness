@@ -1018,8 +1018,28 @@ func TestLaxEnvFileWarns(t *testing.T) {
 	if len(cfg.Warnings) != 1 || !strings.Contains(cfg.Warnings[0], "group or other") {
 		t.Fatalf("Warnings = %v, want one group/other-readable finding", cfg.Warnings)
 	}
+	// Doctor's config row is the only place it is shown, so the finding has
+	// to say which source it is about as well as which file.
+	if !strings.Contains(cfg.Warnings[0], "[webhook.gh]") || !strings.Contains(cfg.Warnings[0], p) {
+		t.Errorf("Warnings[0] = %q, want it to name [webhook.gh] and %s", cfg.Warnings[0], p)
+	}
 	if strings.Contains(cfg.Warnings[0], "TOK=") {
 		t.Error("the warning must name the path, never the file's contents")
+	}
+
+	// A channel reads its env_file only for a header reference, and warns
+	// through the same resolver.
+	dir3 := t.TempDir()
+	cp := filepath.Join(dir3, "c.env")
+	if err := os.WriteFile(cp, []byte("TOK=x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg3, err := Load(writeCfg(t, dir3, "[channel.sb]\nurl = \"https://sb.example.com/mcp/x\"\nenv_file = \"c.env\"\nheaders = { Authorization = \"Bearer ${TOK}\" }\n"))
+	if err != nil {
+		t.Fatalf("a group-readable channel env_file must warn, not fail: %v", err)
+	}
+	if len(cfg3.Warnings) != 1 || !strings.Contains(cfg3.Warnings[0], "[channel.sb]") || !strings.Contains(cfg3.Warnings[0], cp) {
+		t.Fatalf("Warnings = %v, want one finding naming [channel.sb] and %s", cfg3.Warnings, cp)
 	}
 
 	// And the control: a 0600 file produces no warning at all, so the check
@@ -1036,8 +1056,8 @@ func TestLaxEnvFileWarns(t *testing.T) {
 }
 
 // TestWebhookListenerConfig covers REQ "Webhook Listener"'s config half: the
-// listener is off unless an address names it, and a non-loopback bind with no
-// TLS starts but warns.
+// listener is off unless an address names it, and the load leaves judging
+// the bind to the daemon.
 func TestWebhookListenerConfig(t *testing.T) {
 	t.Run("off by default", func(t *testing.T) {
 		dir := t.TempDir()
@@ -1050,35 +1070,25 @@ func TestWebhookListenerConfig(t *testing.T) {
 			t.Errorf("WebhookListen = %q; declaring a webhook source must not open a port", cfg.Server.WebhookListen)
 		}
 	})
-	t.Run("loopback bind is quiet", func(t *testing.T) {
-		cfg, err := Parse([]byte("[server]\nwebhook_listen = \"127.0.0.1:9000\"\n"), "harness.toml")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(cfg.Warnings) != 0 {
-			t.Errorf("Warnings = %v", cfg.Warnings)
-		}
-	})
-	for _, addr := range []string{"0.0.0.0:9000", ":9000", "10.0.0.5:9000"} {
-		t.Run("non-loopback warns "+addr, func(t *testing.T) {
+	// The cleartext warning for a non-loopback bind without TLS belongs to
+	// the bind, not the load: a flag or HARNESS_WEBHOOK_LISTEN override never
+	// reaches the parser, so a load warning would be a second, sometimes
+	// wrong, copy of the one the daemon logs when it binds (see
+	// TestWebhookListenerWarnsAtBind in cmd/harness).
+	for _, addr := range []string{"127.0.0.1:9000", "0.0.0.0:9000", ":9000", "10.0.0.5:9000"} {
+		t.Run("the load does not judge the bind "+addr, func(t *testing.T) {
 			cfg, err := Parse([]byte("[server]\nwebhook_listen = \""+addr+"\"\n"), "harness.toml")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(cfg.Warnings) != 1 || !strings.Contains(cfg.Warnings[0], "cleartext") {
-				t.Errorf("Warnings = %v, want one cleartext finding", cfg.Warnings)
+			if cfg.Server.WebhookListen != addr {
+				t.Errorf("WebhookListen = %q, want %q", cfg.Server.WebhookListen, addr)
+			}
+			if len(cfg.Warnings) != 0 {
+				t.Errorf("Warnings = %v, want none (the bind warns, not the load)", cfg.Warnings)
 			}
 		})
 	}
-	t.Run("TLS silences the warning", func(t *testing.T) {
-		cfg, err := Parse([]byte("[server]\nwebhook_listen = \"0.0.0.0:9000\"\nwebhook_tls_cert_file = \"/etc/x.crt\"\nwebhook_tls_key_file = \"/etc/x.key\"\n"), "harness.toml")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(cfg.Warnings) != 0 {
-			t.Errorf("Warnings = %v", cfg.Warnings)
-		}
-	})
 }
 
 func TestDisabledSourceStaysDeclared(t *testing.T) {
