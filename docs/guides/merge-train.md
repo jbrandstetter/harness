@@ -22,10 +22,19 @@ first, the cutover, and how to back out.
    `branches: [main, 'train/**']` line in `.gitea/workflows/pipeline.yaml`.
    Nothing else in the pipeline changes. The image push and the docs deploy
    are already limited to `main`.
-2. **Only the train can create train branches.** On the forge, add a
-   branch-protection rule for `train/*` whose push allowlist contains only
-   the train's identity (`joestump-agent`). Without it, anyone with write
-   access could push a `train/<pr>` branch that looks tested.
+2. **Do not add a branch-protection rule for `train/*`.** A rule whose push
+   allowlist contains only the train's identity looks right, but on Gitea
+   1.27.0 the forge refuses deletion of a protected branch both through the
+   REST `branches` endpoint and through push-delete (glob rules count), and
+   the train deletes `train/<pr>` after every attempt and again before
+   rebuilding. With the rule in place, every attempt leaves its branch
+   behind, the next push for that PR is non-fast-forward, and every later
+   tick for that PR fails (stump.wtf/harness#821). The rule also protects
+   nothing the train relies on: the train never trusts a branch tip. It
+   tests the combined status of the exact commit it built and, after the
+   merge, verifies the landed tree is the tested tree. Anyone with write
+   access can still create a `train/<pr>` branch; that only misleads humans
+   reading branch names, and review covers the tree that lands.
 3. **A token for the train's identity**, with write access to the repo, in
    the daemon's environment. It never goes in `harness.toml`.
 
