@@ -90,6 +90,23 @@ train's tested-tree guarantee is exactly the guarantee the block was
 providing. The reasoning is written up in ADR-0032, *Relationship to the
 rebase update*.
 
+### Lesson (b): reviewer must not rebase a merely-behind branch with the block off
+
+With `block_on_outdated_branch=false`, a reviewer who force-rebases a PR that
+is merely behind `main` causes the approval to be dismissed — the PR becomes
+unstale, but the approval is no longer attached to its new head. Rebase only
+to resolve conflicts; after conflicts are resolved, the PR should be left as
+is. The train's own `update branch` style merges the base into the PR (not a
+rebase) to keep approvals attached.
+
+### Lesson (c): a harness redeploy kills scratchpads and cancels a train in flight
+
+When the train is merging and a harness redeploy starts, scratchpad workers
+are killed and in-flight train runs are cancelled by context. The daemon starts
+an empty queue on restart; does not resume where it left off. A halted queue is
+not a resumed run — the only recovery to a red CI after a cut-over is a fresh
+deploy and redeploy.
+
 ## Rollback
 
 Put the block back:
@@ -147,6 +164,12 @@ bypass that skipped step 3 still shows up in the daemon log.
   accepts `batch` (at least 1) so the config loads, but still builds one PR
   per train and logs `merge train: batch is not implemented yet` at start
   when it is above 1.
+- **One attempt per (head, base).** The driver merges each PR once per (head,
+  base) pair and records the result (success, would merge, merge refused,
+  verified, etc.). A red attempt is retried only after the head or base
+  moves (a new merge attempt is initiated, or the PR needs reapproval on a
+  new head). Each head that reaches verification generates one author-todo
+  comment on the PR (even after merge).
 - **Singleton per host.** Enable the train in exactly one daemon's config.
   Two daemons on different hosts would race. The re-check before each merge
   and the tree verification after it limit the damage to one merge and a

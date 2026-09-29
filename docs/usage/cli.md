@@ -138,12 +138,16 @@ harness runs --trigger webhook,channel --wide  # add MODEL, TOKENS, COST and TOD
 
 `harness runs NAME` with no other filter is the one-harness history it has
 always been: newest first, default 20, and `--json` prints the same
-`{"name": …, "runs": […]}` object as before, with new fields only added.
+`{"name": …, "runs": […]}` object as before, with new fields only added. Each
+run's MODEL cell in `--wide` shows the served model with the most output
+tokens among that run's model calls (SPEC-0022 REQ-4).
 
 With the daemon down, `harness runs` reads the ledger's files directly and says
 so on stderr. It changes nothing on disk, and it shows a run the daemon left
 open as `running?`, since it cannot tell a live run from one a crash left
-behind.
+behind. A harness redeploy after a crash kills scratchpad workers and drops
+runs that were in flight at cut-over — the ledger reflects when the daemon
+exited ([ADR-0007](https://github.com/stump-wtf/harness)).
 
 `trigger --wait` exits with the run's own exit code, `124` when the run timed
 out, and `75` when it was skipped because a run was already in flight — so a job
@@ -372,7 +376,10 @@ stuck   ● running ⏸ waiting for input (y/n prompt) · screen idle 4m12s
 The verdict requires both halves: the screen has produced no output for a
 while (30 seconds by default), AND a known interactive-prompt pattern is
 visible on it. A busy agent repaints constantly and never trips it; an idle
-but prompt-free screen (an idle shell, a finished turn) does not either. The
+but prompt-free screen (an idle shell, a finished turn) does not either.
+
+To see what tripped the marker, `harness capture <NAME>` prints the screen the
+verdict came from; `harness attach <NAME>` takes over the interactive session. The
 process lifecycle state is unchanged — `waiting` says what the **glass** is
 doing, `state` says what the **process** is doing
 ([ADR-0040](https://github.com/stump-wtf/harness)).
