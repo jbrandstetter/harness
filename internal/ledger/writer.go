@@ -24,6 +24,10 @@ package ledger
 // A torn tail is left where it is. Readers skip it (fold.go), and the writer
 // starts its next line with a newline when the file does not already end in
 // one, so the torn fragment can never swallow the line after it.
+//	// @joestump-agent 09/28/2026 - The boot scan sets a continuation line
+//	// aside (index.go's cont) instead of folding it into the index as a stub,
+//	// and reads every file when there are no older ones, where a continuation
+//	// is a genuine partial (harness#801).
 //
 // Governing: SPEC-0022 REQ-1, REQ-6, REQ-20; ADR-0028.
 //
@@ -274,8 +278,9 @@ func (l *Ledger) boot() error {
 		first = len(names) - 1
 	}
 	var maxSeq uint64
+	l.idx.scanAll = first == 0
 	for i := first; i < len(names); i++ {
-		fs, skipped, err := l.readInto(names[i], nil, func(ln Line) {
+		fs, skipped, err := l.readInto(names[i], nil, l.idx.bootApply, func(ln Line) {
 			if ln.Seq > maxSeq {
 				maxSeq = ln.Seq
 			}
@@ -286,6 +291,7 @@ func (l *Ledger) boot() error {
 			return fmt.Errorf("ledger: read %s: %w", names[i], err)
 		}
 	}
+	l.idx.scanAll = false
 	l.scanned = len(names) - first
 	l.nextSeq = maxSeq + 1
 	if first > 0 {
@@ -299,9 +305,11 @@ func (l *Ledger) boot() error {
 	return nil
 }
 
-// readInto folds file name into the index, for the harnesses in want (all when
-// nil), and returns the seq of its first line.
-func (l *Ledger) readInto(name string, want map[string]bool, each func(Line)) (firstSeq uint64, skipped int, err error) {
+// readInto folds file name into the index with apply, for the harnesses in
+// want (all when nil), and returns the seq of its first line. The boot scan
+// passes bootApply, which sets continuations aside; backfill passes apply, so
+// a record's older lines land in the index whole.
+func (l *Ledger) readInto(name string, want map[string]bool, apply func(Line), each func(Line)) (firstSeq uint64, skipped int, err error) {
 	var lines []Line
 	skipped, err = scanFile(filepath.Join(l.dir, name), func(ln Line) {
 		if firstSeq == 0 || ln.Seq < firstSeq {
@@ -316,7 +324,7 @@ func (l *Ledger) readInto(name string, want map[string]bool, each func(Line)) (f
 	})
 	l.mu.Lock()
 	for _, ln := range lines {
-		l.idx.apply(ln)
+		apply(ln)
 	}
 	l.mu.Unlock()
 	return firstSeq, skipped, err
@@ -424,7 +432,7 @@ func (l *Ledger) Enqueue(ln Line, sync bool) (uint64, func() error, error) {
 // mu.
 func (l *Ledger) commitLocked(n int) {
 	for _, p := range l.queue[:n] {
-		l.idx.apply(p.line)
+		l.idx.commit(p.line)
 		l.publishLocked(p.line)
 	}
 	l.queue = l.queue[n:]
