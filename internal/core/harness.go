@@ -722,11 +722,13 @@ type Config struct {
 	// ChannelOrder is for channels.
 	WebhookOrder []string
 	// Warnings are non-fatal findings from the load: conditions the operator
-	// should know about that do not justify refusing the config. `harness
-	// doctor` surfaces them. A warning never carries a credential — only a
-	// path, a name, or a reason.
-	// Governing: SPEC-0014 REQ "Credential Resolution", REQ "Webhook
-	// Listener".
+	// should know about that do not justify refusing the config. The daemon
+	// logs each at warn level when it loads the config and after every
+	// reload, and `harness doctor` lists them on its config row. That row is
+	// the only doctor row that reports a load finding, so no other row may
+	// re-derive one. A warning never carries a credential — only a path, a
+	// name, or a reason.
+	// Governing: SPEC-0014 REQ "Credential Resolution".
 	Warnings []string
 	// Skills is the optional global [skills] serving table (SPEC-0007 REQ
 	// "Skill Repos"); the zero value carries the defaults.

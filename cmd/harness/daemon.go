@@ -219,6 +219,30 @@ func shutdownDaemonTelemetry(p *telemetry.Pipeline, res *telemetry.Resolved) <-c
 	return done
 }
 
+// logConfigWarnings logs each of a config load's non-fatal findings at warn
+// level. config.Load returns them on core.Config.Warnings rather than logging
+// them itself, because every CLI verb loads the same file and must not repeat
+// them; the daemon is where they belong, and `harness doctor` lists the same
+// ones on its config row.
+//
+// Governing: SPEC-0014 REQ "Credential Resolution" (a group- or
+// other-readable env_file SHALL produce a warning).
+func logConfigWarnings(cfg *core.Config) {
+	for _, w := range cfg.Warnings {
+		log.Warn("config: " + w)
+	}
+}
+
+// configWarningsReload is the reload reaction that logs the reloaded config's
+// warnings. A reload re-reads every env_file (REQ "Credential Resolution"),
+// so a finding the operator has not fixed is still true, and one they have
+// fixed stops being logged. It rides the scheduler's reload hook, like
+// telemetryReloadWarning, so it runs on every reload path: SIGHUP, the config
+// watcher and the reload control op.
+func configWarningsReload(mgr *supervisor.Manager) func() {
+	return func() { logConfigWarnings(mgr.Config()) }
+}
+
 // warnTelemetryReload logs, once per reload, that a changed [telemetry] table
 // waits for a restart: the exporters hold queues, connections and an open
 // file (SPEC-0015 REQ-2). Per-harness export_telemetry needs no warning; the
@@ -291,6 +315,9 @@ func runDaemon(o daemonOpts) {
 		)
 		cfg = &core.Config{}
 	}
+	// The load's non-fatal findings; every reload logs its own through
+	// configWarningsReload below.
+	logConfigWarnings(cfg)
 
 	// Telemetry export (ADR-0022): resolved before any harness starts, so a
 	// signal that is consented to but cannot be delivered refuses the start.
@@ -367,11 +394,12 @@ func runDaemon(o daemonOpts) {
 	mgr.Autostart()
 
 	// Scheduled harnesses and the operating-hours gate share one wall-clock
-	// tick (ADR-0013, ADR-0019). nil is the real clock. A changed [telemetry]
-	// table waits for a restart, so every reload that changes it says so
-	// (SPEC-0015 REQ-2); it rides the scheduler's reload hook because the
-	// Manager holds exactly one.
-	sched := startDaemonScheduler(mgr, cfg, nil, telemetryReloadWarning(mgr, cfg.Telemetry))
+	// tick (ADR-0013, ADR-0019). nil is the real clock. Every reload logs
+	// the reloaded config's warnings, and a changed [telemetry] table waits
+	// for a restart, so every reload that changes it says so (SPEC-0015
+	// REQ-2); both ride the scheduler's reload hook because the Manager holds
+	// exactly one.
+	sched := startDaemonScheduler(mgr, cfg, nil, configWarningsReload(mgr), telemetryReloadWarning(mgr, cfg.Telemetry))
 
 	// The trigger source manager (ADR-0021 / SPEC-0014). It is built here,
 	// on the daemon's own path, even though nothing produces events yet: the

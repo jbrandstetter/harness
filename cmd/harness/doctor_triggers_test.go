@@ -1,12 +1,14 @@
 package main
 
 // Governing: ADR-0021; SPEC-0014 REQ "Webhook Listener" (doctor flags a
-// non-loopback bind without TLS, and no_listener), REQ "Credential
-// Resolution" (doctor flags a readable env_file), REQ "Trigger Visibility".
+// non-loopback bind without TLS, and no_listener), REQ "Trigger Visibility".
 // One golden case per condition, and an all-healthy case, so a silent doctor
-// is shown to be able to speak (CLAUDE.md "A zero").
+// is shown to be able to speak (CLAUDE.md "A zero"). A readable env_file is
+// the config row's (config_warnings_test.go).
 //
 // @joestump 09/24/2026 - Introduced for stump.wtf/harness#476.
+//
+// @joestump 09/29/2026 - Moved the readable env_file case to the config row.
 
 import (
 	"encoding/json"
@@ -21,32 +23,18 @@ import (
 	"github.com/stump-wtf/harness/internal/trigger/channel/testserver"
 )
 
-// doctorTriggerConfig declares one webhook and one channel, both bound, with
-// env files at the given modes.
-func doctorTriggerConfig(t *testing.T, webhookMode, channelMode os.FileMode) *core.Config {
-	t.Helper()
-	dir := t.TempDir()
-	write := func(name string, mode os.FileMode) string {
-		p := filepath.Join(dir, name)
-		if err := os.WriteFile(p, []byte("K=v\n"), mode); err != nil {
-			t.Fatal(err)
-		}
-		// WriteFile honours the umask; chmod pins the mode under test.
-		if err := os.Chmod(p, mode); err != nil {
-			t.Fatal(err)
-		}
-		return p
-	}
+// doctorTriggerConfig declares one webhook and one channel, both bound.
+func doctorTriggerConfig() *core.Config {
 	h := core.Harness{Name: "pr-review", Triggers: []string{"webhook.ci", "channel.sb"}}
 	return &core.Config{
 		Harnesses:    map[string]core.Harness{h.Name: h},
 		HarnessOrder: []string{h.Name},
 		Webhooks: map[string]core.WebhookSource{"ci": {
-			Name: "ci", Verify: core.VerifyBearer, EnvFile: write("ci.env", webhookMode), Enabled: true,
+			Name: "ci", Verify: core.VerifyBearer, Enabled: true,
 		}},
 		WebhookOrder: []string{"ci"},
 		Channels: map[string]core.ChannelSource{"sb": {
-			Name: "sb", URL: "https://sb.example/mcp", EnvFile: write("sb.env", channelMode), Enabled: true,
+			Name: "sb", URL: "https://sb.example/mcp", Enabled: true,
 		}},
 		ChannelOrder: []string{"sb"},
 	}
@@ -71,14 +59,14 @@ func TestTriggersCheckGolden(t *testing.T) {
 		{
 			name: "all healthy",
 			in: func(t *testing.T) triggerInputs {
-				return triggerInputs{cfg: doctorTriggerConfig(t, 0o600, 0o600), daemon: loopback, sources: healthySources()}
+				return triggerInputs{cfg: doctorTriggerConfig(), daemon: loopback, sources: healthySources()}
 			},
 			want: &check{name: "triggers", level: cliui.LevelSuccess, detail: "2 source(s) healthy"},
 		},
 		{
 			name: "non-loopback webhook listener without TLS",
 			in: func(t *testing.T) triggerInputs {
-				return triggerInputs{cfg: doctorTriggerConfig(t, 0o600, 0o600),
+				return triggerInputs{cfg: doctorTriggerConfig(),
 					daemon: &protocol.DaemonInfo{WebhookAddr: "0.0.0.0:9080"}, sources: healthySources()}
 			},
 			want: &check{name: "triggers", level: cliui.LevelWarn,
@@ -90,27 +78,18 @@ func TestTriggersCheckGolden(t *testing.T) {
 			in: func(t *testing.T) triggerInputs {
 				srcs := healthySources()
 				srcs[1].State = "no_listener"
-				return triggerInputs{cfg: doctorTriggerConfig(t, 0o600, 0o600), daemon: &protocol.DaemonInfo{}, sources: srcs}
+				return triggerInputs{cfg: doctorTriggerConfig(), daemon: &protocol.DaemonInfo{}, sources: srcs}
 			},
 			want: &check{name: "triggers", level: cliui.LevelWarn,
 				detail: "no listener serves webhook.ci",
 				hint:   "set [server] webhook_listen (or --webhook-listen / HARNESS_WEBHOOK_LISTEN) and restart the daemon"},
 		},
 		{
-			name: "group- or other-readable env_file",
-			in: func(t *testing.T) triggerInputs {
-				return triggerInputs{cfg: doctorTriggerConfig(t, 0o640, 0o600), daemon: loopback, sources: healthySources()}
-			},
-			want: &check{name: "triggers", level: cliui.LevelWarn,
-				detail: "env_file readable by group or other: webhook.ci (<ci.env>)",
-				hint:   "chmod 600 each env_file named"},
-		},
-		{
 			name: "channel source in error",
 			in: func(t *testing.T) triggerInputs {
 				srcs := healthySources()
 				srcs[0].State, srcs[0].Error = "error", "the server rejected the session credentials"
-				return triggerInputs{cfg: doctorTriggerConfig(t, 0o600, 0o600), daemon: loopback, sources: srcs}
+				return triggerInputs{cfg: doctorTriggerConfig(), daemon: loopback, sources: srcs}
 			},
 			want: &check{name: "triggers", level: cliui.LevelError,
 				detail: "channel.sb is in error: the server rejected the session credentials",
@@ -119,7 +98,7 @@ func TestTriggersCheckGolden(t *testing.T) {
 		{
 			name: "daemon down: the config alone says no listener",
 			in: func(t *testing.T) triggerInputs {
-				return triggerInputs{cfg: doctorTriggerConfig(t, 0o600, 0o600)}
+				return triggerInputs{cfg: doctorTriggerConfig()}
 			},
 			want: &check{name: "triggers", level: cliui.LevelWarn,
 				detail: "no listener serves webhook.ci",
@@ -147,9 +126,6 @@ func TestTriggersCheckGolden(t *testing.T) {
 				t.Fatal("triggersCheck = nil, want a row")
 			}
 			want := *tc.want
-			if in.cfg != nil && len(in.cfg.Webhooks) > 0 {
-				want.detail = strings.ReplaceAll(want.detail, "<ci.env>", in.cfg.Webhooks["ci"].EnvFile)
-			}
 			if *got != want {
 				t.Errorf("triggersCheck =\n  %+v\nwant\n  %+v", *got, want)
 			}

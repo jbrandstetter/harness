@@ -582,7 +582,12 @@ func Parse(data []byte, filename string) (*core.Config, error) {
 	if err := resolveTriggers(cfg, st); err != nil {
 		return nil, err
 	}
-	warnNonLoopbackWebhook(cfg)
+	// A non-loopback webhook_listen without TLS is deliberately NOT a load
+	// warning: a --webhook-listen or HARNESS_WEBHOOK_LISTEN override never
+	// reaches this parser, so only the bind knows the address that is
+	// actually served. The daemon warns there, and doctor's triggers row
+	// judges the listener the daemon reports.
+	// Governing: SPEC-0014 REQ "Webhook Listener".
 
 	// Validate profile membership now that all harnesses are registered.
 	for _, pp := range pending {

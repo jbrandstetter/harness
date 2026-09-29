@@ -235,7 +235,7 @@ func addChannel(cfg *core.Config, st *loadState, filename, name string, line int
 			}
 			src.Headers[k] = v
 		}
-		if w := res.warning(); w != "" {
+		if w := res.warning(core.SourceKindChannel, name); w != "" {
 			cfg.Warnings = append(cfg.Warnings, w)
 		}
 	}
@@ -423,7 +423,7 @@ func addWebhook(cfg *core.Config, st *loadState, filename, name string, line int
 		}
 	}
 	src.Secret = secret
-	if w := res.warning(); w != "" {
+	if w := res.warning(core.SourceKindWebhook, name); w != "" {
 		cfg.Warnings = append(cfg.Warnings, w)
 	}
 
@@ -561,9 +561,8 @@ func parseTriggers(filename, name string, line int, raw []string) ([]string, err
 func buildWebhookServer(sc *core.ServerConfig, filename string, line int, rs rawServer) error {
 	sc.WebhookListen = strings.TrimSpace(rs.WebhookListen)
 	// Checked here rather than left to the bind: an address that is not
-	// host:port would otherwise load clean, pass `harness doctor`, skip the
-	// cleartext warning below (which cannot parse it either), and fail only
-	// when the daemon starts the listener.
+	// host:port would otherwise load clean, pass `harness doctor`, and fail
+	// only when the daemon starts the listener.
 	if sc.WebhookListen != "" {
 		_, port, err := net.SplitHostPort(sc.WebhookListen)
 		if err == nil {
@@ -590,35 +589,8 @@ func buildWebhookServer(sc *core.ServerConfig, filename string, line int, rs raw
 	return nil
 }
 
-// warnNonLoopbackWebhook appends the startup warning REQ "Webhook Listener"
-// requires for a non-loopback bind with no TLS. It is a warning and not an
-// error because the listener may legitimately sit behind a TLS-terminating
-// proxy on the same host; `harness doctor` flags it either way.
-// Governing: SPEC-0014 REQ "Webhook Listener".
-func warnNonLoopbackWebhook(cfg *core.Config) {
-	addr := cfg.Server.WebhookListen
-	if addr == "" || cfg.Server.WebhookTLSCertFile != "" {
-		return
-	}
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		// Not host:port — leave the complaint to whoever binds it.
-		return
-	}
-	if host == "" {
-		// A bare ":8080" binds every interface, which is the loudest case.
-		host = "0.0.0.0"
-	}
-	if isLoopbackHost(host) {
-		return
-	}
-	cfg.Warnings = append(cfg.Warnings,
-		fmt.Sprintf("[server] webhook_listen %q is not a loopback address and no TLS is configured: deliveries and their signatures cross the network in cleartext", addr))
-}
-
 // isLoopbackHost reports whether host is localhost, an address in 127.0.0.0/8,
-// or ::1 — the hosts REQ "Channel Source Table" lets `http` reach, and the
-// binds REQ "Webhook Listener" does not warn about.
+// or ::1 — the hosts REQ "Channel Source Table" lets `http` reach.
 func isLoopbackHost(host string) bool {
 	h := strings.ToLower(strings.Trim(strings.TrimSpace(host), "[]"))
 	if h == "localhost" {
@@ -781,14 +753,17 @@ func (r *envResolver) load() error {
 }
 
 // warning returns the group/other-readable finding for this resolver's file,
-// or "" when there is nothing to say. It is only meaningful after the file was
-// actually read, which is deliberate: a source with no references never needed
-// the file, so it has no business complaining about its mode.
-func (r *envResolver) warning() string {
+// naming the [kind.name] source that read it, or "" when there is nothing to
+// say. It is only meaningful after the file was actually read, which is
+// deliberate: a source with no references never needed the file, so it has
+// no business complaining about its mode. This is the one definition of the
+// finding: the daemon logs it and doctor's config row shows it, and neither
+// re-derives it (core.Config.Warnings).
+func (r *envResolver) warning(kind, name string) string {
 	if !r.loaded || r.err != nil || !r.lax {
 		return ""
 	}
-	return fmt.Sprintf("env_file %q is readable by group or other: a trigger source's credentials live in it (chmod 600)", r.path)
+	return fmt.Sprintf("[%s.%s]: env_file %q is readable by group or other, and the source's credentials live in it (chmod 600)", kind, name, r.path)
 }
 
 // unquoteEnvValue strips one layer of surrounding single or double quotes,
