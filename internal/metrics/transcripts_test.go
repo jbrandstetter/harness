@@ -128,6 +128,25 @@ func TestTranscriptBindingAndPiThroughTheRealObserver(t *testing.T) {
 		obs.Stop()
 	})
 	eventually(t, "the observer's first scan", func() bool { return !obs.Stats().LastScan.IsZero() })
+	// The scan having started is not the sessions having been read: a scan
+	// reads its sessions one after another, and under load that takes long
+	// enough that the appends below can land while the first scan is still
+	// reading. A session whose first read then sees the appended bytes can
+	// lose the tool call for good — observed as a single baseline read that
+	// reached end of file and delivered only the opening user message, with
+	// the call never delivered by any later read — so the fixture's
+	// "appended afterwards are live" must mean after the baseline reads, not
+	// after the scan's start (actions run 15484). The baseline read delivers
+	// each session's opening user message, which counts
+	// harness_sessions_started_total: waiting on that counter waits for the
+	// baseline reads to be past, and what is appended afterwards arrives
+	// through the incremental path.
+	for _, name := range []string{"hand", "pi-worker"} {
+		eventually(t, name+"'s opening read", func() bool {
+			v, _ := scrape(t, m).get("harness_sessions_started_total", lbls("harness", name))
+			return v >= 1
+		})
+	}
 
 	c.Set(start.Add(10 * time.Second))
 	appendFile(t, ccPath, fmt.Sprintf(`{"parentUuid":"u1","isSidechain":false,"userType":"external","cwd":%q,"sessionId":"cc-hand","version":"2.0.0","type":"assistant","uuid":"a1","timestamp":%q,"message":{"id":"msg_a1","type":"message","role":"assistant","model":"claude-test-model","content":[{"type":"tool_use","id":"call-1","name":"Read","input":{"file_path":"main.go"}}],"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":5}}}`+"\n"+
