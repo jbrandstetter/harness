@@ -104,7 +104,7 @@ SHALL finish with the configuration it started with.
 - **WHEN** the global file declares `[guard.shield]` with `kind =
   "yesno-logprob"`, `model = "mistralai/Shieldstral-1.0-3B"` and one policy
 - **THEN** the config loads, and the guard's effective `base_url` is
-  `[model_api]`'s, its `timeout` `5s` and its `max_concurrency` 4
+  `[model_api]`'s, its `timeout` `10s` and its `max_concurrency` 4
 
 #### Scenario: A literal key is refused
 
@@ -589,7 +589,9 @@ calls only other harnesses' policies need.
 harness, report every screened harness's decision as `screening`, and return
 without waiting for any call. Classification continues in the background. Each
 screened harness then fires, or is held or blocked, as soon as its own verdict
-is ready, in config order among the screened harnesses of that event. So:
+is ready. Screened harnesses whose verdicts are ready at the same time fire in
+config order; a harness never waits for another harness's verdict to keep that
+order. So:
 
 * the webhook response never waits on a guard, and a sender's short delivery
   timeout can never expire because of screening;
@@ -741,9 +743,14 @@ operating-hours rules unchanged.
 
 A screened harness whose effective mode is `shadow` SHALL be screened exactly as
 in `enforce`, waiting as REQ-11 describes, and SHALL record its verdict with
-`mode` `shadow` and the level that `enforce` would have applied. It SHALL NOT
-skip a firing, write a held event file, or send `screen_flagged`. Its firing
-SHALL proceed as though the verdict were `allow`.
+`mode` `shadow` and the level that `enforce` would have applied. No verdict
+SHALL cause it to skip a firing, write a held event file, or send
+`screen_flagged`. Its firing SHALL proceed as though the verdict were `allow`.
+
+Shutdown is not a verdict. A shadow screen interrupted by shutdown SHALL be held
+as REQ-8 specifies, because its firing was waiting on the screen and cannot run
+while the daemon stops. Without the hold the event would be lost. The record
+carries `mode` `shadow`, verdict `error` and class `interrupted`.
 
 `harness screen report` (REQ-20) SHALL show shadow verdicts and would-have
 levels beside enforced ones, so thresholds can be tuned against real
@@ -755,6 +762,14 @@ deliveries before `mode = "enforce"`.
 - **WHEN** a delivery is flagged
 - **THEN** the run starts, its record carries verdict `flag`, mode `shadow`
   and level `block`, and no notification is sent
+
+#### Scenario: Shadow keeps an interrupted event
+
+- **GIVEN** a `shadow` harness whose screen is in progress
+- **WHEN** the daemon shuts down
+- **THEN** the firing is recorded `skipped` with reason `screen_hold`, `mode`
+  `shadow` and class `interrupted`, its event file is kept for release, and no
+  `screen_flagged` is sent
 
 #### Scenario: Shadow never notifies on error
 
