@@ -62,9 +62,13 @@ func (m *Model) onAttachedMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if msg.Mouse().Mod.Contains(tea.ModShift) && m.att.substate == substateInteractive && !isWheel {
 		// Setting the flag is the whole action: View stops declaring
 		// MouseModeCellMotion while it holds, so re-entering here for the
-		// queued events of the same gesture is harmless.
+		// queued events of the same gesture is harmless. The returned tick
+		// re-grabs the mouse on its own (#824): the release used to last until
+		// any keypress, so the next wheel scrolled the client terminal's
+		// native scrollback and left it parked there, deaf-seeming until the
+		// session was killed.
 		m.mouseReleased = true
-		return m, nil
+		return m, mouseRegrab()
 	}
 	if !isWheel {
 		return m, nil

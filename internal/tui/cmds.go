@@ -68,6 +68,26 @@ type profileSwitchMsg struct {
 // tickMsg drives the peek-pane refresh and backoff countdowns.
 type tickMsg time.Time
 
+// mouseRegrabAfter bounds the #49 shift-passthrough window. While the mouse
+// grab is released, the client terminal owns wheel input: its scrollback moves
+// instead of the TUI's, and — the part that made #824 — a terminal parked in
+// its native scrollback keeps looking deaf no matter what the session sends,
+// because the only recovery was a keypress the user had no reason to try. The
+// grab now returns on its own after this window (and immediately on any
+// keypress, as before), so a wheel shortly after a shift+click reaches the
+// TUI rather than scrolling the client into a wedge. The cost is that a
+// selection drag still in progress when the window closes is cut short; the
+// user can shift+click again, which beats an unbounded dead wheel.
+const mouseRegrabAfter = 2 * time.Second
+
+// mouseRegrabMsg fires when the #49 release window closes.
+type mouseRegrabMsg struct{}
+
+// mouseRegrab schedules the automatic end of a shift-passthrough release.
+func mouseRegrab() tea.Cmd {
+	return tea.Tick(mouseRegrabAfter, func(time.Time) tea.Msg { return mouseRegrabMsg{} })
+}
+
 // copyResultMsg reports that an OSC52 clipboard write was emitted (ok is
 // false when there was nothing to copy). The text is echoed back so the
 // status line can confirm what landed on the clipboard.
