@@ -61,8 +61,9 @@ type doctorResult struct {
 	Ssh            *checkResult `json:"ssh,omitempty"`
 	OperatingHours *checkResult `json:"operating_hours,omitempty"`
 	// Triggers is the trigger-source row (SPEC-0014): an insecure webhook
-	// bind, a source no listener serves, a readable env_file, a channel in
-	// error — or all healthy. Absent when nothing is declared.
+	// bind, a source no listener serves, a channel in error — or all
+	// healthy. Absent when nothing is declared. A readable env_file is a
+	// load warning, reported on the config row.
 	Triggers *checkResult `json:"triggers,omitempty"`
 	// TelemetryCheck is the warning row for a [telemetry] config that does
 	// not resolve (the daemon would refuse to start).
@@ -106,6 +107,44 @@ type summaryResult struct {
 	Failed int `json:"failed"`
 }
 
+// configCheck is the "config" row: the file is missing, fails to parse, or
+// loads — with a warning level when the load reported non-fatal findings
+// (core.Config.Warnings). This row is where every load finding is shown, so
+// no other row re-derives one; the daemon logs the same ones at start and on
+// every reload.
+//
+// Governing: ADR-0006; SPEC-0014 REQ "Credential Resolution" (doctor flags a
+// group- or other-readable env_file).
+func configCheck(path string, cfg *core.Config, err error) check {
+	switch {
+	case err == nil:
+		detail := fmt.Sprintf("%s — %d harnesses", path, len(cfg.Harnesses))
+		if len(cfg.Warnings) == 0 {
+			return check{name: "config", level: cliui.LevelSuccess, detail: detail}
+		}
+		return check{
+			name:   "config",
+			level:  cliui.LevelWarn,
+			detail: fmt.Sprintf("%s; %d warning(s): %s", detail, len(cfg.Warnings), strings.Join(cfg.Warnings, "; ")),
+			hint:   "fix what each warning names; the daemon logs the same ones at start and on every reload",
+		}
+	case cliui.IsMissingConfig(err):
+		return check{
+			name:   "config",
+			level:  cliui.LevelError,
+			detail: fmt.Sprintf("not found at %s", path),
+			hint:   "create one (see `harness daemon -h`) or pass --config PATH",
+		}
+	default:
+		return check{
+			name:   "config",
+			level:  cliui.LevelError,
+			detail: fmt.Sprintf("parse failed: %v", err),
+			hint:   "fix the TOML syntax and re-run `harness doctor`",
+		}
+	}
+}
+
 // runDoctor runs the health-check battery and renders a single tabular
 // report to stderr (one row per check + a summary row). Returns the exit
 // code the process should use (0 if all passed, 1 if any failed). Doctor
@@ -130,28 +169,7 @@ func runDoctorWith(o verbOpts, notifyTest bool) int {
 		cfgPath = config.DefaultPath()
 	}
 	cfg, cfgErr := config.Load(cfgPath)
-	switch {
-	case cfgErr == nil:
-		rows = append(rows, check{
-			name:   "config",
-			level:  cliui.LevelSuccess,
-			detail: fmt.Sprintf("%s — %d harnesses", cfgPath, len(cfg.Harnesses)),
-		})
-	case cliui.IsMissingConfig(cfgErr):
-		rows = append(rows, check{
-			name:   "config",
-			level:  cliui.LevelError,
-			detail: fmt.Sprintf("not found at %s", cfgPath),
-			hint:   "create one (see `harness daemon -h`) or pass --config PATH",
-		})
-	default:
-		rows = append(rows, check{
-			name:   "config",
-			level:  cliui.LevelError,
-			detail: fmt.Sprintf("parse failed: %v", cfgErr),
-			hint:   "fix the TOML syntax and re-run `harness doctor`",
-		})
-	}
+	rows = append(rows, configCheck(cfgPath, cfg, cfgErr))
 
 	// Resolved telemetry export settings (SPEC-0015 REQ-14). Resolved before
 	// the daemon is dialled so the section shows even when it is down —
@@ -197,7 +215,7 @@ func runDoctorWith(o verbOpts, notifyTest bool) int {
 		}
 		// The trigger-source row's config-only half (SPEC-0014): an
 		// insecure bind or an unserved webhook is as true with the daemon
-		// down, and a readable env_file more so.
+		// down. A readable env_file is a load finding, on the config row.
 		if r := triggersCheck(triggerInputs{cfg: cfg}); r != nil {
 			rows = append(rows, *r)
 		}

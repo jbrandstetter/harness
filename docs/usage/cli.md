@@ -169,9 +169,11 @@ A client subscribed to events receives `trigger_source_changed` (`source`,
 
 `harness doctor` adds a `triggers` row that flags the setups that fail
 quietly: a webhook listener bound off loopback without TLS, a `[webhook.*]`
-source no listener serves (`no_listener`), a source `env_file` readable by
-group or other, and a channel source in `error`. With the daemon down it still
-checks what the config alone can show.
+source no listener serves (`no_listener`), and a channel source in `error`.
+With the daemon down it still checks what the config alone can show. A source
+`env_file` readable by group or other is a config load warning instead: the
+daemon logs it when it loads the config and on every reload, and doctor's
+`config` row lists it with the source and the file.
 
 :::note Rejected webhook deliveries are not counted yet
 `fired` and a channel's `invalid` are counted today. A webhook delivery the
