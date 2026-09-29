@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -119,17 +120,21 @@ func canonicalName(literal string) string {
 	return strings.TrimSpace(literal)
 }
 
-// headerAt reports whether data[i] starts a table header line, and if so the
-// header's extent. A line is a header line when, ignoring leading whitespace
-// and comments, it begins with '['. The byte just past the trailing ']' (plus
-// its newline, when present) is the body start.
-//
-// The scan is TOML-aware at the whole-file level: findHeaders walks the file
-// once tracking multi-line strings and arrays, so a '[' inside either is
-// never mistaken for a header (the bug removeHarnessTOML had).
+// findHeaders walks the file once and returns every table header occurrence.
+// The scan is TOML-aware at the whole-file level: multi-line strings are
+// skipped as wholes, and bracket/brace nesting outside strings and comments
+// is tracked, so a '[' inside a multi-line string or array is never mistaken
+// for a header (the bug removeHarnessTOML had). A nested array's last
+// element ([[1, 2]] or []) is shaped exactly like a table header and can
+// only be told apart by the nesting level; on malformed input whose brackets
+// never balance the scan stops finding headers at all, which makes edits
+// fail closed with ErrTableNotFound instead of corrupting the file.
 func findHeaders(data []byte) []header {
 	var headers []header
 	i := 0
+	// Bracket and brace nesting outside strings and comments. Header
+	// detection is suppressed while it is positive.
+	depth := 0
 	n := len(data)
 	for i < n {
 		// Multi-line basic string.
@@ -173,6 +178,11 @@ func findHeaders(data []byte) []header {
 			i = i + 1 + j
 			continue
 		case '[':
+			if depth > 0 {
+				depth++
+				i++
+				continue
+			}
 			if lineStartsAt(data, i) {
 				h, ok := parseHeader(data, i)
 				if ok {
@@ -180,6 +190,23 @@ func findHeaders(data []byte) []header {
 					i = h.bodyStart
 					continue
 				}
+			}
+			depth++
+			i++
+			continue
+		case ']':
+			if depth > 0 {
+				depth--
+			}
+			i++
+			continue
+		case '{':
+			depth++
+			i++
+			continue
+		case '}':
+			if depth > 0 {
+				depth--
 			}
 			i++
 			continue
@@ -329,20 +356,55 @@ func trailingNewline(tail []byte) int {
 	return 1
 }
 
+// bareKeyRe is the grammar for everything this editor writes verbatim into
+// the file: harness table names and keys are bare keys (letters, digits,
+// '-', '_'). The check is not cosmetic: a name or key ends up inside the
+// file's bytes, and a crafted one could smuggle a whole table — "[mcp.x]"
+// as a key would write one — past the narrow-API guarantee of REQ-11.
+var bareKeyRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// stableNameRe is the stable-name grammar from SPEC-0026.
+var stableNameRe = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+
+func validName(re *regexp.Regexp, what, s string) error {
+	if !re.MatchString(s) {
+		return fmt.Errorf("tomledit: invalid %s %q", what, s)
+	}
+	return nil
+}
+
+func validKey(s string) error {
+	if !bareKeyRe.MatchString(s) {
+		return fmt.Errorf("tomledit: invalid key %q (letters, digits, '-' and '_' only)", s)
+	}
+	return nil
+}
+
 // AddStable appends a [stable.<name>] table at the end of the file, writing
 // the given keys in order (strings, string lists, booleans). It refuses when
 // the table already exists.
 func (e *Editor) AddStable(name string, keys [][2]any) error {
-	return e.addTable("stable."+name, keys)
+	if err := validName(stableNameRe, "stable name", name); err != nil {
+		return err
+	}
+	return e.addTable("stable."+name, nil, keys)
 }
 
-// AddHarness appends a [harness.<name>] table at the end of the file.
+// AddHarness appends a [harness.<name>] table at the end of the file. It
+// refuses when a table for that harness already exists under EITHER spelling
+// — the loader registers [harness.<name>] and bare [<name>] as the same
+// harness (duplicate harness "name"), so appending the other spelling would
+// produce a config that fails to load.
 func (e *Editor) AddHarness(name string, keys [][2]any) error {
-	return e.addTable("harness."+name, keys)
+	if err := validName(bareKeyRe, "harness name", name); err != nil {
+		return err
+	}
+	return e.addTable("harness."+name, []string{name}, keys)
 }
 
-func (e *Editor) addTable(dotted string, keys [][2]any) error {
-	if _, err := e.findTable(dotted); err == nil {
+func (e *Editor) addTable(dotted string, altNames []string, keys [][2]any) error {
+	names := append([]string{dotted}, altNames...)
+	if _, err := e.findTable(names...); err == nil {
 		return fmt.Errorf("%w: [%s] already exists", ErrDuplicateTable, dotted)
 	} else if !errors.Is(err, ErrTableNotFound) {
 		return err
@@ -420,6 +482,9 @@ func (e *Editor) SetHarnessKey(table, key string, value any) error {
 }
 
 func (e *Editor) setKey(dotted, key string, value any, altNames ...string) error {
+	if err := validKey(key); err != nil {
+		return err
+	}
 	names := append([]string{dotted}, altNames...)
 	h, err := e.findTable(names...)
 	if err != nil {
@@ -444,9 +509,15 @@ func (e *Editor) setKey(dotted, key string, value any, altNames ...string) error
 			// continuation lines as garbage. Replace through the value's
 			// true end.
 			abs := ln.start + h.bodyStart
-			eq := abs + strings.Index(ln.content, "=")
+			eqInLine := strings.Index(ln.content, "=")
+			eq := abs + eqInLine
 			valueEnd := valueSpanEnd(e.data, eq+1)
-			replacement := key + " = " + encoded
+			// Reuse the file's own key text — its quoting and indentation —
+			// rather than re-emitting the caller's key string: a quoted key
+			// rewritten unquoted can stop parsing, and only the file's bytes
+			// are known good here.
+			origKey := strings.TrimRight(ln.content[:eqInLine], " \t")
+			replacement := origKey + " = " + encoded
 			e.data = splice(e.data, abs, valueEnd, []byte(replacement))
 			return nil
 		}
@@ -464,6 +535,18 @@ func (e *Editor) setKey(dotted, key string, value any, altNames ...string) error
 		insert = append([]byte("\n"), insert...)
 	}
 	insertAt := h.bodyStart + len(body)
+	// Land after the table's last key or value line, not between it and its
+	// trailing comments: walking back over blank and comment lines is safe
+	// because a value's closing line — a string's triple quote, an array's
+	// ']' — is itself neither blank nor a comment.
+	for k := len(lines); k > 0; k-- {
+		t := strings.TrimSpace(lines[k-1].content)
+		if t == "" || strings.HasPrefix(t, "#") {
+			insertAt = h.bodyStart + lines[k-1].start
+			continue
+		}
+		break
+	}
 	e.data = splice(e.data, insertAt, insertAt, insert)
 	return nil
 }
@@ -632,7 +715,11 @@ func encodeString(s string) string {
 		case '\t':
 			b.WriteString(`\t`)
 		default:
-			b.WriteRune(r)
+			if r < 0x20 || r == 0x7f {
+				fmt.Fprintf(&b, `\u%04X`, r)
+			} else {
+				b.WriteRune(r)
+			}
 		}
 	}
 	b.WriteByte('"')
@@ -641,6 +728,9 @@ func encodeString(s string) string {
 
 func writeKeys(b *strings.Builder, keys [][2]any) error {
 	for _, kv := range keys {
+		if err := validKey(kv[0].(string)); err != nil {
+			return err
+		}
 		enc, err := encodeValue(kv[1])
 		if err != nil {
 			return err

@@ -285,6 +285,144 @@ func TestSaveIsAtomicAndKeepsMode(t *testing.T) {
 	}
 }
 
+// TestAddHarnessRefusesBareSpelling: the loader registers [harness.build]
+// and bare [build] as the same harness (duplicate harness "build"), so an
+// add that only checked the prefixed spelling could append a table the
+// daemon refuses to load.
+func TestAddHarnessRefusesBareSpelling(t *testing.T) {
+	e := New([]byte("[build]\nharness = \"generic\"\n\n[daemon]\nwatch_config = true\n"))
+	err := e.AddHarness("build", [][2]any{{"harness", "generic"}})
+	if !errors.Is(err, ErrDuplicateTable) {
+		t.Fatalf("want ErrDuplicateTable, got %v", err)
+	}
+	if string(e.Bytes()) != "[build]\nharness = \"generic\"\n\n[daemon]\nwatch_config = true\n" {
+		t.Errorf("refused add still modified the file:\n%s", e.Bytes())
+	}
+}
+
+// TestMultiLineNestedArrayIsNotHeader: a line starting with '[' inside a
+// multi-line array — a nested array's element, an empty array — is shaped
+// exactly like a table header. Without bracket-depth tracking the scanner
+// took it for one, ended the table early, and an in-place set corrupted the
+// value.
+func TestMultiLineNestedArrayIsNotHeader(t *testing.T) {
+	doc := "[harness.build]\nharness = \"generic\"\nmatrix = [\n  [\"a\", \"b\"],\n  [],\n]\n\n[harness.deploy]\nharness = \"generic\"\n"
+	e := New([]byte(doc))
+	if err := e.SetHarnessKey("build", "model", "opus"); err != nil {
+		t.Fatal(err)
+	}
+	out := string(e.Bytes())
+	if strings.Count(out, "[\"a\", \"b\"],") != 1 || strings.Count(out, "[],") != 1 {
+		t.Errorf("matrix value damaged by the set:\n%s", out)
+	}
+	var cfg struct {
+		Harness map[string]struct {
+			Matrix [][]string
+			Model  string
+		}
+	}
+	if _, err := toml.Decode(out, &cfg); err != nil {
+		t.Fatalf("edited file no longer parses: %v\n%s", err, out)
+	}
+	if cfg.Harness["build"].Model != "opus" || len(cfg.Harness["build"].Matrix) != 2 {
+		t.Errorf("build = %+v", cfg.Harness["build"])
+	}
+	if _, ok := cfg.Harness["deploy"]; !ok {
+		t.Errorf("deploy table lost:\n%s", out)
+	}
+}
+
+// TestSetKeyRefusesHeaderInjection: keys and table names are written into
+// the file's bytes, so anything outside the name grammar is refused — a
+// crafted key would otherwise smuggle a whole table (e.g. [mcp.*]) past the
+// narrow-API guarantee of REQ-11.
+func TestSetKeyRefusesHeaderInjection(t *testing.T) {
+	e := New([]byte("[stable.acme]\nremote = \"x\"\n"))
+	before := string(e.Bytes())
+	for _, key := range []string{"remote = 1\n[mcp.server]", "a=b", "with space", ""} {
+		if err := e.SetStableKey("acme", key, "y"); err == nil {
+			t.Errorf("key %q accepted", key)
+		}
+	}
+	if err := e.AddStable("evil]\n[mcp.x]", [][2]any{{"remote", "y"}}); err == nil {
+		t.Error("table name with ']' accepted")
+	}
+	if err := e.AddStable("UPPER", [][2]any{{"remote", "y"}}); err == nil {
+		t.Error("stable name outside the SPEC-0026 pattern accepted")
+	}
+	if string(e.Bytes()) != before {
+		t.Errorf("refused writes modified the file:\n%s", e.Bytes())
+	}
+}
+
+// TestSetKeyKeepsOriginalKeyText: the replacement reuses the file's own key
+// text, so a quoted key keeps its quotes and the line keeps its indentation.
+func TestSetKeyKeepsOriginalKeyText(t *testing.T) {
+	e := New([]byte("[harness.a]\n  \"remote\" = \"old\" # keep\n"))
+	if err := e.SetHarnessKey("a", "remote", "new"); err != nil {
+		t.Fatal(err)
+	}
+	out := string(e.Bytes())
+	if !strings.Contains(out, "  \"remote\" = \"new\" # keep") {
+		t.Errorf("quoted key or indentation rewritten:\n%s", out)
+	}
+	var cfg struct {
+		Harness map[string]struct {
+			Remote string
+		}
+	}
+	if _, err := toml.Decode(out, &cfg); err != nil {
+		t.Fatalf("edited file no longer parses: %v\n%s", err, out)
+	}
+	if cfg.Harness["a"].Remote != "new" {
+		t.Errorf("remote = %q", cfg.Harness["a"].Remote)
+	}
+}
+
+// TestSetKeyAppendLandsBeforeTrailingComment: an appended key belongs with
+// the table's key block, not after the comment lines that trail it.
+func TestSetKeyAppendLandsBeforeTrailingComment(t *testing.T) {
+	e := New([]byte("[harness.a]\nharness = \"generic\"\n\n# tuning notes\n"))
+	if err := e.SetHarnessKey("a", "model", "opus"); err != nil {
+		t.Fatal(err)
+	}
+	out := string(e.Bytes())
+	model := strings.Index(out, "model = \"opus\"")
+	notes := strings.Index(out, "# tuning notes")
+	if model < 0 || notes < 0 || model > notes {
+		t.Errorf("appended key did not land before the trailing comment:\n%s", out)
+	}
+	var cfg struct {
+		Harness map[string]struct {
+			Model string
+		}
+	}
+	if _, err := toml.Decode(out, &cfg); err != nil {
+		t.Fatalf("edited file no longer parses: %v\n%s", err, out)
+	}
+}
+
+// TestEncodeStringEscapesControlCharacters: bytes below 0x20 (and 0x7f) are
+// illegal raw inside a TOML basic string; writing them unescaped would
+// produce a file the loader refuses.
+func TestEncodeStringEscapesControlCharacters(t *testing.T) {
+	e := New([]byte(""))
+	if err := e.AddHarness("x", [][2]any{{"label", "\x01b\bf\f"}}); err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Harness map[string]struct {
+			Label string
+		}
+	}
+	if _, err := toml.Decode(string(e.Bytes()), &cfg); err != nil {
+		t.Fatalf("encoded value not valid TOML: %v\n%s", err, e.Bytes())
+	}
+	if cfg.Harness["x"].Label != "\x01b\bf\f" {
+		t.Errorf("label = %q", cfg.Harness["x"].Label)
+	}
+}
+
 func TestEditedFileStillParses(t *testing.T) {
 	// Whatever the editor does, the result must remain valid TOML with the
 	// expected shape — the whole point of a write path the loader trusts.
