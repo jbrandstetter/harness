@@ -89,7 +89,12 @@ const (
 	// HarnessInfo — additive only. A daemon older than 18 refuses a
 	// definition naming "pi" or "omp" as an unknown kind; one that drops
 	// Transcripts runs the same argv, unobserved.
-	ProtoMinor = 18
+	// ProtoMinor 19 added the run ledger query (SPEC-0022 REQ-14, REQ-15):
+	// Names, Outcomes, Triggers and BeforeSeq on ControlReq for the runs op,
+	// OldestSeq on RunsData, and the SPEC-0022 REQ-4 record fields on RunInfo
+	// — additive only. A request carrying only Name and Limit is answered as
+	// before.
+	ProtoMinor = 19
 )
 
 // ProtoVersion is the "major.minor" string carried in HELLO.
@@ -214,10 +219,18 @@ type ControlReq struct {
 	// Since/Until. Zero means the harness-wide behavior.
 	Run int `json:"run,omitempty"`
 	// Names carries the skill repo names a skills_synced report covers
-	// (SPEC-0007 REQ "Default-Branch Gate").
+	// (SPEC-0007 REQ "Default-Branch Gate"); on the runs op it names the
+	// harnesses the query includes (SPEC-0022 REQ-15).
 	Names []string `json:"names,omitempty"`
 	// Limit caps the records runs returns, newest first. Zero means 20.
 	Limit int `json:"limit,omitempty"`
+	// Outcomes, Triggers and BeforeSeq, with Since and Until and Names, make
+	// the runs op a query across harnesses (SPEC-0022 REQ-15): outcome and
+	// trigger values to keep, and the paging cursor, the OldestSeq of the
+	// previous page. Limit is 1–1000.
+	Outcomes  []string `json:"outcomes,omitempty"`
+	Triggers  []string `json:"triggers,omitempty"`
+	BeforeSeq uint64   `json:"before_seq,omitempty"`
 
 	// Event is an event envelope supplied to trigger (SPEC-0014 REQ "Manual
 	// Trigger With Event"), verbatim as the operator's file held it. It is a
@@ -644,7 +657,14 @@ type ScratchRunData struct {
 // History"). Times are RFC 3339. It carries outcomes, times and exit codes
 // only — never environment, prompt or output (ADR-0008).
 type RunInfo struct {
-	RunID int `json:"run_id"`
+	// Harness names the run's harness. Set on every record of a query
+	// across harnesses; a single-harness answer names it in RunsData.Name
+	// too.
+	Harness string `json:"harness,omitempty"`
+	RunID   int    `json:"run_id"`
+	// Seq is the ledger seq of the record's first line: its order, and the
+	// runs op's paging key (SPEC-0022 REQ-15).
+	Seq uint64 `json:"seq,omitempty"`
 	// Trigger is "schedule", "manual", "catch_up", "channel" or "webhook".
 	Trigger string `json:"trigger"`
 	// Outcome is "running", "success", "failed", "timed_out", "skipped",
@@ -675,6 +695,25 @@ type RunInfo struct {
 	// TodoID is the Switchboard todo the run worked, when known: an opaque
 	// identifier, never a payload (SPEC-0022 REQ-9).
 	TodoID string `json:"todo_id,omitempty"`
+
+	// SPEC-0022 REQ-4's record fields, each omitted when it does not apply.
+	Kind          string         `json:"kind,omitempty"`
+	Attempt       int            `json:"attempt,omitempty"`
+	Model         string         `json:"model,omitempty"`
+	Models        []RunModel     `json:"models,omitempty"`
+	Tokens        *RunTokens     `json:"tokens,omitempty"`
+	CostUSD       *float64       `json:"cost_usd,omitempty"`
+	CostSource    string         `json:"cost_source,omitempty"`
+	ModelCalls    int            `json:"model_calls,omitempty"`
+	Errors        map[string]int `json:"errors,omitempty"`
+	UsageComplete *bool          `json:"usage_complete,omitempty"`
+	Sessions      []RunSession   `json:"sessions,omitempty"`
+	TraceURL      string         `json:"trace_url,omitempty"`
+	Log           string         `json:"log,omitempty"`
+	Override      bool           `json:"override,omitempty"`
+	Mismatch      *RunMismatch   `json:"mismatch,omitempty"`
+	Coalesced     int            `json:"coalesced,omitempty"`
+	Imported      bool           `json:"imported,omitempty"`
 	// Source is the trigger source reference behind the run, e.g.
 	// "webhook.gitea-pr" (SPEC-0014 REQ "Run Record Fields").
 	Source string `json:"source,omitempty"`
@@ -685,6 +724,36 @@ type RunInfo struct {
 	// MissingPath names the template path a template_unresolved skip lacked,
 	// e.g. "run.source" — a name, never a value (SPEC-0017 REQ-11).
 	MissingPath string `json:"missing_path,omitempty"`
+}
+
+// RunModel is one served model and provider of a run (SPEC-0022 REQ-4).
+type RunModel struct {
+	Model        string `json:"model"`
+	Provider     string `json:"provider,omitempty"`
+	OutputTokens int64  `json:"output_tokens,omitempty"`
+}
+
+// RunTokens are a run's token counts.
+type RunTokens struct {
+	Input      int64 `json:"input"`
+	Output     int64 `json:"output"`
+	CacheRead  int64 `json:"cache_read"`
+	CacheWrite int64 `json:"cache_write"`
+}
+
+// RunSession is one agent session attributed to a run.
+type RunSession struct {
+	ID      string `json:"id"`
+	Adapter string `json:"adapter,omitempty"`
+	TraceID string `json:"trace_id,omitempty"`
+}
+
+// RunMismatch is the first mismatching call of a model_mismatch run.
+type RunMismatch struct {
+	Kind           string `json:"kind"`
+	ServedModel    string `json:"served_model,omitempty"`
+	ServedProvider string `json:"served_provider,omitempty"`
+	At             string `json:"at"`
 }
 
 // TriggerBinding is one entry of a harness's `triggers`, with the state of
@@ -793,6 +862,9 @@ type RunsData struct {
 	Name string `json:"name"`
 	// Runs is newest first, capped at the request's Limit.
 	Runs []RunInfo `json:"runs"`
+	// OldestSeq is the Seq of the oldest record returned (0 for none): pass
+	// it as BeforeSeq for the next page (SPEC-0022 REQ-15).
+	OldestSeq uint64 `json:"oldest_seq,omitempty"`
 }
 
 // Trigger decisions.

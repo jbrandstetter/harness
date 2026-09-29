@@ -84,7 +84,7 @@ func TestPrintRunsTable(t *testing.T) {
 		{RunID: 1, Trigger: "catch_up", Outcome: "interrupted", StartedAt: start.Format(time.RFC3339Nano)},
 	}}
 	var buf bytes.Buffer
-	if err := printRunsTable(&buf, rd); err != nil {
+	if err := printRunsTable(&buf, rd, false); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -105,7 +105,7 @@ func TestPrintRunsTableSkipReason(t *testing.T) {
 		{RunID: 1, Trigger: "schedule", Outcome: "skipped", Reason: "overlap", StartedAt: start, EndedAt: start},
 	}}
 	var buf bytes.Buffer
-	if err := printRunsTable(&buf, rd); err != nil {
+	if err := printRunsTable(&buf, rd, false); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()

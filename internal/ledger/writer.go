@@ -136,6 +136,7 @@ type Ledger struct {
 	nextSeq uint64
 	queue   []*pending
 	idx     *index
+	feed    feed
 	stats   Stats
 	closed  bool
 	// files is every day file the ledger knows, oldest first, with the seq of
@@ -193,6 +194,7 @@ func Open(dir string, opts Options) (*Ledger, error) {
 		opts: opts,
 		log:  opts.Logger,
 		idx:  newIndex(),
+		feed: newFeed(),
 		wake: make(chan struct{}, 1),
 		quit: make(chan struct{}),
 		done: make(chan struct{}),
@@ -210,6 +212,31 @@ func Open(dir string, opts Options) (*Ledger, error) {
 	}
 	go l.run()
 	return l, errors.Join(errs...)
+}
+
+// OpenReader opens the ledger in dir read-only, for a reader with no daemon
+// (SPEC-0022 REQ-16): it reads the day files into an index and answers Query
+// and Get, and it changes nothing — no directory is created, no line is
+// written, no open record is reconciled. Append on it fails with ErrClosed.
+func OpenReader(dir string) (*Ledger, error) {
+	l := &Ledger{
+		dir:    dir,
+		opts:   Options{}.normalize(),
+		idx:    newIndex(),
+		feed:   newFeed(),
+		closed: true,
+		done:   make(chan struct{}),
+	}
+	l.log = l.opts.Logger
+	l.stats.Dir = dir
+	close(l.done)
+	if _, err := os.Stat(dir); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrLedgerUnavailable, err)
+	}
+	if err := l.boot(); err != nil {
+		return nil, err
+	}
+	return l, nil
 }
 
 // Dir is the ledger directory.
@@ -389,6 +416,7 @@ func (l *Ledger) Enqueue(ln Line, sync bool) (uint64, func() error, error) {
 func (l *Ledger) commitLocked(n int) {
 	for _, p := range l.queue[:n] {
 		l.idx.apply(p.line)
+		l.publishLocked(p.line)
 	}
 	l.queue = l.queue[n:]
 	if day := startOfDay(l.opts.Now()); !day.Equal(l.idx.trimmedDay) {
@@ -426,6 +454,11 @@ func (l *Ledger) Close(timeout time.Duration) error {
 	l.closed = true
 	l.mu.Unlock()
 	close(l.quit)
+	defer func() {
+		l.mu.Lock()
+		l.closeFeedLocked()
+		l.mu.Unlock()
+	}()
 	select {
 	case <-l.done:
 	case <-time.After(timeout):

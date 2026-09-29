@@ -30,6 +30,7 @@ import (
 
 	"github.com/stump-wtf/harness/internal/core"
 	"github.com/stump-wtf/harness/internal/protocol"
+	"github.com/stump-wtf/harness/internal/runquery"
 	"github.com/stump-wtf/harness/internal/sealedlog"
 	"github.com/stump-wtf/harness/internal/supervisor"
 	"github.com/stump-wtf/harness/internal/trigger"
@@ -39,6 +40,10 @@ import (
 // limit — keep_runs' default, so an unset limit shows a default history whole.
 const defaultRunsLimit = 20
 
+// defaultQueryLimit is a query's default page (SPEC-0022 REQ-14).
+const defaultQueryLimit = 50
+
+// opJobs lists every scheduled harness, in config order.
 // opJobs lists every triggered harness — a `schedule`, `triggers`, or both —
 // in config order. A harness with no schedule has no next window to report,
 // so it carries none; its triggers, with their source states, say what fires
@@ -181,28 +186,35 @@ func triggerList(h core.Harness) string {
 	return strings.Join(h.Triggers, ", ")
 }
 
-// opRuns returns one harness's run history, newest first, from the run ledger
-// (SPEC-0022 REQ-13, REQ-15): from memory for recent records, from the day
-// files when the limit reaches further back. Any known harness may be asked —
-// one that has since lost its schedule still has its history.
+// opRuns answers the runs op from the run ledger (SPEC-0022 REQ-13, REQ-15).
+//
+// A request with only a name and a limit is SPEC-0008's: one harness's history,
+// newest first, default 20, and an unknown name is an error — any known harness
+// may be asked, including one that has since lost its schedule. Anything more
+// (names, since/until, outcomes, triggers, a paging cursor) is a query across
+// the ledger, where a name need not still be configured: a removed harness's
+// history is still history. Either way the records come from memory for the
+// last seven days and from the day files beyond that.
 func (c *conn) opRuns(req protocol.ControlReq) {
-	if _, _, ok := c.srv.mgr.HarnessRecord(req.Name); !ok {
+	query := runquery.IsQuery(req)
+	defaultLimit := defaultRunsLimit
+	if query {
+		defaultLimit = defaultQueryLimit
+	} else if _, _, ok := c.srv.mgr.HarnessRecord(req.Name); !ok {
 		_ = c.pc.WriteError(req.ID, protocol.ErrUnknownHarness, "unknown harness %q", req.Name)
 		return
 	}
-	limit := req.Limit
-	if limit <= 0 {
-		limit = defaultRunsLimit
-	}
-	runs, err := c.srv.mgr.LatestRuns(req.Name, limit)
+	q, err := runquery.FromRequest(req, defaultLimit)
 	if err != nil {
-		_ = c.pc.WriteError(req.ID, protocol.ErrInternal, "runs %q: %v", req.Name, err)
+		_ = c.pc.WriteError(req.ID, protocol.ErrBadRequest, "runs: %v", err)
 		return
 	}
-	out := protocol.RunsData{Name: req.Name, Runs: []protocol.RunInfo{}}
-	for _, r := range runs {
-		out.Runs = append(out.Runs, c.runInfo(req.Name, r))
+	recs, oldest, err := c.srv.mgr.Ledger().Query(q)
+	if err != nil {
+		_ = c.pc.WriteError(req.ID, protocol.ErrInternal, "runs: %v", err)
+		return
 	}
+	out := protocol.RunsData{Name: req.Name, Runs: runquery.Infos(recs), OldestSeq: oldest}
 	c.respond(req, out)
 }
 

@@ -56,7 +56,7 @@ var helpText = struct {
 		{"jobs", "list triggered harnesses: sources, next run, last run, consecutive failures"},
 		{"triggers", "list trigger sources: state, last event and error, counters, harnesses"},
 		{"trigger NAME [--wait] [--event FILE]", "run a triggered harness now (on_overlap applies); --wait exits with its exit code; --event replays an event envelope"},
-		{"runs NAME [--limit N]", "show a scheduled harness's run history"},
+		{"runs [NAME...] [--since D] [--outcome O]", "show run history from the run ledger"},
 		{"profiles", "list profiles (active one flagged)"},
 		{"use-profile NAME", "activate a profile"},
 		{"reload", "re-read the daemon config"},
