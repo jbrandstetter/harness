@@ -464,3 +464,59 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// REQ-6: a synced Append does not return before its line is committed. The
+// writer is held between writing the line and committing it to the index; in
+// that window the line is on disk but no reader can see it, so a synced
+// Append must not have returned nil. Without this, the accumulator folds a
+// just-opened run's first items as NoRun (TestCheckpointsAreRateLimited).
+func TestSyncedAppendReturnsOnlyOnceCommitted(t *testing.T) {
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	dir := t.TempDir()
+	l := openT(t, dir, Options{SyncTimeout: 5 * time.Second})
+	restore := l.SetBeforeCommitForTesting(func() {
+		once.Do(func() {
+			close(reached)
+			<-release
+		})
+	})
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(func() { releaseOnce(); restore() })
+
+	now := time.Now()
+	_, wait, err := l.Enqueue(opened("a", 1, now), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the writer never reached the commit")
+	}
+	// The hold is where it must be: the line is in the file, and not in the
+	// index. Without this, a wait that fails below could be failing for any
+	// reason at all.
+	if n := len(fileLines(t, dir)); n != 1 {
+		t.Fatalf("%d lines on disk at the hold, want the 1 written", n)
+	}
+	if recs := l.Records("a"); len(recs) != 0 {
+		t.Fatalf("Records sees %d records at the hold, want 0: it is not before the commit", len(recs))
+	}
+	if err := wait(); err == nil {
+		t.Fatal("a synced append returned nil while Records does not show its line")
+	} else if !errors.Is(err, ErrLedgerUnavailable) {
+		t.Fatalf("a synced append held before its commit: %v, want ErrLedgerUnavailable", err)
+	}
+
+	releaseOnce()
+	waitFor(t, func() bool { return len(l.Records("a")) == 1 })
+	// Unheld, every nil is a line the readers already show.
+	for id := 2; id <= 100; id++ {
+		mustAppend(t, l, opened("a", id, now), true)
+		if recs := l.Records("a"); len(recs) != id || recs[id-1].RunID != id {
+			t.Fatalf("synced append of run %d returned; Records holds %d records", id, len(recs))
+		}
+	}
+}

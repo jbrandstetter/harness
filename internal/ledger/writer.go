@@ -162,6 +162,13 @@ type Ledger struct {
 	// closed: HoldWritesForTesting. Never set outside a test binary.
 	hold atomic.Pointer[chan struct{}]
 
+	// beforeCommit, while set, runs on the writer between writing (and
+	// syncing) a batch and committing it to the index. It is the seam a test
+	// uses to prove a synced Append has not returned before its line commits
+	// (TestSyncedAppendReturnsOnlyOnceCommitted). Never set outside a test
+	// binary.
+	beforeCommit atomic.Pointer[func()]
+
 	// closeHook supplies fields for every closed line (usage.go).
 	hookMu    sync.Mutex
 	closeHook func(harness string, id int) Record
@@ -499,9 +506,8 @@ func (l *Ledger) run() {
 		l.mu.Unlock()
 
 		if len(batch) > 0 {
-			n, err := l.writeBatch(batch)
+			n, err := l.writeBatch(batch) // commits its durable prefix itself
 			l.mu.Lock()
-			l.commitLocked(n)
 			if err != nil {
 				l.stats.AppendErrors++
 				l.stats.LastError = err.Error()
@@ -534,11 +540,7 @@ func (l *Ledger) run() {
 					l.mu.Lock()
 					rest := slices.Clone(l.queue)
 					l.mu.Unlock()
-					if m, err := l.writeBatch(rest); err == nil || m > 0 {
-						l.mu.Lock()
-						l.commitLocked(m)
-						l.mu.Unlock()
-					}
+					l.writeBatch(rest)
 					return
 				}
 				continue
@@ -614,6 +616,7 @@ func (l *Ledger) writeBatch(batch []*pending) (int, error) {
 			if n < 0 {
 				n = w
 			}
+			l.commitBatch(n)
 			return n, err
 		}
 	}
@@ -622,8 +625,28 @@ func (l *Ledger) writeBatch(batch []*pending) (int, error) {
 		// the retried line starts on a line of its own.
 		l.dropFile()
 	}
+	l.commitBatch(w)
 	l.ack(batch[:w])
 	return w, werr
+}
+
+// commitBatch moves the first n queued lines into the index. Call it before the
+// batch's synced callers are acked: between an ack and the commit there is a
+// window where a synced Append has returned nil while OpenRun, Records and
+// every other reader still cannot see the record, so the accumulator folds a
+// just-opened run's first items as NoRun (SPEC-0022 REQ-6, committed before
+// counted). The writer goroutine is the only popper of the queue, so the head
+// of the queue is still this batch when it runs.
+func (l *Ledger) commitBatch(n int) {
+	if n <= 0 {
+		return
+	}
+	if h := l.beforeCommit.Load(); h != nil {
+		(*h)()
+	}
+	l.mu.Lock()
+	l.commitLocked(n)
+	l.mu.Unlock()
 }
 
 // ack tells synced lines' callers they are durable.
@@ -813,4 +836,12 @@ func errorf(sentinel error, ln Line, format string, args ...any) error {
 		msg = strings.Join(id, ", ") + ": " + msg
 	}
 	return fmt.Errorf("%w: %s", sentinel, msg)
+}
+
+// SetBeforeCommitForTesting installs fn to run on the writer between writing
+// (and syncing) a batch and committing it to the index, and returns a restore
+// function. Test binaries only.
+func (l *Ledger) SetBeforeCommitForTesting(fn func()) func() {
+	l.beforeCommit.Store(&fn)
+	return func() { l.beforeCommit.Store(nil) }
 }
