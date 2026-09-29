@@ -10,7 +10,15 @@ package config
 // ignored. The table is global-only: a project file or harness_d drop-in
 // must not be able to turn on a component that merges code.
 //
-// Governing: ADR-0032; SPEC-0025 REQ-1, REQ-12.
+// `batch` (SPEC-0025 REQ-17) is decoded and range-checked ahead of the
+// batching itself, so a table written against the spec loads; the daemon
+// warns that a value above 1 still runs one PR per train.
+//
+// Governing: ADR-0032; SPEC-0025 REQ-1, REQ-12, REQ-17.
+//
+// @joestump-agent 09/28/2026 - Accept `batch`. It was absent from
+// rawMergeTrain, so the strict decode refused it as an unknown key and the
+// documented config failed to load at all.
 
 import (
 	"net/url"
@@ -31,6 +39,7 @@ type rawMergeTrain struct {
 	BaseBranch    *string  `toml:"base_branch"`
 	PollInterval  *string  `toml:"poll_interval"`
 	CITimeout     *string  `toml:"ci_timeout"`
+	Batch         *int64   `toml:"batch"`
 	ForgeBaseURL  string   `toml:"forge_base_url"`
 	ForgeTokenEnv string   `toml:"forge_token_env"`
 
@@ -75,6 +84,13 @@ func buildMergeTrain(filename string, data []byte, line int, rm rawMergeTrain) (
 			return fail("base_branch", "must name a branch other than a train/ branch (got %q)", *rm.BaseBranch)
 		}
 		mc.BaseBranch = b
+	}
+
+	if rm.Batch != nil {
+		if *rm.Batch < 1 {
+			return fail("batch", "must be a whole number of at least 1 (got %d)", *rm.Batch)
+		}
+		mc.Batch = int(*rm.Batch)
 	}
 
 	for _, r := range rm.Repos {

@@ -21,6 +21,10 @@ package main
 // @joestump-agent 09/28/2026 - memory-limit and pprof-addr (GitHub
 // https://github.com/stump-wtf/harness/issues/18); a non-loopback pprof
 // address is refused here, named by its source.
+//
+// @joestump-agent 09/28/2026 - watch-config. HARNESS_WATCH_CONFIG was in the
+// registry, so doctor reported it, but nothing carried it to the daemon,
+// which read only the file's watch_config.
 
 import (
 	"errors"
@@ -159,6 +163,17 @@ func resolveDaemonSettings(cmd *cobra.Command, g *globalOpts, d *daemonOpts) err
 		// Handling Standards"), and refused before anything starts.
 		return fmt.Errorf("%s: %w", settingOrigin(pprof), err)
 	}
+	// Only HARNESS_WATCH_CONFIG is carried, as webhook-listen carries only its
+	// overrides: the file's watch_config is internal/config's to read.
+	watch, err := r.Resolve("watch-config")
+	if err != nil {
+		return err
+	}
+	var watchConfig *bool
+	if watch.Source == settings.SourceEnv {
+		b, _ := watch.Value.(bool)
+		watchConfig = &b
+	}
 
 	d.configPath, d.socketPath = configPath, socket
 	d.ringLines, d.ringBytes, d.sshEnable, d.sshListen = ring, ringBytes, sshEnable, sshListen
@@ -168,6 +183,7 @@ func resolveDaemonSettings(cmd *cobra.Command, g *globalOpts, d *daemonOpts) err
 	d.memoryLimit, _ = memLimit.Value.(int64)
 	d.memoryLimitSource = memLimit.Source
 	d.pprofAddr = strings.TrimSpace(pprofAddr)
+	d.watchConfig = watchConfig
 
 	g.configPath, g.socket = configPath, socket
 	return nil

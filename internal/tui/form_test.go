@@ -1005,7 +1005,7 @@ var harnessFormFields = []string{
 	"Backend", "Description", "Enabled", "TmuxSocket", "Schedule", "CatchUp",
 	"Timeout", "OnOverlap", "KeepRuns", "HarvestTrajectory", "MCPAllow",
 	"OperatingHours", "HoursShutdown", "HoursShutdownTimeout",
-	"ExportTelemetry", "Triggers",
+	"ExportTelemetry", "Triggers", "PackageSource",
 	// HoursExpr is OperatingHours parsed (internal/hours), not a config key of
 	// its own — config.Parse derives it fresh from OperatingHours on every
 	// load, so there is nothing for the form's save path to carry or drop; it

@@ -143,8 +143,10 @@ bypass that skipped step 3 still shows up in the daemon log.
 - **One PR per train (today).** The current binary spends one CI run per PR:
   a 10-minute pipeline lands at most about six PRs an hour. Batching — up to
   `batch` PRs sharing one train commit, bisecting by halves on red — is
-  specified as SPEC-0025 REQ-17 and is not yet in the binary; the daemon
-  ignores `batch` until it lands.
+  specified as SPEC-0025 REQ-17 and is not yet in the binary. The daemon
+  accepts `batch` (at least 1) so the config loads, but still builds one PR
+  per train and logs `merge train: batch is not implemented yet` at start
+  when it is above 1.
 - **Singleton per host.** Enable the train in exactly one daemon's config.
   Two daemons on different hosts would race. The re-check before each merge
   and the tree verification after it limit the damage to one merge and a

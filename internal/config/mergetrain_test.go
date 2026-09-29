@@ -5,7 +5,9 @@ package config
 // Governing tests: SPEC-0025 REQ-1 and REQ-12; #604 — the section parses,
 // defaults apply when it is absent, enabled defaults to false, enabled with no
 // repos is an error, the table carries no credential, and neither a project
-// file nor a harness_d drop-in may carry it.
+// file nor a harness_d drop-in may carry it. SPEC-0025 REQ-17: `batch` is
+// accepted (at least 1) ahead of the batching itself, and every [mergetrain]
+// example the docs publish loads as written.
 
 import (
 	"os"
@@ -28,7 +30,7 @@ func TestMergeTrainAbsentTakesDefaults(t *testing.T) {
 		t.Fatal("merge train enabled with no [mergetrain] table")
 	}
 	want := core.DefaultMergeTrainConfig()
-	if mc.Mode != want.Mode || mc.BaseBranch != "main" || mc.PollInterval != 60*time.Second || mc.CITimeout != 30*time.Minute {
+	if mc.Mode != want.Mode || mc.BaseBranch != "main" || mc.PollInterval != 60*time.Second || mc.CITimeout != 30*time.Minute || mc.Batch != 1 {
 		t.Fatalf("defaults = %+v", mc)
 	}
 }
@@ -42,6 +44,7 @@ repos = ["stump.wtf/harness", "stump.wtf/switchboard"]
 base_branch = "trunk"
 poll_interval = "90s"
 ci_timeout = "45m"
+batch = 3
 forge_base_url = "https://gitea.stump.rocks/"
 forge_token_env = "HARNESS_MERGETRAIN_TOKEN"
 `
@@ -52,7 +55,7 @@ forge_token_env = "HARNESS_MERGETRAIN_TOKEN"
 	mc := cfg.MergeTrain
 	if !mc.Enabled || mc.Mode != "merge" || mc.BaseBranch != "trunk" ||
 		!slices.Equal(mc.Repos, []string{"stump.wtf/harness", "stump.wtf/switchboard"}) ||
-		mc.PollInterval != 90*time.Second || mc.CITimeout != 45*time.Minute ||
+		mc.PollInterval != 90*time.Second || mc.CITimeout != 45*time.Minute || mc.Batch != 3 ||
 		mc.ForgeBaseURL != "https://gitea.stump.rocks" || mc.ForgeTokenEnv != "HARNESS_MERGETRAIN_TOKEN" {
 		t.Fatalf("parsed = %+v", mc)
 	}
@@ -87,6 +90,10 @@ func TestMergeTrainRejects(t *testing.T) {
 		{"fast poll", "[mergetrain]\npoll_interval = \"1s\"\n", "at least 5s"},
 		{"bad timeout", "[mergetrain]\nci_timeout = \"soon\"\n", `"ci_timeout"`},
 		{"train base", "[mergetrain]\nbase_branch = \"train/1\"\n", "train/"},
+		{"zero batch", "[mergetrain]\nbatch = 0\n", `"batch": must be a whole number of at least 1`},
+		{"negative batch", "[mergetrain]\nbatch = -2\n", `"batch": must be a whole number of at least 1`},
+		{"string batch", "[mergetrain]\nbatch = \"2\"\n", "batch"},
+		{"float batch", "[mergetrain]\nbatch = 2.5\n", "batch"},
 		{"unknown key", "[mergetrain]\nenabeld = true\n", "enabeld"},
 		{"duplicate table", "[mergetrain]\n[mergetrain]\n", "already been defined"},
 	}
@@ -131,4 +138,67 @@ func TestMergeTrainNotInDropIn(t *testing.T) {
 	if _, err := Load(main); err == nil || !strings.Contains(err.Error(), "[mergetrain]") {
 		t.Fatalf("drop-in [mergetrain] err = %v, want a refusal", err)
 	}
+}
+
+// TestMergeTrainDocumentedTablesLoad parses every [mergetrain] example the docs
+// publish. The spec's configuration block carried `batch = 1` while the loader
+// refused the key, so an operator who copied it lost the whole config — every
+// harness, not just the train. A new example that the loader refuses fails
+// here instead.
+func TestMergeTrainDocumentedTablesLoad(t *testing.T) {
+	// Tests run in the package directory; the docs are two levels up.
+	root := filepath.Join("..", "..")
+	docs := []string{
+		"docs/usage/merge-train.md",
+		"docs/usage/configuration.md",
+		"docs/guides/merge-train.md",
+		"docs/openspec/specs/merge-train/design.md",
+	}
+	sawBatch := false
+	for _, doc := range docs {
+		data, err := os.ReadFile(filepath.Join(root, doc))
+		if err != nil {
+			t.Fatal(err)
+		}
+		blocks := tomlBlocksWith(string(data), "[mergetrain]")
+		if len(blocks) == 0 {
+			t.Errorf("%s: no [mergetrain] example found; update this test if it moved", doc)
+		}
+		for i, b := range blocks {
+			if strings.Contains(b, "batch") {
+				sawBatch = true
+			}
+			if _, err := Parse([]byte(b), doc); err != nil {
+				t.Errorf("%s: example %d does not load: %v\n%s", doc, i+1, err, b)
+			}
+		}
+	}
+	// The check exists for the batch key; prove it still reaches one.
+	if !sawBatch {
+		t.Error("no documented [mergetrain] example sets batch, so this test no longer covers it")
+	}
+}
+
+// tomlBlocksWith returns the body of each ```toml fence in md that contains
+// marker.
+func tomlBlocksWith(md, marker string) []string {
+	var out []string
+	var b strings.Builder
+	in := false
+	for _, line := range strings.Split(md, "\n") {
+		switch {
+		case !in && strings.HasPrefix(line, "```toml"):
+			in = true
+			b.Reset()
+		case in && strings.HasPrefix(line, "```"):
+			in = false
+			if strings.Contains(b.String(), marker) {
+				out = append(out, b.String())
+			}
+		case in:
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+	}
+	return out
 }

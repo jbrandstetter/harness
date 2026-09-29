@@ -9,9 +9,11 @@ related: [ADR-0008, ADR-0011, ADR-0023, ADR-0024, ADR-0029, ADR-0038, ADR-0039]
 
 # ADR-0040: Agent package stables — installable, trust-gated harness definitions shared as git repositories
 
-> **Not yet implemented.** Design stage. No `harness agent` command, `[stable.*]`
-> table or `source` key exists in the tree. Tracked by the SPEC-0026 epic in the
-> Harness issue tracker.
+> **Partially implemented.** The daemon-side foundation is in the tree:
+> the `package.toml` manifest loader, the pin-store layout and the `source`
+> key on a `[harness.*]` table. Not yet built: the `harness agent` command,
+> the `[stable.*]` table and every fetch, scan and confirmation flow.
+> Tracked by the SPEC-0026 epic in the Harness issue tracker.
 
 ## Context and Problem Statement
 

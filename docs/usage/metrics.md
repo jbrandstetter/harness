@@ -171,7 +171,7 @@ what is leaking, see
 | `harness_consecutive_failures{harness}` | gauge | The supervisor's give-up count. Once it exceeds the restart budget, the harness moves to `failed`. |
 | `harness_state_transitions_total{harness,to}` | counter | One series per supervisor state (`to` has 7 values), starting at zero. |
 | `harness_model_calls_total{harness,outcome}` | counter | `success` counts tool calls. `error` counts agent error marks. |
-| `harness_model_call_errors_total{harness,class}` | counter | `quota`, `auth`, `timeout`, `transport`, `other`. Crush harnesses only, for now; see below. |
+| `harness_model_call_errors_total{harness,class}` | counter | `quota`, `auth`, `timeout`, `transport`, `other`. Crush and Claude Code harnesses only, for now; see below. |
 | `harness_model_call_errors_unclassified_total{harness}` | counter | Errors that matched no known pattern. Each one is also counted as `class="other"`. |
 | `harness_last_successful_call_timestamp{harness}` | gauge | Unix seconds. **Absent** until the harness's first success in this daemon's lifetime. It is never reported as zero, because zero would read as 1970. |
 | `harness_sessions_started_total{harness}` | counter | Agent sessions the daemon has seen become active. |
@@ -235,8 +235,8 @@ counted, but its provider errors do not appear yet.
 
 Until an adapter's errors do appear, its harnesses have no error-side series:
 `harness_model_calls_total{outcome="error"}`, `harness_model_call_errors_total`
-and `harness_model_call_errors_unclassified_total` are **absent** for `codex`
-and `pi` harnesses today, not zero. A zero would say "no quota
+and `harness_model_call_errors_unclassified_total` are **absent** for `codex`,
+`pi` and `omp` harnesses today, not zero. A zero would say "no quota
 errors" through the very outage the quota alert exists to catch. For those
 harnesses, the staleness alert on `harness_last_successful_call_timestamp` is
 the one that fires.
