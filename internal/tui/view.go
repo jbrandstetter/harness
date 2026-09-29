@@ -25,7 +25,10 @@ import (
 // every frame, rather than startup options plus Enter/Exit commands. That is what
 // makes shift-passthrough (#49) a plain state flip — m.mouseReleased simply drops
 // MouseMode for as long as it is set, instead of racing a DisableMouse command
-// against the events still queued behind it.
+// against the events still queued behind it. The release is bounded (#824): any
+// keypress or the mouseRegrabAfter tick re-declares the mode, so the client's
+// wheel is never left unowned long enough to park the terminal in its native
+// scrollback.
 func (m *Model) View() tea.View {
 	v := tea.NewView(m.content())
 	v.AltScreen = true

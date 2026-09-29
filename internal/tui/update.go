@@ -163,6 +163,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		return m.onTick()
 
+	case mouseRegrabMsg:
+		// The #49 release window closed and no keypress ended it first: take
+		// the mouse grab back. A re-grab while a native selection drag is
+		// still running cuts that selection short — the deliberate tradeoff
+		// for never leaving the client's wheel unowned (#824).
+		if m.mouseReleased {
+			m.mouseReleased = false
+		}
+		return m, nil
+
 	case spinner.TickMsg:
 		// Keep the spinner spinning while any visible harness (or the
 		// currently-attached one) is in a transient state. The View renders
