@@ -18,15 +18,14 @@
     },
     {
       "customType": "regex",
-      "description": "Bump the manifest [plugin.*] skill pins (REQ-14). github-tags follows release tags; the two plugins still pinned to commit SHAs update once they cut tags (claude-plugin-switchboard#16, claude-plugin-cairn#11).",
+      "description": "Bump the manifest [plugin.*] skill pins (REQ-14). github-tags follows release tags; the two plugins still pinned to commit SHAs update once they cut tags (claude-plugin-switchboard#16, claude-plugin-cairn#11). A ref stays a tag, never a digest (REQ-14), so no pinDigests: a custom manager may not set it.",
       "managerFilePatterns": [
         "/^internal/stack/manifest\\.toml$/"
       ],
       "matchStrings": [
         "repo\\s*=\\s*\"(?<depName>stump-wtf/[^\"]+)\"\\s*\\nref\\s*=\\s*\"(?<currentValue>[^\"]+)\""
       ],
-      "datasourceTemplate": "github-tags",
-      "pinDigests": true
+      "datasourceTemplate": "github-tags"
     }
   ]
 }
