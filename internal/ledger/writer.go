@@ -426,7 +426,6 @@ func (l *Ledger) commitLocked(n int) {
 	for _, p := range l.queue[:n] {
 		l.idx.commit(p.line)
 		l.publishLocked(p.line)
-		l.idx.commit(p.line)
 	}
 	l.queue = l.queue[n:]
 	if day := startOfDay(l.opts.Now()); !day.Equal(l.idx.trimmedDay) {
