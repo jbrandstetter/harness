@@ -36,6 +36,12 @@ var (
 	// ErrUnknownHarness is returned when a harness name does not resolve to
 	// a registered harness in the config.
 	ErrUnknownHarness = errors.New("unknown harness")
+
+	// ErrUnknownSession is returned when Get is asked for a path that is not
+	// one of the sessions List reports for that harness. The path may name
+	// another harness's transcript, an opted-out harness's scrollback, or any
+	// other file on the host; Get refuses all of them the same way.
+	ErrUnknownSession = errors.New("not a trajectory session of this harness")
 )
 
 // SessionSummary is the read-only metadata for a discovered trajectory session.
@@ -192,36 +198,47 @@ func (s *Service) List(cfg *core.Config, name string) ([]SessionSummary, error) 
 // path, or ErrHarvestDisabled when the harness has not opted in. The content
 // is read once and returned as-is; no daemon code path writes to, alters, or
 // deletes the underlying file (SPEC-0006 REQ "Trajectory Discovery").
+//
+// Get reads only a session that List reports for the same harness. The
+// caller's path is a lookup key into that list, never a path to open, so Get
+// inherits List's scoping: the harvest opt-in, the workdir filter, and the
+// scrollback fallback. A path List does not report, whether it is another
+// harness's transcript, an opted-out harness's scrollback, or /etc/passwd,
+// fails with ErrUnknownSession before any file is opened. Paths are compared
+// after filepath.Clean, so a spelling of a listed path with "./" or a doubled
+// separator still matches, while a "../" escape or a relative path does not.
+//
+// Governing: SPEC-0006 REQ "Harvest Opt-In", SPEC-0006 REQ "Trajectory
+// Discovery", ADR-0008 (trajectory exposure is opt-in).
+//
+// @joestump-agent 09/29/2026 - Scoped the read to List's sessions. Get used to
+// os.ReadFile any caller-supplied path, so an opted-in harness's get_trajectory
+// could read any file the daemon can (#89).
 func (s *Service) Get(cfg *core.Config, name, sessionPath string) (*Trajectory, error) {
-	h, ok := cfg.Harnesses[name]
-	if !ok {
-		return nil, fmt.Errorf("%w: %s", ErrUnknownHarness, name)
+	sessions, err := s.List(cfg, name)
+	if err != nil {
+		return nil, err
 	}
-	if !h.HarvestTrajectory {
-		return nil, fmt.Errorf("%w: %s", ErrHarvestDisabled, name)
+	want := filepath.Clean(sessionPath)
+	var match *SessionSummary
+	for i := range sessions {
+		if filepath.Clean(sessions[i].Path) == want {
+			match = &sessions[i]
+			break
+		}
+	}
+	if match == nil {
+		return nil, fmt.Errorf("%w: %s: %q", ErrUnknownSession, name, sessionPath)
 	}
 
 	// Read the file content. This is the only filesystem read path, and it
 	// is strictly os.Open → read → close. No write handle is ever taken.
-	content, err := os.ReadFile(sessionPath)
+	content, err := os.ReadFile(match.Path)
 	if err != nil {
 		return nil, fmt.Errorf("trajectory read %s: %w", name, err)
 	}
 
-	adp := s.registry.TrajectoryAdapter(h)
-	source := "scrollback"
-	if adp != nil && adp.TailAdapter() != nil {
-		source = "native"
-	}
-
-	return &Trajectory{
-		Session: SessionSummary{
-			ID:     name,
-			Source: source,
-			Path:   sessionPath,
-		},
-		Content: string(content),
-	}, nil
+	return &Trajectory{Session: *match, Content: string(content)}, nil
 }
 
 // workdirFor resolves the runtime working directory for a harness, preferring

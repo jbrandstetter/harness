@@ -167,6 +167,8 @@ func errorCode(err error) string {
 		return "harvest_disabled"
 	case errors.Is(err, trajectory.ErrUnknownHarness):
 		return "unknown_harness"
+	case errors.Is(err, trajectory.ErrUnknownSession):
+		return "unknown_session"
 	case errors.Is(err, ErrNotPermitted):
 		return "not_permitted"
 	default:

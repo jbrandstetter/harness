@@ -48,8 +48,9 @@ func withFakeHome(t *testing.T) string {
 }
 
 // writeClaudeCodeSession writes a minimal valid Claude Code JSONL transcript
-// under the given HOME directory and returns its path.
-func writeClaudeCodeSession(t *testing.T, home, cwd string) string {
+// for session id, run in cwd, under the given HOME directory and returns its
+// path and content.
+func writeClaudeCodeSession(t *testing.T, home, id, cwd string) (string, string) {
 	t.Helper()
 	// Claude Code stores sessions under ~/.claude/projects/<encoded-cwd>/
 	// The encoding replaces / and . with -, but agent-trace's adapter handles
@@ -60,13 +61,31 @@ func writeClaudeCodeSession(t *testing.T, home, cwd string) string {
 	}
 	// Write a session file that the ClaudeCodeAdapter can discover and parse.
 	// The file must be named with a session ID and have .jsonl extension.
-	sessionContent := `{"type":"user","timestamp":"2026-01-01T10:00:00Z","sessionId":"abc-123","cwd":"` + cwd + `","message":{"role":"user","content":"hello"}}
+	sessionContent := `{"type":"user","timestamp":"2026-01-01T10:00:00Z","sessionId":"` + id + `","cwd":"` + cwd + `","message":{"role":"user","content":"hello"}}
 `
-	sessionPath := filepath.Join(projectsDir, "session-abc123.jsonl")
+	sessionPath := filepath.Join(projectsDir, "session-"+id+".jsonl")
 	if err := os.WriteFile(sessionPath, []byte(sessionContent), 0644); err != nil {
 		t.Fatal(err)
 	}
-	return sessionPath
+	return sessionPath, sessionContent
+}
+
+// listedSession lists the harness's sessions and returns the one with the
+// given ID, failing the test when List does not report it. A Get test starts
+// here so the path it reads is one the service itself handed out.
+func listedSession(t *testing.T, svc *Service, cfg *core.Config, name, id string) SessionSummary {
+	t.Helper()
+	sessions, err := svc.List(cfg, name)
+	if err != nil {
+		t.Fatalf("List(%s): %v", name, err)
+	}
+	for _, s := range sessions {
+		if s.ID == id {
+			return s
+		}
+	}
+	t.Fatalf("List(%s) did not report session %s (got %d sessions)", name, id, len(sessions))
+	return SessionSummary{}
 }
 
 // --- SPEC-0006 REQ "Harvest Opt-In" ---
@@ -271,31 +290,135 @@ func TestListNativeTrajectoryClaudeCode(t *testing.T) {
 }
 
 func TestGetNativeTrajectory(t *testing.T) {
-	// get_trajectory returns the raw file content for a native session.
-	dir := t.TempDir()
-	sessionPath := filepath.Join(dir, "session.jsonl")
-	content := `{"type":"user","timestamp":"2026-01-01T10:00:00Z"}`
-	if err := os.WriteFile(sessionPath, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
+	// get_trajectory returns the raw file content for a native session that
+	// list_trajectories reported, with that session's own metadata.
+	home := withFakeHome(t)
+	cwd := t.TempDir()
+	_, content := writeClaudeCodeSession(t, home, "abc-123", cwd)
 
 	svc := newTestService(t)
-	h := core.Harness{
+	cfg := configWith(core.Harness{
 		Name:              "agent",
 		Adapter:           "claude-code",
+		Workdir:           cwd,
 		HarvestTrajectory: true,
-	}
-	cfg := configWith(h)
+	})
+	listed := listedSession(t, svc, cfg, "agent", "abc-123")
 
-	traj, err := svc.Get(cfg, "agent", sessionPath)
+	traj, err := svc.Get(cfg, "agent", listed.Path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if traj.Content != content {
-		t.Fatalf("content mismatch")
+		t.Fatalf("content = %q, want %q", traj.Content, content)
+	}
+	if traj.Session != listed {
+		t.Fatalf("session = %+v, want the listed %+v", traj.Session, listed)
 	}
 	if traj.Session.Source != "native" {
 		t.Fatalf("source = %q, want native", traj.Session.Source)
+	}
+}
+
+// --- #89: Get reads only what List reports ---
+
+func TestGetRefusesPathsListDoesNotReport(t *testing.T) {
+	// Get used to os.ReadFile whatever path the caller passed, so an
+	// opted-in harness's get_trajectory could read any file the daemon can.
+	// Every path below exists on disk; the refusal must come from scoping,
+	// before any read, not from a missing file.
+	home := withFakeHome(t)
+	cwd := t.TempDir()
+	otherCwd := t.TempDir()
+	listed, _ := writeClaudeCodeSession(t, home, "mine", cwd)
+	// Another harness's transcript in the same agent store: List filters it
+	// out of "agent" by its cwd.
+	foreign, _ := writeClaudeCodeSession(t, home, "theirs", otherCwd)
+	secret := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(secret, []byte("TOPSECRET"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// A lexical escape from a listed path onto a file that exists. Built by
+	// concatenation, not filepath.Join, which would clean it away.
+	escape := listed + string(filepath.Separator) + ".." + string(filepath.Separator) + filepath.Base(foreign)
+
+	svc := newTestService(t)
+	cfg := configWith(core.Harness{
+		Name:              "agent",
+		Adapter:           "claude-code",
+		Workdir:           cwd,
+		HarvestTrajectory: true,
+	})
+	listedSession(t, svc, cfg, "agent", "mine") // the fixture is visible at all
+
+	for _, tc := range []struct{ name, path string }{
+		{"arbitrary file", secret},
+		{"another harness's session", foreign},
+		{"dot-dot escape from a listed path", escape},
+		{"relative spelling of a listed path", filepath.Base(listed)},
+		{"empty path", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			traj, err := svc.Get(cfg, "agent", tc.path)
+			if !errors.Is(err, ErrUnknownSession) {
+				t.Fatalf("Get(%q): err = %v, want ErrUnknownSession", tc.path, err)
+			}
+			if traj != nil {
+				t.Fatalf("Get(%q) returned a trajectory: %+v", tc.path, traj.Session)
+			}
+		})
+	}
+}
+
+func TestGetRefusesAnOptedOutHarnessScrollbackThroughAnOptedInOne(t *testing.T) {
+	// SPEC-0006 REQ "Harvest Opt-In": a harness that has not opted in MUST
+	// NOT have its trajectory returned by any facade operation. Naming an
+	// opted-in harness must not unlock another harness's scrollback.
+	dir := t.TempDir()
+	svc := NewService(adapter.NewRegistryWithDefaults())
+	svc.SetScrollbackDir(dir)
+	for _, name := range []string{"worker", "private"} {
+		if err := os.WriteFile(filepath.Join(dir, name+".log"), []byte("["+name+"]"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := configWith(
+		core.Harness{Name: "worker", Adapter: "generic", HarvestTrajectory: true},
+		core.Harness{Name: "private", Adapter: "generic", HarvestTrajectory: false},
+	)
+	private := filepath.Join(dir, "private.log")
+
+	if _, err := svc.Get(cfg, "worker", private); !errors.Is(err, ErrUnknownSession) {
+		t.Fatalf("Get(worker, private.log): err = %v, want ErrUnknownSession", err)
+	}
+	if _, err := svc.Get(cfg, "private", private); !errors.Is(err, ErrHarvestDisabled) {
+		t.Fatalf("Get(private, private.log): err = %v, want ErrHarvestDisabled", err)
+	}
+}
+
+func TestGetMatchesACleanSpellingOfAListedPath(t *testing.T) {
+	// The path is compared after filepath.Clean: "./" segments and doubled
+	// separators in an otherwise listed path still name the listed session.
+	dir := t.TempDir()
+	svc := NewService(adapter.NewRegistryWithDefaults())
+	svc.SetScrollbackDir(dir)
+	if err := os.WriteFile(filepath.Join(dir, "worker.log"), []byte("[worker]"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := configWith(core.Harness{Name: "worker", Adapter: "generic", HarvestTrajectory: true})
+	sep := string(filepath.Separator)
+
+	for _, p := range []string{
+		dir + sep + "." + sep + "worker.log",
+		dir + sep + sep + "worker.log",
+	} {
+		traj, err := svc.Get(cfg, "worker", p)
+		if err != nil {
+			t.Fatalf("Get(%q): %v", p, err)
+		}
+		if traj.Content != "[worker]" {
+			t.Fatalf("Get(%q) content = %q", p, traj.Content)
+		}
 	}
 }
 
@@ -354,22 +477,20 @@ func TestOptInAfterReload(t *testing.T) {
 
 func TestGetReadOnly(t *testing.T) {
 	// Verify that Get reads but does not modify the file.
-	dir := t.TempDir()
-	sessionPath := filepath.Join(dir, "session.jsonl")
-	original := `{"test":true}`
-	if err := os.WriteFile(sessionPath, []byte(original), 0644); err != nil {
-		t.Fatal(err)
-	}
+	home := withFakeHome(t)
+	cwd := t.TempDir()
+	sessionPath, original := writeClaudeCodeSession(t, home, "ro-1", cwd)
 
 	svc := newTestService(t)
 	h := core.Harness{
 		Name:              "agent",
 		Adapter:           "claude-code",
+		Workdir:           cwd,
 		HarvestTrajectory: true,
 	}
 	cfg := configWith(h)
 
-	_, err := svc.Get(cfg, "agent", sessionPath)
+	_, err := svc.Get(cfg, "agent", listedSession(t, svc, cfg, "agent", "ro-1").Path)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,8 +2,12 @@ package facade
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/stump-wtf/harness/internal/adapter"
 	"github.com/stump-wtf/harness/internal/core"
 	"github.com/stump-wtf/harness/internal/trajectory"
 )
@@ -148,6 +152,35 @@ func TestHandleGetTrajectoryHarvestDisabled(t *testing.T) {
 	}
 }
 
+func TestHandleGetTrajectoryRefusesAnUnlistedPath(t *testing.T) {
+	// #89: get_trajectory on an opted-in harness must not read a path its
+	// list_trajectories does not report. The file exists, so a refusal here
+	// comes from scoping, and none of its content may reach the result.
+	dir := t.TempDir()
+	secret := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(secret, []byte("TOPSECRET"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	svc := trajectory.NewService(adapter.NewRegistryWithDefaults())
+	svc.SetScrollbackDir(dir)
+	cfg := &core.Config{
+		Harnesses: map[string]core.Harness{
+			"agent": {Name: "agent", Adapter: "generic", HarvestTrajectory: true},
+		},
+	}
+
+	result := HandleGetTrajectory(svc, cfg, "agent", secret)
+	if result.Code != "unknown_session" {
+		t.Fatalf("code = %q, want unknown_session (error %q)", result.Code, result.Error)
+	}
+	if result.Trajectory != nil {
+		t.Fatalf("returned a trajectory for an unlisted path: %+v", result.Trajectory.Session)
+	}
+	if strings.Contains(result.Error, "TOPSECRET") {
+		t.Fatalf("error leaks file content: %q", result.Error)
+	}
+}
+
 func TestErrorCode(t *testing.T) {
 	tests := []struct {
 		err  error
@@ -155,6 +188,7 @@ func TestErrorCode(t *testing.T) {
 	}{
 		{trajectory.ErrHarvestDisabled, "harvest_disabled"},
 		{trajectory.ErrUnknownHarness, "unknown_harness"},
+		{trajectory.ErrUnknownSession, "unknown_session"},
 		{ErrNotPermitted, "not_permitted"},
 		{errors.New("something else"), "internal"},
 	}
