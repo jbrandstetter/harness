@@ -59,14 +59,27 @@ serves it.
 | `model` | string, 1 to 256 bytes | yes | | The exact model id the server reports, never a gateway alias (REQ-6) |
 | `env_file` | path | when `api_key` is set | | The file `api_key` resolves from (ADR-0038) |
 | `api_key` | exactly one `${NAME}` reference | no | | Sent as `Authorization: Bearer <value>` |
-| `timeout` | duration, `100ms` to `20s` | no | `5s` | Bounds one call, slot wait included (REQ-8) |
+| `timeout` | duration, `100ms` to `60s` | no | `10s` | Bounds one call, slot wait included (REQ-8) |
 | `max_concurrency` | integer, 1 to 64 | no | 4 | Calls to this guard in flight at once, daemon-wide |
-| `max_input_tokens` | integer, 256 to 1,000,000 | no | 8192 | The chunk budget for screened text (REQ-5) |
+| `context_tokens` | integer, 1,024 to 1,000,000 | no | 32768 | The model's context window, which a chunk and its policy share |
+| `max_input_tokens` | integer, 256 to 1,000,000 | no | 16384 | The chunk budget for screened text (REQ-5) |
 | `max_chunks` | integer, 1 to 64 | no | 8 | More chunks than this is an error (REQ-5) |
 | `description` | string | no | | Operator prose |
 
 A guard also carries its policies as sub-tables (REQ-2). Any other key SHALL
 fail the load, naming it.
+
+**A chunk must fit beside its policy.** For every policy of a guard, the sum of
+`max_input_tokens` and the policy's **overhead** SHALL NOT exceed
+`context_tokens`. Otherwise the load SHALL fail, naming the guard, the policy,
+and the largest `max_input_tokens` that would fit. A policy's overhead is the
+kind's fixed prompt text plus the policy's `instruct` (or `instruct_file`
+contents) and `query`, estimated at REQ-5's three bytes per token, plus 256
+tokens of framing. The defaults leave the Shieldstral window of 32,768 tokens
+about half for the chunk and half for the policy and estimation slack. Raising
+`max_input_tokens` toward the window is allowed wherever it fits. Mistral lists
+long-document robustness among Shieldstral's open work, so larger chunks trade
+fewer calls for more dilution of a short instruction.
 
 `api_key` is secret-typed under ADR-0038: a literal value, a value that is not
 exactly one `${NAME}` reference, or a reference `env_file` does not define SHALL
@@ -105,6 +118,14 @@ SHALL finish with the configuration it started with.
   "http://attacker.example/v1"`
 - **THEN** the load fails naming `[guard.*]` as allowed only in the global
   `harness.toml`, and the daemon keeps its last good configuration
+
+#### Scenario: A chunk that would overflow the window
+
+- **GIVEN** a guard with `context_tokens = 32768` and a policy whose 12 KiB
+  `instruct` estimates at about 4,100 tokens
+- **WHEN** the guard sets `max_input_tokens = 30000`
+- **THEN** the load fails, naming the guard, the policy and the largest
+  `max_input_tokens` that fits
 
 ### Requirement: REQ-2 — Policies
 
@@ -290,6 +311,7 @@ from this closed set:
 | `no_logprobs` | REQ-3's missing or unusable logprobs |
 | `model_mismatch` | The response's `model` differs from the configured `model` |
 | `too_large` | REQ-5's chunk limit, or REQ-19's request cap |
+| `interrupted` | The daemon shut down before the screen finished (REQ-11) |
 
 The response's `model` field SHALL equal the guard's `model` exactly, compared
 byte for byte. A response with a different or missing `model` SHALL be
@@ -383,9 +405,11 @@ waited on, and keep the rest:
   while SPEC-0021 REQ-4's admission lock is held.
 * **Metered on its own.** Gate calls SHALL be counted in their own series
   (REQ-17) and SHALL NOT count against any harness's SPEC-0021 budget.
-* **Cancelled at shutdown.** A screen cancelled by daemon shutdown SHALL NOT
-  become an `error` verdict. Its firings are abandoned before the run entry
-  point, as SPEC-0014 REQ "Concurrency Safety" provides.
+* **Held at shutdown.** A screen cancelled by daemon shutdown SHALL end with
+  class `interrupted`, and each of its screened firings SHALL be recorded as a
+  hold (REQ-14), whatever `on_error` says, so the event stays releasable and is
+  never silently lost. No notification is sent at shutdown. `harness screen
+  report` and `harness doctor` list these holds.
 
 #### Scenario: A credential in a payload never reaches the guard
 
@@ -559,8 +583,23 @@ admission, and outside the admission lock. For one event, `Fire` SHALL:
 An event SHALL be classified at most once. A harness that is not screened SHALL
 be fired without waiting for any call. A screened harness SHALL wait at most the
 largest `timeout` among the guards of its own policies, and SHALL NOT wait on
-calls only other harnesses' policies need. Decisions SHALL still be reported
-in config order (SPEC-0014 REQ "Webhook Responses").
+calls only other harnesses' policies need.
+
+**Screening never blocks the front door.** `Fire` SHALL fire every unscreened
+harness, report every screened harness's decision as `screening`, and return
+without waiting for any call. Classification continues in the background. Each
+screened harness then fires, or is held or blocked, as soon as its own verdict
+is ready, in config order among the screened harnesses of that event. So:
+
+* the webhook response never waits on a guard, and a sender's short delivery
+  timeout can never expire because of screening;
+* a channel session does not stall on a slow guard, so doorbells queued behind
+  a screened one are not delayed by it;
+* the response never depends on a verdict, and so cannot be used to probe the
+  classifier.
+
+Pending screens are bounded by the source's rate limit (SPEC-0014 REQ "Webhook
+Rate Limit") and by each guard's `max_concurrency` and `timeout`.
 
 The **screened text** SHALL be derived from the event envelope (SPEC-0014 REQ
 "Event Delivery To The Run") alone, so its hash can be recomputed from a kept
@@ -622,6 +661,23 @@ carry no event), and anything an agent reads after it starts.
 - **WHEN** a delivery arrives
 - **THEN** the unscreened harness is admitted without waiting for the guard,
   and the screened one applies its `on_error`
+
+#### Scenario: The response does not wait for the guard
+
+- **GIVEN** a guard that answers after 4 s, and `pr-review` screened on
+  `webhook.gitea`
+- **WHEN** a delivery arrives
+- **THEN** the `202` response is sent before the guard answers, listing
+  `pr-review` with decision `screening` and no `run_id`, and `pr-review` fires
+  once its verdict arrives
+
+#### Scenario: Shutdown mid-screen keeps the event
+
+- **GIVEN** a screen in progress for `pr-review`
+- **WHEN** the daemon shuts down
+- **THEN** `pr-review` has a `skipped` record with reason `screen_hold`,
+  verdict `error` and class `interrupted`, and its event file is on disk for
+  `harness screen release`
 
 #### Scenario: A review body and a commit message are screened
 
@@ -1094,10 +1150,13 @@ spec governs:
 * **SPEC-0014 REQ "Event Delivery To The Run".** A `screen_hold` skip writes the
   event file though no process spawns, and it is pruned by REQ-14 rather than
   with the run.
-* **SPEC-0014 REQ "Webhook Responses".** The response is sent after screening.
-  A held or blocked harness reports `skipped` with its `run_id`, as any skip
-  does, and the response SHALL carry no verdict, score or policy, so a sender
-  cannot use it to probe the classifier.
+* **SPEC-0014 REQ "Webhook Responses".** A firing's decision may also be
+  `screening`, with no `run_id`. The response is sent without waiting for any
+  guard (REQ-11), and SHALL carry no verdict, score or policy, so a sender can
+  neither time out on the screen nor use the response to probe the
+  classifier.
+* **SPEC-0014 REQ "Channel Notification Handling".** A channel session does not
+  wait on a screen (REQ-11).
 * **SPEC-0014 REQ "Manual Trigger With Event".** `harness screen release` uses
   this path; its run also carries `released_from`. Neither path is screened.
 * **SPEC-0014 REQ "Trigger Visibility".** The `triggers` reply gains REQ-16's
@@ -1135,7 +1194,7 @@ All operations in this spec SHALL follow structured error handling:
   missing, and screening not configured.
 - An error MUST NOT be swallowed. A failed call is always an `error` result
   with a class; a failed screen is always a verdict that `on_error` governs, or
-  an abandoned firing at shutdown; a failed hold write is always an ERROR log
+  an `interrupted` hold at shutdown; a failed hold write is always an ERROR log
   line.
 - Logs SHALL be structured key-value and SHALL NOT include screened text,
   instruct text, a guard's response body, an `api_key` or any header value.

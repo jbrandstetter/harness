@@ -164,9 +164,10 @@ base_url         = "http://gpu01:8000/v1"          # vLLM; default: [model_api].
 model            = "mistralai/Shieldstral-1.0-3B"  # exact id, never a gateway alias
 env_file         = "~/.config/harness/env/guard.env"   # optional
 api_key          = "${GUARD_API_KEY}"              # optional; ADR-0038, from env_file only
-timeout          = "5s"
+timeout          = "10s"
 max_concurrency  = 4
-max_input_tokens = 8192                            # chunk size; shorter chunks dilute an instruction less
+context_tokens   = 32768                           # the model's window; a chunk and its policy must fit
+max_input_tokens = 16384                           # chunk size: half the window, the rest for the policy
 max_chunks       = 8                               # more is an error, so padding cannot outrun the screen
 
 [guard.shieldstral.policy.injection]
@@ -205,6 +206,12 @@ flag_at = 0.85
   boundary. Each chunk is scored, and the highest chunk decides. Text that
   needs more than `max_chunks` chunks is an error rather than a partial screen,
   so padding a payload cannot push an instruction past the screen.
+* **A chunk must fit beside its policy.** The chunk shares `context_tokens`
+  with the judge prompt, the policy's `instruct` and the query, and config load
+  refuses a `max_input_tokens` that would not fit. The default takes half of
+  Shieldstral's 32k window. It can be raised toward the window, but Mistral
+  lists long-document robustness among the model's open work, and a short
+  instruction scores lower inside a long benign document than on its own.
 * **A guard may carry several policies.** Each policy scores independently, and
   the most severe verdict across policies and chunks wins.
 * `[guard.*]` joins ADR-0009's global-only list. A cloned repository must not
@@ -226,6 +233,12 @@ owner.
    screened at `source.Manager.Fire`: before fan-out, before admission, and
    outside the admission lock, which SPEC-0021 REQ-4 holds only for the ledger
    append.
+   * **Screening runs behind the front door.** `Fire` fires unscreened
+     harnesses, reports screened ones as `screening`, and returns, and each
+     screened harness fires when its verdict is ready. Forges give up on a
+     slow delivery (Gitea's default is 5 seconds, GitHub's 10), and a channel
+     session handles doorbells in order, so neither may wait on a classifier.
+     A screen interrupted by shutdown becomes a hold, never a lost event.
    * For a JSON body, from any source, the screened text is **every string
      value** in it, minus values that are wholly a URL, a hash, a UUID or a
      timestamp. That is more than SPEC-0017 REQ-10's untrusted fields on
@@ -361,9 +374,9 @@ Levels are cumulative, like fleet-rule levels (SPEC-0029 REQ-10):
   releasing it is a requeue there.
 * **Notifications carry identifiers, never text:** harness, run id, source,
   event id, policy, score, verdict, and guard model.
-* **The sender learns nothing.** A webhook response reports a held or blocked
-  harness as `skipped`, like any skip, with no verdict, score or policy. Whoever
-  sends deliveries cannot use the responses to tune an injection against the
+* **The sender learns nothing.** A webhook response reports a screened harness
+  as `screening`, and it is sent before any verdict exists. Whoever sends
+  deliveries cannot use the responses to tune an injection against the
   classifier.
 
 ### Recording
@@ -493,7 +506,10 @@ Acceptance tests that matter:
 * After `hold_ttl`, the held event file is gone. The test checks that the path
   is absent, not that a delete call returned.
 * A guard that sleeps longer than `timeout` does not delay the admission of a
-  firing for an unscreened harness bound to the same source.
+  firing for an unscreened harness bound to the same source. The webhook
+  response is sent before the guard answers.
+* A daemon shutdown during a screen leaves a `screen_hold` record with a
+  releasable event file.
 
 ## Pros and Cons of the Options
 

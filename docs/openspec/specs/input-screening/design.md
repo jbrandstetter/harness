@@ -118,25 +118,34 @@ classification per harness would multiply calls by fan-out.
 
 ### Who waits, and for how long
 
-**Choice**: a harness that is not screened fires without waiting for any call.
-A screened harness, in `enforce` or `shadow`, waits at most the largest
-`timeout` among its own policies' guards. Each call's `timeout` covers the time
-it waits for a concurrency slot, and a screen issues its calls together, so a
-screen can never outlast that bound. `timeout` is capped at 20 seconds.
+**Choice**: nothing at the front door waits. `Fire` fires unscreened harnesses,
+reports screened ones as `screening`, and returns. Classification runs in the
+background, and each screened harness fires, holds or blocks when its own
+verdict is ready. A screened harness, in `enforce` or `shadow`, is delayed at
+most the largest `timeout` among its own policies' guards (default 10 s,
+capped at 60 s). Each call's `timeout` covers its wait for a concurrency slot,
+and a screen issues its calls together, so a screen can never outlast that
+bound. A screen interrupted by shutdown becomes a hold, never a lost event.
 
-**Rationale**: ADR-0042's acceptance test requires that a sleeping guard not
-delay an unscreened harness on the same source. Counting the slot wait against
-`timeout` turns "bounded wait" into one number an operator can reason about:
-the longest a screened firing can be delayed. The cap keeps a webhook response,
-which is sent after every harness has decided, well inside the listener's
-30-second write timeout. Shadow waits like enforce because shadow exists to
-measure the path enforce will run, latency included, and because the would-have
-level belongs on the record the firing creates.
+**Rationale**: forges time out webhook deliveries quickly: Gitea's
+`[webhook] DELIVER_TIMEOUT` defaults to 5 seconds, and GitHub gives up after
+10. A response that waited on a guard would turn a slow classifier into failed
+deliveries on the sender's side. A channel
+session handles notifications in order, so a synchronous screen would stall
+every doorbell behind it. Answering first also means the response never
+depends on a verdict, which removes the probing oracle by construction rather
+than by redaction. Counting the slot wait against `timeout` keeps "bounded
+delay" one number an operator can reason about. Shadow waits like enforce,
+because shadow exists to measure the path enforce will run, latency included.
+Turning an interrupted screen into a hold keeps ADR-0021's rule that a missed
+event is visible, never silent.
 
-**Alternatives considered**: a separate slot-wait bound doubles the worst case
-and adds a key. Letting shadow harnesses proceed at once and patch the verdict
-onto the record later would need a second write path for records that may
-already be coalesced or pruned.
+**Alternatives considered**: screening synchronously with a short timeout
+would bound the response but force a tiny `timeout`, turning every GPU hiccup
+into an `error` verdict. A separate slot-wait bound doubles the worst case and
+adds a key. Letting shadow harnesses proceed at once and patch the verdict onto
+the record later would need a second write path for records that may already
+be coalesced or pruned.
 
 ### A closed set of kinds, scored from logprobs, attested by model
 
@@ -179,13 +188,20 @@ Thresholds are refused on `labels` policies because the score is only 0 or 1.
 **Choice**: chunk size is `3 × max_input_tokens` bytes, cut on UTF-8
 boundaries, with a 1,024-byte overlap (a quarter of the chunk when smaller).
 Text that needs more than `max_chunks` chunks makes no call and yields
-`too_large`.
+`too_large`. `max_input_tokens` defaults to 16,384, half of Shieldstral's
+32,768-token window, and the load checks that every policy's prompt fits
+beside a full chunk inside `context_tokens`.
 
 **Rationale**: a tokenizer per model would tie the daemon to model internals.
-Three bytes per token is conservative for English and code and close for CJK,
-and `max_input_tokens` is meant to leave headroom below the model's window. An
-overestimate that still overflows the window becomes an `http_status` error,
-which fails closed. The overlap guarantees that any instruction up to 1 KiB
+Three bytes per token is conservative for English and code and close for CJK.
+The chunk shares the window with the judge prompt, the policy's `instruct` (up
+to 16 KiB) and the query, so the full window is never available to the chunk.
+Checking the fit at load turns an overflow into a named config error instead of
+an `http_status` at 3 a.m. Half the window is also a hedge on quality: Mistral
+lists long-document robustness among Shieldstral's open work, and a short
+instruction inside a long benign document scores lower than the same
+instruction alone. An operator who measures otherwise, in shadow, can raise
+`max_input_tokens` up to what fits. The overlap guarantees that any instruction up to 1 KiB
 appears whole in some chunk. The hard cap means padding can only turn a
 payload into an error, never push an instruction into an unscreened tail.
 
@@ -252,15 +268,17 @@ and its record alive for exactly `hold_ttl`.
 on restart and contradicts ADR-0021. A separate hold store would duplicate the
 ledger.
 
-### The webhook response hides the verdict
+### The webhook response never depends on the verdict
 
-**Choice**: a held or blocked harness appears in the webhook response as
-`skipped` with its `run_id`, like any skip. The response carries no verdict,
+**Choice**: a screened harness appears in the webhook response as `screening`,
+with no `run_id`, before any verdict exists. The response carries no verdict,
 score or policy.
 
 **Rationale**: whoever can read webhook responses could otherwise tune an
-injection against the classifier one delivery at a time. The operator sees the
-verdict in the run record, the notification and `harness screen report`.
+injection against the classifier one delivery at a time. Because the response
+is sent before the screen finishes, there is nothing in it to leak. The
+operator sees the verdict in the run record, the notification and
+`harness screen report`.
 
 ### The credential split for stables, and a local-only oracle
 
@@ -286,7 +304,11 @@ that declare `trusted_actors`.
 **Rationale**: a cloned repository or a third-party package must never choose,
 weaken or re-point its own screening (ADR-0009, ADR-0040). Drop-ins hold source
 and harness tables today, so a `screen` key beside them follows the table it
-modifies. Trust follows who can write, and only forge presets carry a verified
+modifies. Drop-ins may loosen as well as tighten: `mode = "off"`, an empty
+`policies` or a lower level. The operator writes drop-ins as they write the
+main file, and decided that trust follows the author, not the file. The guard
+and default tables stay in the main file, as other global-only enforcement
+tables do (SPEC-0029's enforce list). Trust follows who can write, and only forge presets carry a verified
 sender (SPEC-0017 REQ-9).
 
 ## Architecture
@@ -341,10 +363,9 @@ sequenceDiagram
 
 * **Latency on screened events.** Every screened firing waits for a forward
   pass: tens of milliseconds on a GPU, seconds on a CPU, up to the guard's
-  `timeout` when it is down. A channel session processes notifications in
-  order, so a slow guard delays the doorbells behind the one being screened. →
-  Unscreened harnesses never wait; `timeout` is capped at 20 seconds; the
-  duration histogram shows it.
+  `timeout` when it is down. → Screening runs behind the front door, so the
+  webhook response, the channel session and unscreened harnesses never wait;
+  `timeout` is capped at 60 seconds; the duration histogram shows it.
 * **False positives hold good work.** → Holds are releasable with the original
   bytes; `on_flag`, `on_warn` and `on_error` are per source and per harness;
   shadow measures a policy first.
@@ -353,8 +374,8 @@ sequenceDiagram
   pages once per harness and policy, and `hold_ttl` bounds the files.
 * **Offline probing.** An attacker can tune text against a public model until
   it scores low. → Screening raises the attacker's cost; it does not make an
-  agent safe to point at hostile text. The webhook response and remote
-  callers get no verdict to probe with.
+  agent safe to point at hostile text. The webhook response is sent before
+  any verdict exists, and remote callers cannot reach `classify`.
 * **The screened text is a proxy.** The agent re-reads the forge object, which
   can be edited after delivery, and follows links the payload only names. →
   Stated plainly in the docs; an open question below.
@@ -410,9 +431,6 @@ ADR-0036's model API client for its HTTP plumbing. After that, in order:
 * **Switchboard hints.** A routing rule could attach a screening hint to a
   todo. Harness would honor it only to tighten, since a doorbell is untrusted;
   loosening would need the harness to name the rule id it accepts.
-* **Loosening from a drop-in.** Drop-ins may set `mode = "off"`, `policies =
-  []` or a lower level today. If drop-ins are rendered by tooling the operator
-  does not review line by line, loosening may belong in the main file only.
 * **The utility ceiling.** Whether gate calls share ADR-0036's utility rate
   limit and daily cost ceiling. Refusing a gate call for cost turns it into an
   `error` verdict, which holds by default.
