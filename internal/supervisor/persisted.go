@@ -196,14 +196,19 @@ func (p persistedProjectHarness) toCore() core.Harness {
 // persistedHarness is one harness's durable runtime state (ADR-0007). No config
 // fields — those live in the TOML.
 type persistedHarness struct {
-	Enabled      bool       `json:"enabled"` // intent (SPEC-0003 REQ "State Model")
-	State        core.State `json:"state"`   // last observed state (informational)
-	RestartCount int        `json:"restart_count"`
-	LastExitCode int        `json:"last_exit_code"`
-	LastExitAt   *time.Time `json:"last_exit_at,omitempty"`
-	Flapping     bool       `json:"flapping"`
-	Created      time.Time  `json:"created,omitempty"`
-	LastStarted  *time.Time `json:"last_started,omitempty"`
+	Enabled bool `json:"enabled"` // intent (SPEC-0003 REQ "State Model")
+	// OperatorStopped is the operator-stop suppression of automatic firings
+	// (stump.wtf/harness#786): a triggered harness's schedule paused by
+	// `harness stop` stays paused across daemon restarts. Omitted when
+	// false. Additive, so no schema version bump.
+	OperatorStopped bool       `json:"operator_stopped,omitempty"`
+	State           core.State `json:"state"` // last observed state (informational)
+	RestartCount    int        `json:"restart_count"`
+	LastExitCode    int        `json:"last_exit_code"`
+	LastExitAt      *time.Time `json:"last_exit_at,omitempty"`
+	Flapping        bool       `json:"flapping"`
+	Created         time.Time  `json:"created,omitempty"`
+	LastStarted     *time.Time `json:"last_started,omitempty"`
 	// LeaseUntil is the end of an after-hours lease (SPEC-0012 REQ
 	// "After-Hours Lease"): the instant past which the gate holds the harness
 	// again. Omitted when no lease is live. Written synchronously BEFORE the

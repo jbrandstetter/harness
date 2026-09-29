@@ -164,7 +164,10 @@ At each firing the daemon starts the harness **if no run is in flight**. A
 firing that arrives during a run follows the harness's `on_overlap` policy (see
 *Runs*); none ever stacks a second process. A firing during a graceful stop is
 recorded skipped and cannot resurrect the harness. A fresh scheduled attempt
-clears a failed latch through the ordinary start path.
+clears a failed latch through the ordinary start path. Amended 2026-09-29: an
+operator's `stop` pauses the schedule itself — schedule and catch-up firings
+for a triggered harness stopped by the operator are recorded skipped until the
+next explicit `start` or `restart` (see the amendment at the end of this ADR).
 
 A firing starts the harness **without persisting `enabled` intent**.
 A scheduled run that dies, cleanly or in a crash, therefore leaves no
@@ -499,6 +502,7 @@ flowchart TD
     TRIG["harness trigger NAME"]:::client --> GUARD
     TICK -->|"on time, or missed with catch_up = true (once)"| GUARD{"harness state"}
     GUARD -->|"stopping"| SKIP["record skipped"]:::store
+    GUARD -->|"stopped · schedule<br/>suppressed by stop (#786)"| SKIP
     GUARD -->|"run in flight"| OVERLAP{"on_overlap"}
     OVERLAP -->|"skip"| SKIP
     OVERLAP -->|"queue"| HOLD["hold one firing<br/>until the run ends"]:::daemon
@@ -552,7 +556,47 @@ flowchart TD
 * **Governs SPEC-0008** — the formal requirements and scenarios.
 * **Not decided here:** `scheduled` and `completed` harness states; a dedicated
   jobs view in the TUI (scheduled harnesses appear in the ordinary list with
-  their next window); arming and disarming a schedule from a client; `tty =
+  their next window); arming and disarming a schedule from a client beyond the
+  `start` and `stop` gestures (resolved for the daemon's own CLI by the #786
+  amendment at the end of this ADR); `tty =
   false`; `on_failure` hooks and notifiers (a notifier is a client of the event
   stream, never the daemon); scheduled units as `[profile.*]` members; retry
   within a window; a daemon-wide concurrent-run cap; project-scoped schedules.
+
+## Amendment (2026-09-29)
+
+**An operator's `stop` pauses the schedule until the next explicit `start`.**
+
+The original design made `stop` mean "end the run in flight" and let the cron
+keep firing, because for a *resident* harness `stopped` is a momentary state,
+not intent — and for a scheduled one-shot `enabled` is deliberately not the
+arming intent either (`harness describe` even reports `armed`, not `enabled`,
+for one). The result was harness
+[harness#786](https://github.com/stump-wtf/harness/issues/786): an operator
+who stopped a scheduled harness believed it paused, but the daemon kept firing
+it on schedule, claiming queue work and burning a bounded retry budget before
+anyone noticed, and nothing on the CLI said the schedule was still live.
+
+The fix gives the pause a durable place of its own instead of overloading
+either existing key: an `operator_stopped` intent in `state.json` (additive, no
+schema version bump), set by `harness stop`, cleared by `harness start` or
+`harness restart`, restored on daemon startup. While it is set, schedule and
+catch-up firings are recorded `skipped` instead of started; manual `trigger`
+runs and event-source firings still go through — the suppression is the
+schedule's, not the harness's. `harness describe` reports
+`next run: suppressed by harness stop (harness start re-arms it)` so the pause
+is visible where the old silence was. This resolves the *Not decided here*
+item "arming and disarming a schedule from a client" for the daemon's own CLI:
+disarming is what `stop` now does, arming is `start`, and neither is a new
+client operation. SPEC-0008 REQ "Firing And Overlap" carries the carve-out.
+
+A suppressed firing is still decided — recorded `skipped` with reason
+`stopped` — rather than dropped: the scheduler's window marks advance and no
+catch-up backlog accrues across the pause, and an owed operating-hours
+settle-up still settles (the owed flag clears, the skip records close), with
+the `catch_up` firing it would ask for decided under the same suppression.
+Surfaces carry the state too: the harness projection gains
+`schedule_suppressed` (SPEC-0008 REQ "Schedule Visibility"), so `describe`
+need not imply a countdown that will not happen. The formal requirements are
+SPEC-0008 REQ "Firing And Overlap", REQ "Manual Trigger" and REQ "Schedule
+Visibility".

@@ -90,6 +90,13 @@ next firing reads `⏱ armed` rather than `stopped`, because it is loaded and
 will fire on its own; `harness describe` reports `armed` instead of an
 `enabled` that is false for every scheduled harness by construction.
 
+`harness stop <name>` on a scheduled one-shot pauses the schedule itself: the
+process stops, and the cron stops firing — `harness describe` reads
+**`next run: suppressed by harness stop (harness start re-arms it)`** — until
+an explicit `harness start`, which re-arms it (`harness trigger` runs once
+without re-arming). The pause survives a daemon restart. Windows that pass
+while stopped leave a skipped run record instead of firing.
+
 A harness fired by trigger sources (`triggers`, see
 [Trigger sources](#trigger-sources)) is a one-shot too, and reads the same
 way: `↯ armed` between firings, never `stopped` or `(disabled)`. Its SCHEDULE

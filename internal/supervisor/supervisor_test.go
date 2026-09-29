@@ -344,7 +344,7 @@ func TestSpawnFailureIsTheLatestRun(t *testing.T) {
 	h.Workdir = "/nonexistent-harness-test-dir"
 	s := newTestSupervisor(t, h, noFlapPolicy())
 	prev := time.Now().Add(-24 * time.Hour)
-	s.Restore(true, 0, 0, prev.Add(11*time.Minute), prev)
+	s.Restore(true, false, 0, 0, prev.Add(11*time.Minute), prev)
 	s.Start()
 	waitState(t, s, core.StateFailed)
 	snap := s.Snapshot()

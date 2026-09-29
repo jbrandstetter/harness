@@ -377,6 +377,11 @@ type HarnessInfo struct {
 	NextRetryInMs int64  `json:"next_retry_in_ms,omitempty"`
 	ConfigChanged bool   `json:"config_changed,omitempty"`
 	PID           int    `json:"pid,omitempty"`
+	// ScheduleSuppressed marks a scheduled harness whose cron firings an
+	// operator's stop is suppressing (stump.wtf/harness#786): `harness
+	// stop` pauses the schedule until the next explicit start, so a
+	// reported `next run` will not fire. Omitted when false.
+	ScheduleSuppressed bool `json:"schedule_suppressed,omitempty"`
 	// SessionStalled reports the daemon's session guard finding (issue #347):
 	// every recent assistant turn failed with a context-limit error, so the
 	// harness is accepting events and answering none of them no matter what

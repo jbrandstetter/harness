@@ -186,6 +186,11 @@ Rules:
   `"on-failure"` are accepted here.
 - Mutually exclusive with `enabled = true` and with profile membership.
 - Global config only — project files reject the key.
+- `harness stop <name>` pauses the schedule until an explicit
+  `harness start` (a `harness trigger` runs once without re-arming); the
+  pause survives a daemon restart, and windows that pass while stopped are
+  recorded as skipped runs
+  ([CLI → Scheduled jobs](./cli#scheduled-jobs)).
 
 ### Time zones
 

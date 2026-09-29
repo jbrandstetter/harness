@@ -115,6 +115,10 @@ const (
 	// ReasonOperator: a cancelled (or replaced) run an operator stopped,
 	// restarted or removed.
 	ReasonOperator RunReason = "operator"
+	// ReasonStopped: a firing that never reached the overlap decision
+	// because an operator's stop is suppressing it (stump.wtf/harness#786).
+	// Cleared by the next explicit start.
+	ReasonStopped RunReason = "stopped"
 	// ReasonHours: a cancelled run its operating hours closed.
 	ReasonHours RunReason = "hours"
 	// ReasonReload: a cancelled run whose harness a reload removed.
@@ -421,6 +425,18 @@ func (s *Supervisor) startProcess(req RunRequest) RunRecord {
 // the start cannot be separated by another start, as a read-the-snapshot then
 // call-Start caller can be.
 func (s *Supervisor) startRun(req RunRequest) RunDecision {
+	// An operator's stop suppresses the schedule until the next explicit
+	// start (#786). Gated here on the loop — not only in Manager.StartRun's
+	// snapshot check — because not every firing enters through it: the
+	// hours-open catch-up in openFirings calls startRun directly, and a
+	// firing that raced the snapshot could otherwise start after the stop
+	// landed. Deciding here keeps the check and the start indivisible, the
+	// same reason the overlap policy lives on the loop. Event sources and
+	// `harness trigger` are deliberately not suppressed (see the comment in
+	// Manager.StartRun).
+	if s.stoppedByOperator && (req.Trigger == TriggerSchedule || req.Trigger == TriggerCatchUp) {
+		return RunDecision{Kind: DecisionSkipped, Run: s.recordSkip(req, ReasonStopped)}
+	}
 	if !s.hasProcess() {
 		s.clearFailLatch()
 		return RunDecision{Kind: DecisionStarted, Run: s.startProcess(req)}

@@ -218,7 +218,27 @@ func (m *Manager) StartRun(name string, req RunRequest) (RunDecision, bool) {
 	if s == nil {
 		return RunDecision{}, false
 	}
-	if s.Snapshot().State == core.StateStopping {
+	snap := s.Snapshot()
+	if snap.OperatorStopped && (req.Trigger == TriggerSchedule || req.Trigger == TriggerCatchUp) {
+		// An operator's stop suppresses the schedule until the next explicit
+		// start (stump.wtf/harness#786): `harness stop` on a triggered
+		// harness means "do not fire on your cron again". Event sources are
+		// deliberately NOT suppressed — a stop cancels the run in flight and
+		// the next webhook firing starts a new one (the coalesce tests pin
+		// that lifecycle) — and a manual trigger is the operator asking for
+		// exactly one run, so both still go through. Checked here rather
+		// than on the loop so the window is still decided (its scheduler
+		// mark advances) while nothing runs; recorded like the mid-stop case
+		// below: skipped, not coalesced into an open run, because there is
+		// no run in flight.
+		rec := decisionRecord(req, OutcomeSkipped, time.Now())
+		rec.Reason = ReasonStopped
+		rec.Coalesced = 1
+		rec, _ = m.AppendRun(name, rec)
+		m.publishRun(EventRunFinished, name, rec)
+		return RunDecision{Kind: DecisionSkipped, Run: rec}, true
+	}
+	if snap.State == core.StateStopping {
 		// Recorded here rather than sent to the loop, and so NOT coalesced:
 		// the loop's open-skip map is keyed to the run in flight, and there
 		// is no run in flight during a stop. A burst arriving mid-stop is

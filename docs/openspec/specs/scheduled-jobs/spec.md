@@ -161,8 +161,18 @@ restore its enabled intent.
 
 The daemon SHALL fire when the harness is `stopped`, `failed`, or `restarting`; a
 firing from `failed` SHALL clear the failed latch through the ordinary start
-path.
-
+path. The one exception is an operator stop on a triggered harness
+(stump.wtf/harness#786): `harness stop` pauses the schedule itself, so a
+schedule firing or an operating-hours `catch_up` settle-up (SPEC-0014 REQ
+"Operating Hours On Triggered Harnesses") arriving while the operator-stopped
+intent is set SHALL be recorded `skipped` with reason `stopped` and SHALL NOT
+start a run, and the pause SHALL survive a daemon restart. A suppressed firing
+is still decided: the scheduler's window marks advance and no catch-up backlog
+accrues across the pause, and an owed settle-up still settles — the owed flag
+clears and the outside-hours skip records close — with the `catch_up` firing
+they would ask for decided under the same suppression. A manual `trigger`
+SHALL still run, and event sources SHALL still fire: the suppression is the
+schedule's, not the harness's.
 A firing SHALL never stack a second concurrent process for the same harness,
 under any overlap policy.
 
@@ -186,6 +196,23 @@ be a no-op.
 - **WHEN** a schedule fires while the harness is `failed`
 - **THEN** the daemon starts a fresh run and the failed latch is cleared
 
+#### Scenario: Firing while the schedule is suppressed
+
+- **WHEN** a schedule or catch-up firing arrives for a triggered harness whose
+  operator-stopped intent is set — set by `harness stop`, cleared by `harness
+  start` or `harness restart`, persisted in state.json, and restored across a
+  daemon restart
+- **THEN** the daemon records the firing `skipped` without coalescing it into a
+  run in flight, leaves the suppression set, and a later manual `trigger` still
+  starts a run
+
+#### Scenario: Hours-open catch-up while suppressed
+
+- **WHEN** a triggered harness owing an operating-hours settle-up (with
+  `catch_up = true`) is stopped by an operator, and its hours then open
+- **THEN** the settle-up happens — the owed flag clears and the outside-hours
+  skip records close — and the `catch_up` firing is recorded `skipped` with
+  reason `stopped`, starting no process
 ### Requirement: Suspend-Safe Schedule Evaluation
 
 The daemon SHALL decide whether a window is due by comparing the wall clock
@@ -651,7 +678,11 @@ usable exit code SHALL exit 1. `harness daemon run` SHALL continue to start the
 daemon.
 
 `start` and `stop` SHALL keep their SPEC-0003 meaning on a scheduled harness:
-`start` runs it now and `stop` ends the run in flight.
+`start` runs it now and re-arms the schedule (REQ "Firing And Overlap"), and
+`stop` ends the run in flight and suppresses the schedule until the next
+explicit `start` or `restart`. A `trigger` SHALL bypass that suppression — the
+operator is asking for exactly one run — and SHALL NOT clear it: the schedule
+stays suppressed afterwards.
 
 #### Scenario: Trigger during a run
 
@@ -664,6 +695,12 @@ daemon.
 
 - **WHEN** an operator runs `harness trigger nightly --wait` and the run exits 3
 - **THEN** the run's log is streamed and the command exits 3
+
+#### Scenario: Trigger on a suppressed schedule
+
+- **WHEN** `trigger` is issued for a harness whose schedule an operator stop is
+  suppressing
+- **THEN** the run starts, and the schedule remains suppressed afterwards
 
 ### Requirement: Lifecycle Events
 
@@ -827,6 +864,19 @@ into a cadence label it SHALL render the expression verbatim rather than
 nothing. A scheduled harness whose next firing the daemon has not resolved SHALL
 render no countdown rather than a placeholder time.
 
+The harness projection SHALL carry `schedule_suppressed` — omitted when false —
+for a scheduled harness whose schedule an operator stop is suppressing (REQ
+"Firing And Overlap"). A surface SHALL render that suppression in place of
+presenting the next firing as one that will happen: a suppressed schedule is a
+pause the operator asked for, not a disabled harness and not a live countdown.
+
+#### Scenario: Suppressed schedule on a surface
+
+- **WHEN** a harness's schedule is suppressed by an operator stop and a client
+  lists or describes it
+- **THEN** the projection carries `schedule_suppressed`, and the surface shows
+  the suppression rather than a countdown to a firing that will not happen
+
 #### Scenario: Scheduled harness on the wire
 
 - **WHEN** a client lists or describes a harness carrying `schedule`
@@ -906,8 +956,10 @@ skipped without aborting reconciliation of the remaining harnesses.
 
 The following are not specified here. ADR-0013 lists them as not decided:
 
-* Arming and disarming a schedule from a client. `start` and `stop` keep their
-  SPEC-0003 meaning on a scheduled harness (REQ "Manual Trigger").
+* Arming and disarming a schedule from a client beyond the `start` and `stop`
+  gestures. The gestures are specified — `stop` suppresses the schedule until
+  the next `start`, which re-arms it (REQ "Firing And Overlap", REQ "Manual
+  Trigger") — but a dedicated arm/disarm control op is not.
 * A dedicated jobs view in the TUI; scheduled harnesses appear in the ordinary
   harness list.
 * A per-harness `timezone` key. Zones are expressed with a `CRON_TZ=` prefix

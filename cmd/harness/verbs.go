@@ -190,7 +190,12 @@ func cmdDescribe(c *client.Client, o verbOpts) error {
 	switch {
 	case h.Schedule != "":
 		t.Row("schedule", t.faintPlain(h.Schedule))
-		if h.NextRun != "" {
+		if h.ScheduleSuppressed {
+			// stump.wtf/harness#786: `harness stop` paused the schedule, so
+			// the next window will not fire. Saying so beats a ticking
+			// "next run" that never happens — the silence was the bug.
+			t.Row("next run", t.faintPlain("suppressed by harness stop (harness start re-arms it)"))
+		} else if h.NextRun != "" {
 			if next, err := time.Parse(time.RFC3339, h.NextRun); err == nil {
 				t.Row("next run", t.faintPlain(fmt.Sprintf("%s (%s)", next.Format("Mon Jan 2 15:04"), nextRunSuffix(h.NextRun))))
 			}

@@ -443,8 +443,11 @@ func (m *Manager) Restore() error {
 		switch {
 		case scheduled:
 			// Counters are observability, not intent — preserve them, the
-			// same contract the #99 fallback below keeps.
-			s.Restore(false, pr.RestartCount, pr.LastExitCode, last, started)
+			// same contract the #99 fallback below keeps. The operator-stop
+			// suppression (stump.wtf/harness#786) IS intent, so it restores:
+			// a schedule paused by `harness stop` stays paused across a
+			// daemon restart.
+			s.Restore(false, pr.OperatorStopped, pr.RestartCount, pr.LastExitCode, last, started)
 			// A weekend's outside_hours skips are still owed their
 			// catch-up after a restart (SPEC-0014 REQ "Operating Hours
 			// On Triggered Harnesses"; firing_hours.go).
@@ -456,11 +459,11 @@ func (m *Manager) Restore() error {
 			// operator. Autostart membership wins, which is the whole point of
 			// the fallback: the daemon must not come up having started nothing.
 			// Counters are preserved so restart history is not lost (#99).
-			s.Restore(true, pr.RestartCount, pr.LastExitCode, last, started)
+			s.Restore(true, false, pr.RestartCount, pr.LastExitCode, last, started)
 		case inState:
-			s.Restore(pr.Enabled, pr.RestartCount, pr.LastExitCode, last, started)
+			s.Restore(pr.Enabled, pr.OperatorStopped, pr.RestartCount, pr.LastExitCode, last, started)
 		case autostart[name]:
-			s.Restore(true, 0, 0, time.Time{}, time.Time{})
+			s.Restore(true, false, 0, 0, time.Time{}, time.Time{})
 		}
 	}
 
@@ -1219,12 +1222,13 @@ func (m *Manager) Save() error {
 	for _, s := range sups {
 		snap := s.Snapshot()
 		ph := persistedHarness{
-			Enabled:      snap.Enabled,
-			State:        snap.State,
-			RestartCount: snap.RestartCount,
-			LastExitCode: snap.LastExitCode,
-			Flapping:     snap.Flapping,
-			Created:      snap.Created,
+			Enabled:         snap.Enabled,
+			OperatorStopped: snap.OperatorStopped,
+			State:           snap.State,
+			RestartCount:    snap.RestartCount,
+			LastExitCode:    snap.LastExitCode,
+			Flapping:        snap.Flapping,
+			Created:         snap.Created,
 		}
 		if !snap.LastExitAt.IsZero() {
 			t := snap.LastExitAt

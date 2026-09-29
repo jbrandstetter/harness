@@ -166,7 +166,7 @@ func TestRestoreSeedsLastStarted(t *testing.T) {
 	s := newTestSupervisor(t, shHarness("sweep", "exit 0", 0), fastPolicy())
 	started := time.Date(2026, 9, 11, 7, 40, 0, 106_000_000, time.Local)
 	exited := started.Add(16 * time.Minute)
-	s.Restore(false, 0, 1, exited, started)
+	s.Restore(false, false, 0, 1, exited, started)
 	snap := s.Snapshot()
 	if !snap.LastStarted.Equal(started) || !snap.LastExitAt.Equal(exited) || snap.LastExitCode != 1 {
 		t.Errorf("snapshot = started %v exited %v code %d, want %v %v 1", snap.LastStarted, snap.LastExitAt, snap.LastExitCode, started, exited)

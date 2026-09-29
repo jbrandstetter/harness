@@ -371,7 +371,10 @@ func TestAProcessWithNoRunDoesNotLeaveASkipOpen(t *testing.T) {
 		return m.get("busy").Snapshot().State == core.StateStopped
 	})
 
-	m.StartRun("busy", req)
+	// An explicit start begins the next run: the stop paused the schedule
+	// (stump.wtf/harness#786), so a schedule firing alone would record
+	// another skipped/stopped record instead of a run.
+	m.Start("busy")
 	waitRuns(t, m, "busy", "a run is in flight", func(rs []RunRecord) bool {
 		return len(rs) > 0 && rs[len(rs)-1].Outcome == OutcomeRunning
 	})

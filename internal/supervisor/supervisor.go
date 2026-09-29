@@ -67,6 +67,10 @@ type restoreData struct {
 	// restart still knows when the last run began (SPEC-0006 REQ "Run
 	// Correlation").
 	lastStarted time.Time
+	// operatorStopped restores the operator-stop suppression (stump.wtf/
+	// harness#786): a schedule paused by `harness stop` stays paused across
+	// a daemon restart.
+	operatorStopped bool
 }
 
 // closeStepReq is one sample of the daemon's turn-state watch, delivered to
@@ -140,6 +144,11 @@ type Snapshot struct {
 	// much a one-shot that nothing but its firing source may start.
 	// Governing: SPEC-0014 REQ "Triggered Harness Exclusions"; ADR-0013.
 	Triggered bool
+	// OperatorStopped marks an operator stop that suppresses automatic
+	// firings (stump.wtf/harness#786). Carried on the snapshot so callers
+	// outside the actor goroutine — Manager.StartRun — can consult it; like
+	// Enabled it is intent, and unlike Held it is persisted.
+	OperatorStopped bool
 	// SessionStalled reports the session guard's finding: every recent
 	// assistant turn failed with a context-limit error, so the harness is
 	// accepting events and answering none of them no matter what State says
@@ -247,6 +256,15 @@ type Supervisor struct {
 	// (issue #159): the state transitions publish snapshots, but those must
 	// NOT rewrite state.json while a scheduled one-shot is in flight.
 	suppressPersist bool
+
+	// stoppedByOperator records an operator stop that suppresses automatic
+	// firings (stump.wtf/harness#786). Set by cmdStop, cleared by cmdStart
+	// and cmdRestart, restored from state.json: for a triggered harness
+	// `enabled` is deliberately NOT the operator's pause intent — the
+	// schedule is (issue #159, #266) — so the suppression needs a place of
+	// its own to live in. Manager.StartRun consults it for every automatic
+	// firing; a manual trigger still runs.
+	stoppedByOperator bool
 
 	// ---- run history, scheduled harnesses only (runs.go) ----
 	journal RunJournal
@@ -481,9 +499,10 @@ func (s *Supervisor) handleCommand(c command) (shutdown bool) {
 	switch c.kind {
 	case cmdStart:
 		s.enabled = true
-		s.held = false             // an operator start overrides the hours hold
-		s.closing = false          // and cancels a graceful close in flight
-		s.publishChangeUnchanged() // persist intent even if already up
+		s.stoppedByOperator = false // an explicit start re-arms the schedule (#786)
+		s.held = false              // an operator start overrides the hours hold
+		s.closing = false           // and cancels a graceful close in flight
+		s.publishChangeUnchanged()  // persist intent even if already up
 		if !s.hasProcess() && s.state != core.StateStopping {
 			s.clearFailLatch()
 			s.startTrigger = c.trigger
@@ -517,6 +536,11 @@ func (s *Supervisor) handleCommand(c command) (shutdown bool) {
 		s.suppressPersist = false
 	case cmdStop:
 		s.enabled = false
+		// The stop also pauses a triggered harness's schedule (issue #786):
+		// enabled is deliberately not the pause intent for a one-shot — the
+		// schedule is (#159, #266) — so the suppression gets its own flag,
+		// cleared by the next explicit start or restart.
+		s.stoppedByOperator = true
 		s.held = false    // stopped by the operator now, not by its hours (SPEC-0012)
 		s.closing = false // a stop never waits on turn state (SPEC-0012)
 		s.cancelRestartTimer()
@@ -532,6 +556,7 @@ func (s *Supervisor) handleCommand(c command) (shutdown bool) {
 		}
 	case cmdRestart:
 		s.enabled = true
+		s.stoppedByOperator = false // a restart is an explicit start
 		s.held = false
 		// A restart cancels a graceful close in flight, as a start does.
 		// Left set, the gate would keep stepping a close on a harness
@@ -554,6 +579,7 @@ func (s *Supervisor) handleCommand(c command) (shutdown bool) {
 	case cmdRestore:
 		r := c.restore
 		s.enabled = r.enabled
+		s.stoppedByOperator = r.operatorStopped
 		s.restartCount = r.restartCount
 		s.lastExitCode = r.lastExitCode
 		s.lastExitAt = r.lastExitAt
@@ -1330,24 +1356,25 @@ func (s *Supervisor) publishSnapshot() {
 	}
 	s.mu.Lock()
 	s.snap = Snapshot{
-		Name:          s.harness.Name,
-		State:         s.state,
-		Enabled:       s.enabled,
-		RestartCount:  s.restartCount,
-		LastExitCode:  s.lastExitCode,
-		LastExitAt:    s.lastExitAt,
-		Flapping:      s.flapping,
-		NextRetryIn:   s.nextRetryIn,
-		ConfigChanged: s.configChanged,
-		Created:       s.created,
-		LastStarted:   s.lastStarted,
-		Scheduled:     s.harness.Schedule != "",
-		Triggered:     s.harness.Triggered(),
-		PID:           pid,
-		Gated:         s.gated(),
-		Held:          s.held,
-		Closing:       s.closing,
-		CloseAt:       s.closeAt,
+		Name:            s.harness.Name,
+		State:           s.state,
+		Enabled:         s.enabled,
+		OperatorStopped: s.stoppedByOperator,
+		RestartCount:    s.restartCount,
+		LastExitCode:    s.lastExitCode,
+		LastExitAt:      s.lastExitAt,
+		Flapping:        s.flapping,
+		NextRetryIn:     s.nextRetryIn,
+		ConfigChanged:   s.configChanged,
+		Created:         s.created,
+		LastStarted:     s.lastStarted,
+		Scheduled:       s.harness.Schedule != "",
+		Triggered:       s.harness.Triggered(),
+		PID:             pid,
+		Gated:           s.gated(),
+		Held:            s.held,
+		Closing:         s.closing,
+		CloseAt:         s.closeAt,
 
 		ConsecutiveFailures: s.consecFailures,
 		HoursSkipped:        s.hoursSkipped,
@@ -1364,12 +1391,13 @@ func (s *Supervisor) publishChangeUnchanged() { s.publishSnapshot() }
 
 // Restore seeds persisted intent + counters (ADR-0007) before the harness is
 // started. Call immediately after New, before Start/Autostart.
-func (s *Supervisor) Restore(enabled bool, restartCount, lastExitCode int, lastExitAt, lastStarted time.Time) {
+func (s *Supervisor) Restore(enabled, operatorStopped bool, restartCount, lastExitCode int, lastExitAt, lastStarted time.Time) {
 	s.send(command{kind: cmdRestore, restore: &restoreData{
-		enabled:      enabled,
-		restartCount: restartCount,
-		lastExitCode: lastExitCode,
-		lastExitAt:   lastExitAt,
-		lastStarted:  lastStarted,
+		enabled:         enabled,
+		operatorStopped: operatorStopped,
+		restartCount:    restartCount,
+		lastExitCode:    lastExitCode,
+		lastExitAt:      lastExitAt,
+		lastStarted:     lastStarted,
 	}})
 }
