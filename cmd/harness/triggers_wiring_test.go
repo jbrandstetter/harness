@@ -31,6 +31,7 @@ import (
 	"github.com/stump-wtf/harness/internal/protocol"
 	"github.com/stump-wtf/harness/internal/schedfmt"
 	"github.com/stump-wtf/harness/internal/supervisor"
+	"github.com/stump-wtf/harness/internal/testwait"
 	"github.com/stump-wtf/harness/internal/trigger"
 	"github.com/stump-wtf/harness/internal/trigger/channel/testserver"
 	"github.com/stump-wtf/harness/internal/trigger/source"
@@ -333,7 +334,12 @@ func TestDaemonWiringTriggerSourceChangedPerTransition(t *testing.T) {
 	live.CloseStreams()
 
 	pc := sub.Conn()
-	_ = sub.SetReadDeadline(time.Now().Add(20 * time.Second))
+	// Scaled by testwait.Budget: the backoff -> connecting -> connected cycle
+	// is wall-clock, and on a loaded CI runner a fixed 20s was not enough
+	// (main run on 09/29 hit it). The budget is still a hang guard, not a
+	// correctness window: the test counts events, so it fails if the daemon
+	// stops emitting regardless of how long the deadline is.
+	_ = sub.SetReadDeadline(time.Now().Add(testwait.Budget(t, 20*time.Second)))
 	var got []protocol.EventMsg
 	for len(got) < 3 {
 		f, err := pc.ReadFrame()
