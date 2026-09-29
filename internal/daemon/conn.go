@@ -29,6 +29,10 @@ type conn struct {
 	pc  *protocol.Conn
 	raw net.Conn
 	sub chan protocol.EventMsg
+	// peer is the socket peer this connection came from, "uid=N pid=N" when
+	// the platform reports one (SO_PEERCRED, linux): lifecycle verbs it sends
+	// carry it on the intent-change line (issue #835).
+	peer string
 
 	closed    chan struct{}
 	closeOnce sync.Once
@@ -55,6 +59,7 @@ func (s *Server) handleConn(raw net.Conn) {
 		srv:       s,
 		pc:        protocol.NewConn(raw),
 		raw:       raw,
+		peer:      peerCredentials(raw),
 		closed:    make(chan struct{}),
 		sessions:  make(map[uint32]*attach.Session),
 		lastAlive: time.Now(),

@@ -194,6 +194,27 @@ func (w *Watcher) LoopStopped(t loopguard.Trip) {
 	}, true)
 }
 
+// IntentLost reports autostart members a boot left down by persisted intent
+// (issue #835): the intent flipped to disabled at some point without a trace,
+// and this daemon's restart made the change stick. The daemon's boot path
+// calls it directly — a boot finding is not a lifecycle event, so there is
+// nothing for the bus watcher to pick up. Each harness gets its own
+// notification, and like a give-up it opens the alert: starting the harness
+// reports it recovered.
+func (w *Watcher) IntentLost(harnesses []string) {
+	for _, name := range harnesses {
+		w.send(Notification{
+			Event:   core.NotifyIntentLost,
+			Harness: name,
+			State:   string(core.StateStopped),
+			Message: fmt.Sprintf("%s left down at boot by persisted intent (autostart member, enabled = false) — start it with `harness start %s`", name, name),
+			Cause:   "persisted intent is disabled",
+			Hint:    "harness describe " + name,
+			Time:    time.Now(),
+		}, true)
+	}
+}
+
 // SessionRotated reports a session guard rotation. It is the session guard's
 // OnRotate.
 func (w *Watcher) SessionRotated(r supervisor.SessionRotation) {

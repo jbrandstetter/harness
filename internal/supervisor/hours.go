@@ -77,8 +77,8 @@ func (s *Supervisor) Hold(mode core.HoursShutdownMode, closeAt time.Time) {
 // if it is in hours. Governing: ADR-0014 (a newly introduced harness records
 // its intent), SPEC-0012 REQ "Gate Enforcement" (boot out of hours begins
 // held), REQ "Operating Hours Reload".
-func (s *Supervisor) EnableHeld() {
-	s.send(command{kind: cmdHold, enable: true, mode: core.HoursShutdownImmediate})
+func (s *Supervisor) EnableHeld(trigger RunTrigger) {
+	s.send(command{kind: cmdHold, enable: true, mode: core.HoursShutdownImmediate, source: intentSourceFor(trigger)})
 }
 
 // Release clears a hold and starts the harness, without writing `enabled`. A
@@ -137,9 +137,8 @@ func (s *Supervisor) hoursExpr() hours.Expr {
 }
 
 // hold is cmdHold on the actor loop.
-func (s *Supervisor) hold(enable bool, mode core.HoursShutdownMode, closeAt time.Time) {
-	if enable && !s.enabled {
-		s.enabled = true
+func (s *Supervisor) hold(enable bool, mode core.HoursShutdownMode, closeAt time.Time, source string) {
+	if enable && s.setIntent(true, source, "") {
 		s.publishChangeUnchanged() // persist the recorded intent, as cmdStart does
 	}
 	// Held means "enabled, and down because of its hours". A disabled harness

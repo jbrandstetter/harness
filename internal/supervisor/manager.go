@@ -439,6 +439,13 @@ func (m *Manager) Restore() error {
 		if inState && pr.LastStarted != nil {
 			started = *pr.LastStarted
 		}
+		// The last intent change (issue #835) is history, not intent: it
+		// restores for every harness the file names, so a daemon restarted
+		// after a flip still answers who flipped it and when.
+		var lastIntent IntentChange
+		if inState && pr.LastIntentAt != nil {
+			lastIntent = IntentChange{At: *pr.LastIntentAt, Source: pr.LastIntentSource, Peer: pr.LastIntentPeer}
+		}
 
 		switch {
 		case scheduled:
@@ -447,7 +454,7 @@ func (m *Manager) Restore() error {
 			// suppression (stump.wtf/harness#786) IS intent, so it restores:
 			// a schedule paused by `harness stop` stays paused across a
 			// daemon restart.
-			s.Restore(false, pr.OperatorStopped, pr.RestartCount, pr.LastExitCode, last, started)
+			s.Restore(false, pr.OperatorStopped, pr.RestartCount, pr.LastExitCode, last, started, lastIntent)
 			// A weekend's outside_hours skips are still owed their
 			// catch-up after a restart (SPEC-0014 REQ "Operating Hours
 			// On Triggered Harnesses"; firing_hours.go).
@@ -459,11 +466,11 @@ func (m *Manager) Restore() error {
 			// operator. Autostart membership wins, which is the whole point of
 			// the fallback: the daemon must not come up having started nothing.
 			// Counters are preserved so restart history is not lost (#99).
-			s.Restore(true, false, pr.RestartCount, pr.LastExitCode, last, started)
+			s.Restore(true, false, pr.RestartCount, pr.LastExitCode, last, started, lastIntent)
 		case inState:
-			s.Restore(pr.Enabled, pr.OperatorStopped, pr.RestartCount, pr.LastExitCode, last, started)
+			s.Restore(pr.Enabled, pr.OperatorStopped, pr.RestartCount, pr.LastExitCode, last, started, lastIntent)
 		case autostart[name]:
-			s.Restore(true, false, 0, 0, time.Time{}, time.Time{})
+			s.Restore(true, false, 0, 0, time.Time{}, time.Time{}, IntentChange{})
 		}
 	}
 
@@ -556,7 +563,7 @@ func startOrHold(s *Supervisor, trigger RunTrigger) {
 		s.StartWith(trigger)
 		return
 	}
-	s.EnableHeld()
+	s.EnableHeld(trigger)
 }
 
 // snapUp reports the states the operating-hours gate holds: a harness that is
@@ -711,7 +718,7 @@ func (m *Manager) StartFor(name string, forDur time.Duration) error {
 	}
 	log.Info("after-hours lease", "harness", name, "until", until.Format(time.RFC3339))
 	m.unfollowWatch(name) // a lease starting cancels the close (SPEC-0012)
-	m.startWith(name, TriggerLease)
+	m.startWith(name, TriggerLease, "")
 	return nil
 }
 
@@ -748,12 +755,16 @@ func (m *Manager) LeaseApplies(name string) bool {
 }
 
 // Start marks a single harness enabled and brings it up.
-func (m *Manager) Start(name string) bool { return m.startWith(name, TriggerManual) }
+func (m *Manager) Start(name string) bool { return m.startWith(name, TriggerManual, "") }
+
+// StartPeer is Start naming the socket peer the platform reported for the
+// verb (issue #835): the intent-change line carries it.
+func (m *Manager) StartPeer(name, peer string) bool { return m.startWith(name, TriggerManual, peer) }
 
 // startWith is Start naming the start path its resident run records.
-func (m *Manager) startWith(name string, trigger RunTrigger) bool {
+func (m *Manager) startWith(name string, trigger RunTrigger, peer string) bool {
 	if s := m.get(name); s != nil {
-		s.StartWith(trigger)
+		s.StartWithPeer(trigger, peer)
 		// Starting it IS the fix for a dormant autostart member, so stop
 		// reporting it — otherwise boot's warning and doctor's row outlive the
 		// condition they describe, until the next restore.
@@ -784,7 +795,17 @@ func (m *Manager) clearDormant(name string) {
 }
 
 // Stop gracefully stops a single harness and clears its enabled intent.
-func (m *Manager) Stop(name string) bool {
+func (m *Manager) Stop(name string) bool { return m.stopBy(name, "verb:stop", "") }
+
+// StopPeer is Stop naming the socket peer the platform reported for the verb
+// (issue #835).
+func (m *Manager) StopPeer(name, peer string) bool { return m.stopBy(name, "verb:stop", peer) }
+
+// StopBy is Stop naming the path that clears the intent (issue #835): the
+// loop guard passes "guard", so a guard stop does not masquerade as a verb.
+func (m *Manager) StopBy(name, source string) bool { return m.stopBy(name, source, "") }
+
+func (m *Manager) stopBy(name, source, peer string) bool {
 	if s := m.get(name); s != nil {
 		// A stop discards any after-hours lease in every gate state — leased,
 		// held, closing, whatever (SPEC-0012 REQ "After-Hours Lease"): the
@@ -799,16 +820,21 @@ func (m *Manager) Stop(name string) bool {
 			m.markDirty()
 		}
 		m.unfollowWatch(name) // a stop never waits on turn state (SPEC-0012)
-		s.Stop()
+		s.StopBy(source, peer)
 		return true
 	}
 	return false
 }
 
 // Restart restarts a single harness (clearing a failed latch).
-func (m *Manager) Restart(name string) bool {
+func (m *Manager) Restart(name string) bool { return m.restartBy(name, "verb:restart", "") }
+
+// RestartPeer is Restart naming the socket peer of a socket verb (issue #835).
+func (m *Manager) RestartPeer(name, peer string) bool { return m.restartBy(name, "verb:restart", peer) }
+
+func (m *Manager) restartBy(name, source, peer string) bool {
 	if s := m.get(name); s != nil {
-		s.Restart()
+		s.RestartBy(source, peer)
 		return true
 	}
 	return false
@@ -820,9 +846,15 @@ func (m *Manager) Restart(name string) bool {
 // dormant-autostart clearing instead of quietly diverging from it.
 func (m *Manager) Enable(name string) bool { return m.Start(name) }
 
+// EnablePeer is Enable naming the socket peer of a socket verb (issue #835).
+func (m *Manager) EnablePeer(name, peer string) bool { return m.StartPeer(name, peer) }
+
 // Disable clears a harness's enabled intent and stops it if running (cmdStop
 // carries the intent; see Enable).
 func (m *Manager) Disable(name string) bool { return m.Stop(name) }
+
+// DisablePeer is Disable naming the socket peer of a socket verb (issue #835).
+func (m *Manager) DisablePeer(name, peer string) bool { return m.StopPeer(name, peer) }
 
 // Resize resizes a single harness's live PTY (ADR-0003), ok=false if unknown.
 func (m *Manager) Resize(name string, cols, rows int) bool {
@@ -1237,6 +1269,15 @@ func (m *Manager) Save() error {
 		if !snap.LastStarted.IsZero() {
 			t := snap.LastStarted
 			ph.LastStarted = &t
+		}
+		// The last intent change (issue #835) persists with the rest of the
+		// durable state, so describe keeps answering who flipped the intent
+		// across a daemon restart.
+		if !snap.LastIntent.At.IsZero() {
+			t := snap.LastIntent.At
+			ph.LastIntentAt = &t
+			ph.LastIntentSource = snap.LastIntent.Source
+			ph.LastIntentPeer = snap.LastIntent.Peer
 		}
 		// The after-hours lease rides with the rest of the durable state
 		// (SPEC-0012 REQ "After-Hours Lease"): it is what lets a daemon

@@ -83,6 +83,16 @@ func (n *daemonNotifier) loopGuardOptions(opts loopguard.Options) loopguard.Opti
 	return opts
 }
 
+// intentLost forwards boot's dormant-autostart finding to the hook (issue
+// #835): an always-on member that silently lost its intent reaches the
+// operator, not only the journal.
+func (n *daemonNotifier) intentLost(harnesses []string) {
+	if n == nil || n.w == nil {
+		return
+	}
+	n.w.IntentLost(harnesses)
+}
+
 // registerMetrics adds harness_notify_deliveries_total to the daemon's
 // /metrics registry, when the listener is on.
 func (n *daemonNotifier) registerMetrics(dm *daemonMetrics) {

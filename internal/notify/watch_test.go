@@ -160,3 +160,36 @@ func TestWatcherSessionRotated(t *testing.T) {
 		t.Fatalf("failed rotation payload = %+v", bad)
 	}
 }
+
+// ---- issue #835: dormant autostart members raise intent_lost -------------
+
+// A boot that finds autostart members left down by persisted intent must tell
+// the operator, once per harness, and the notification must carry what
+// happened and how to answer it.
+func TestWatcherIntentLostNotifiesPerHarness(t *testing.T) {
+	_, w, out := newWatcherRig(t, core.NotifyEvents)
+	w.IntentLost([]string{"alpha", "beta"})
+	got := WaitReceived(t, w.d, out, 2)
+	time.Sleep(100 * time.Millisecond)
+	if n := len(ReadReceived(t, out)); n != 2 {
+		t.Fatalf("%d deliveries, want 2 (one per dormant harness)", n)
+	}
+	by := map[string]Payload{}
+	for _, r := range got {
+		by[r.Payload.Harness] = r.Payload
+	}
+	a, ok := by["alpha"]
+	if !ok {
+		t.Fatalf("no delivery for alpha: %+v", got)
+	}
+	if a.Event != core.NotifyIntentLost || a.State != string(core.StateStopped) ||
+		a.Cause != "persisted intent is disabled" || a.Hint != "harness describe alpha" ||
+		!strings.Contains(a.Message, "left down at boot by persisted intent") ||
+		!strings.Contains(a.Message, "harness start alpha") {
+		t.Fatalf("alpha payload = %+v", a)
+	}
+	b, ok := by["beta"]
+	if !ok || b.Event != core.NotifyIntentLost {
+		t.Fatalf("beta payload = %+v (ok=%v)", b, ok)
+	}
+}

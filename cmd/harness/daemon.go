@@ -385,6 +385,10 @@ func runDaemon(o daemonOpts) {
 			"harnesses", strings.Join(dormant, ", "),
 			"hint", "run `harness start <name>` to re-enable (it persists across restarts)",
 		)
+		// Issue #835: the journal line is not enough — an always-on member
+		// that silently lost its intent reaches the operator's hook, the same
+		// way a give-up does.
+		notifier.intentLost(dormant)
 	}
 	// Issue #356: the metrics collector subscribes to lifecycle events before
 	// Autostart, so the transitions boot causes are counted (SPEC-0013 REQ-2).

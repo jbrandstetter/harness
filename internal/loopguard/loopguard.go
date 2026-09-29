@@ -76,6 +76,9 @@ type Subscriber interface {
 // satisfies it.
 type Stopper interface {
 	Stop(name string) bool
+	// StopBy is Stop naming the path that clears the intent, so the
+	// intent-change line (issue #835) says "guard" instead of a verb.
+	StopBy(name, source string) bool
 	LogLifecycle(name, msg string, kv ...any) bool
 }
 
@@ -255,7 +258,7 @@ func (g *Guard) fire(t Trip, ev observe.Event) {
 	g.mu.Lock()
 	g.trips = append(g.trips, t)
 	g.mu.Unlock()
-	stopped := g.stop.Stop(t.Harness)
+	stopped := g.stop.StopBy(t.Harness, "guard")
 	kv := []any{
 		"harness", t.Harness,
 		"tool", t.Tool,

@@ -29,6 +29,10 @@ type fakeStopper struct {
 }
 
 func (f *fakeStopper) Stop(name string) bool {
+	return f.StopBy(name, "verb:stop")
+}
+
+func (f *fakeStopper) StopBy(name, _ string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stopped = append(f.stopped, name)
