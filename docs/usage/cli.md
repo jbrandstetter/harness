@@ -138,9 +138,9 @@ harness runs --trigger webhook,channel --wide  # add MODEL, TOKENS, COST and TOD
 
 `harness runs NAME` with no other filter is the one-harness history it has
 always been: newest first, default 20, and `--json` prints the same
-`{"name": …, "runs": […]}` object as before, with new fields only added. The
-MODEL column in `--wide` shows the served model with the most output tokens
-among runs owned by that harness (SPEC-0022 REQ-4).
+`{"name": …, "runs": […]}` object as before, with new fields only added. Each
+run's MODEL cell in `--wide` shows the served model with the most output
+tokens among that run's model calls (SPEC-0022 REQ-4).
 
 With the daemon down, `harness runs` reads the ledger's files directly and says
 so on stderr. It changes nothing on disk, and it shows a run the daemon left

@@ -99,7 +99,7 @@ to resolve conflicts; after conflicts are resolved, the PR should be left as
 is. The train's own `update branch` style merges the base into the PR (not a
 rebase) to keep approvals attached.
 
-### Lesson (c): a harness redeploy kills scratchpads and cancella a train in flight
+### Lesson (c): a harness redeploy kills scratchpads and cancels a train in flight
 
 When the train is merging and a harness redeploy starts, scratchpad workers
 are killed and in-flight train runs are cancelled by context. The daemon starts
