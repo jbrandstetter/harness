@@ -79,7 +79,9 @@ func TestDoctorNotifyTestRunsTheDaemonHook(t *testing.T) {
 	tmp := t.TempDir()
 	nc, out := newNotifyHook(t)
 	configPath := filepath.Join(tmp, "harness.toml")
-	toml := fmt.Sprintf("[harness.demo]\nharness = \"generic\"\nenabled = false\n\n[notify]\ncommand = [%q, %q]\n", nc.Command[0], nc.Command[1])
+	// The recorder's timeout, not the 15s default: it is a hang guard here.
+	toml := fmt.Sprintf("[harness.demo]\nharness = \"generic\"\nenabled = false\n\n[notify]\ncommand = [%q, %q]\ntimeout = %q\n",
+		nc.Command[0], nc.Command[1], nc.Timeout.Round(time.Second).String())
 	if err := os.WriteFile(configPath, []byte(toml), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +123,8 @@ func TestDoctorNotifyTestRunsTheDaemonHook(t *testing.T) {
 	if res.NotifyTest == nil || res.NotifyTest.Status != "ok" {
 		t.Fatalf("notify_test row = %+v", res.NotifyTest)
 	}
-	d := waitHookEvent(t, out, core.NotifyTest)
+	// The row says the hook exited 0, so its record is already in place.
+	d := hookRecord(t, out, core.NotifyTest)
 	if d.payload.Host == "" || !strings.Contains(d.env, "HARNESS_NOTIFY_EVENT=test") {
 		t.Fatalf("test delivery = %+v\n%s", d.payload, d.env)
 	}

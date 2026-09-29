@@ -13,7 +13,16 @@ package main
 // what the hook actually received. The doctor's end of it is in
 // doctor_notify_test.go.
 //
+// No test races the hook against a clock. The hook's timeout is a hang guard
+// scaled like the waits, and a wait ends when the dispatcher records the
+// delivery finished, however long that takes. A delivery that did not exit 0
+// fails the test with its own result and error.
+//
 // @joestump-agent 09/26/2026 - Added for harness#725.
+// @joestump-agent 09/28/2026 - Replaced the fixed 5s hook timeout and the
+// file-only poll: under load the recorder was killed before it wrote its
+// record, and the test said only "the hook never received" (same class as
+// internal/notify, harness#798).
 
 import (
 	"database/sql"
@@ -26,6 +35,8 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/log/v2"
+	"github.com/prometheus/client_golang/prometheus"
 	_ "modernc.org/sqlite"
 
 	"github.com/stump-wtf/harness/internal/attach"
@@ -53,6 +64,13 @@ type hookDelivery struct {
 	env     string
 }
 
+// hookWait is what one recorder delivery is allowed on an idle machine.
+// Stretched by testwait.Budget, it is the hook's timeout, so it only ever
+// bounds a hang: no test here exercises the timeout. A fixed 5s killed the
+// recorder before it wrote its record on a loaded Mac, where XProtect scans
+// each freshly written script as it runs.
+const hookWait = 10 * time.Second
+
 // newNotifyHook writes the recorder and returns the [notify] table that runs
 // it, plus the directory its deliveries land in.
 func newNotifyHook(t *testing.T) (core.NotifyConfig, string) {
@@ -69,9 +87,89 @@ func newNotifyHook(t *testing.T) (core.NotifyConfig, string) {
 	return core.NotifyConfig{
 		Command:  []string{script, out},
 		Events:   slices.Clone(core.DefaultNotifyEvents),
-		Timeout:  5 * time.Second,
+		Timeout:  testwait.Budget(t, hookWait),
 		Cooldown: 15 * time.Minute,
 	}, out
+}
+
+// testNotifier is the notify pipeline the daemon builds, with the
+// dispatcher's log kept: its lines carry each failed delivery's error and
+// the hook's own output, which the failure messages quote.
+type testNotifier struct {
+	*daemonNotifier
+	log *syncBuffer
+}
+
+// startTestNotify starts the pipeline over mgr the way runDaemon does, bar
+// where the dispatcher logs, and closes it when the test ends.
+func startTestNotify(t *testing.T, mgr *supervisor.Manager) *testNotifier {
+	t.Helper()
+	buf := &syncBuffer{}
+	n := &testNotifier{daemonNotifier: startDaemonNotify(mgr, notify.Options{Logger: log.New(buf)}), log: buf}
+	t.Cleanup(n.Close)
+	return n
+}
+
+// finished reads harness_notify_deliveries_total off the dispatcher: how many
+// deliveries of each event have finished with each result. The dispatcher
+// counts a delivery only once its hook has exited.
+func (n *testNotifier) finished(t *testing.T) map[string]map[string]int {
+	t.Helper()
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(n.d.Collector())
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]map[string]int{}
+	for _, f := range families {
+		for _, m := range f.GetMetric() {
+			var event, result string
+			for _, l := range m.GetLabel() {
+				switch l.GetName() {
+				case "event":
+					event = l.GetValue()
+				case "result":
+					result = l.GetValue()
+				}
+			}
+			if out[event] == nil {
+				out[event] = map[string]int{}
+			}
+			out[event][result] = int(m.GetCounter().GetValue())
+		}
+	}
+	return out
+}
+
+// requireHookSucceeded fails the test on any delivery whose hook did not
+// exit 0. A recorder that was killed or failed wrote nothing, so its missing
+// record alone would say only "the hook never received" it.
+func (n *testNotifier) requireHookSucceeded(t *testing.T, finished map[string]map[string]int) {
+	t.Helper()
+	var bad []string
+	for event, results := range finished {
+		for _, r := range []string{notify.ResultError, notify.ResultTimeout} {
+			if results[r] > 0 {
+				bad = append(bad, fmt.Sprintf("%s ×%d %s", event, results[r], r))
+			}
+		}
+	}
+	if len(bad) == 0 {
+		return
+	}
+	slices.Sort(bad)
+	msg := fmt.Sprintf("the hook did not exit 0: %s", strings.Join(bad, ", "))
+	if last := n.d.Status().Last; last != nil {
+		msg += fmt.Sprintf("\nlast delivery: %s for %q finished %s: %s", last.Event, last.Harness, last.Result, last.Error)
+	}
+	// The dispatcher counts a delivery just before it logs it, and the log
+	// line is what carries the hook's own output.
+	deadline := time.Now().Add(testwait.Budget(t, time.Second))
+	for !strings.Contains(n.log.String(), "notify: hook failed") && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("%s\ndispatcher log:\n%s", msg, n.log.String())
 }
 
 func readHookDeliveries(t *testing.T, dir string) []hookDelivery {
@@ -94,37 +192,64 @@ func readHookDeliveries(t *testing.T, dir string) []hookDelivery {
 	return out
 }
 
-// waitHookEvent waits for a delivery of event and returns it. The budget
-// scales with the go test deadline (testwait.Budget), like the other waits
-// in this suite: on a loaded CI runner the daemon runs far slower than a
-// laptop, and a fixed 15s expired before the stop+notify path was scheduled
-// at all (main went red twice on this after #649 landed).
+// hookRecord returns the recorder's record of a delivery of event. Call it
+// only once the hook has exited 0 on one: the recorder renames its record
+// into place before it exits, so the record must be there.
+func hookRecord(t *testing.T, dir, event string) hookDelivery {
+	t.Helper()
+	var got []string
+	for _, d := range readHookDeliveries(t, dir) {
+		if d.payload.Event == event {
+			return d
+		}
+		got = append(got, d.payload.Event)
+	}
+	t.Fatalf("the hook exited 0 on a %q delivery, but the recorder holds no record of it (it holds %v)", event, got)
+	return hookDelivery{}
+}
+
+// waitHookEvent waits until the dispatcher has finished a delivery of event
+// and returns what the hook received. It waits on the dispatcher's own count
+// of finished deliveries, not the recorder's files, so a delivery that did
+// not exit 0 fails here with its own result and error instead of expiring
+// the wait as "never received".
+//
+// The budget is a hang guard. It scales with the go test deadline
+// (testwait.Budget), like the other waits in this suite: on a loaded CI
+// runner the daemon runs far slower than a laptop, and a fixed 15s expired
+// before the stop+notify path was scheduled at all (main went red twice on
+// this after #649 landed).
+//
+// 15s is not enough when two full suites share the runner. The loop guard
+// trips on 8 sequential tool events, and the observer feeds it one scan at
+// a time; on 09/29 (runs 15437 and 15448, two suites overlapping) it
+// managed one event per ~20s, so 8 events needed ~160s while the wait gave
+// up at 60s. The guard saw the events creep in (seen=1..3, trips=[]) and
+// the delivery never came. 90s at the usual 4x scale is ~6m: about twice
+// the worst load seen, and only paid on a genuinely stuck run.
 //
 // The variadic diagnostics run once at the timeout and are appended to the
 // failure, so a red run on the runner says where the event died — observer
 // counters (delivered, dropped, unattributed, parse errors) or the guard's
 // view (events seen, trips issued) — instead of leaving the question open.
-func waitHookEvent(t *testing.T, dir, event string, diagnostics ...func() string) hookDelivery {
+func waitHookEvent(t *testing.T, n *testNotifier, dir, event string, diagnostics ...func() string) hookDelivery {
 	t.Helper()
-	deadline := time.Now().Add(testwait.Budget(t, 15*time.Second))
+	budget := testwait.Budget(t, 90*time.Second)
+	deadline := time.Now().Add(budget)
 	for {
-		for _, d := range readHookDeliveries(t, dir) {
-			if d.payload.Event == event {
-				return d
-			}
+		finished := n.finished(t)
+		n.requireHookSucceeded(t, finished)
+		if finished[event][notify.ResultOK] > 0 {
+			return hookRecord(t, dir, event)
 		}
 		if time.Now().After(deadline) {
-			var got []string
-			for _, d := range readHookDeliveries(t, dir) {
-				got = append(got, d.payload.Event)
-			}
-			msg := fmt.Sprintf("the hook never received %q (got %v)", event, got)
+			msg := fmt.Sprintf("no %q delivery finished within %v (finished: %v)", event, budget, finished)
 			for _, d := range diagnostics {
 				if s := d(); s != "" {
 					msg += "\n" + s
 				}
 			}
-			t.Fatalf("%s", msg)
+			t.Fatalf("%s\ndispatcher log:\n%s", msg, n.log.String())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -164,13 +289,12 @@ func TestDaemonNotifyFiresOnGiveUpAndRecovery(t *testing.T) {
 	mgr := supervisor.NewManager(cfg, opts)
 	reg.SetController(mgr)
 	t.Cleanup(mgr.Close)
-	n := startDaemonNotify(mgr, notify.Options{})
-	t.Cleanup(n.Close)
+	n := startTestNotify(t, mgr)
 
 	if !mgr.Start(h.Name) {
 		t.Fatal("Start returned false for a configured harness")
 	}
-	got := waitHookEvent(t, out, core.NotifyFailed)
+	got := waitHookEvent(t, n, out, core.NotifyFailed)
 	p := got.payload
 	wantMsg := fmt.Sprintf(`claude-rc failed: gave up after %d consecutive failures (last exit 1): "Error: You must be logged in to use Remote Control." — restart with `+
 		"`harness restart claude-rc`; see `harness logs claude-rc`", opts.Policy.MaxRestarts+1)
@@ -198,7 +322,7 @@ func TestDaemonNotifyFiresOnGiveUpAndRecovery(t *testing.T) {
 	if !mgr.Restart(h.Name) {
 		t.Fatal("Restart returned false")
 	}
-	rec := waitHookEvent(t, out, core.NotifyRecovered)
+	rec := waitHookEvent(t, n, out, core.NotifyRecovered)
 	if rec.payload.Harness != h.Name || !strings.Contains(rec.payload.Message, "running again (was failed)") {
 		t.Fatalf("recovered payload = %+v", rec.payload)
 	}
@@ -236,8 +360,7 @@ func TestDaemonNotifyFiresOnLoopStop(t *testing.T) {
 	mgr := supervisor.NewManager(cfg, opts)
 	reg.SetController(mgr)
 	t.Cleanup(mgr.Close)
-	n := startDaemonNotify(mgr, notify.Options{})
-	t.Cleanup(n.Close)
+	n := startTestNotify(t, mgr)
 	if !mgr.Start(h.Name) {
 		t.Fatal("Start returned false for a configured harness")
 	}
@@ -256,7 +379,7 @@ func TestDaemonNotifyFiresOnLoopStop(t *testing.T) {
 	obsOpts.PollInterval = 10 * time.Millisecond
 	obs := startDaemonObserver(mgr, obsOpts)
 	t.Cleanup(obs.Stop)
-	guard := startDaemonLoopGuard(mgr, obs, n, loopguard.Options{})
+	guard := startDaemonLoopGuard(mgr, obs, n.daemonNotifier, loopguard.Options{})
 	t.Cleanup(guard.Close)
 
 	incident := map[string]any{"method": "add_comment", "owner": "stump.wtf", "repo": "harness", "index": 383, "body": "."}
@@ -269,7 +392,7 @@ func TestDaemonNotifyFiresOnLoopStop(t *testing.T) {
 		)
 	}
 
-	got := waitHookEvent(t, out, core.NotifyLoopStopped,
+	got := waitHookEvent(t, n, out, core.NotifyLoopStopped,
 		// harness#740 review: the run-14372 red showed zero deliveries in
 		// 124s with nothing in the log between hook activation and failure,
 		// so whether the observer ever emitted or the guard ever tripped
@@ -311,8 +434,7 @@ func TestDaemonNotifyFiresOnSessionRotation(t *testing.T) {
 	mgr := supervisor.NewManager(cfg, opts)
 	reg.SetController(mgr)
 	t.Cleanup(mgr.Close)
-	n := startDaemonNotify(mgr, notify.Options{})
-	t.Cleanup(n.Close)
+	n := startTestNotify(t, mgr)
 
 	writeWedgedCrushStore(t, filepath.Join(work, ".crush", "crush.db"))
 	if !mgr.Start(h.Name) {
@@ -322,10 +444,10 @@ func TestDaemonNotifyFiresOnSessionRotation(t *testing.T) {
 		snap, _ := mgr.Snapshot(h.Name)
 		return snap.State == core.StateRunning && snap.PID != 0
 	})
-	g := startDaemonSessionGuard(mgr, n, 20*time.Millisecond, 0)
+	g := startDaemonSessionGuard(mgr, n.daemonNotifier, 20*time.Millisecond, 0)
 	t.Cleanup(func() { g.Close(); mgr.SetSessionGuard(nil) })
 
-	p := waitHookEvent(t, out, core.NotifySessionRotated).payload
+	p := waitHookEvent(t, n, out, core.NotifySessionRotated).payload
 	if p.Harness != h.Name || p.State != "running" || p.Cause != "3 of 3 recent turns failed on context-limit errors" ||
 		!strings.Contains(p.Message, "restarted on a fresh session") {
 		t.Fatalf("session_rotated payload = %+v", p)
@@ -368,12 +490,11 @@ func TestDaemonNotifyFollowsReload(t *testing.T) {
 	cfg := &core.Config{Harnesses: map[string]core.Harness{}, Profiles: map[string]core.Profile{}}
 	mgr := supervisor.NewManager(cfg, opts)
 	t.Cleanup(mgr.Close)
-	n := startDaemonNotify(mgr, notify.Options{})
-	t.Cleanup(n.Close)
+	n := startTestNotify(t, mgr)
 
 	var prevRan bool
 	mgr.SetReloadHook(func() { prevRan = true })
-	wireNotifyReload(mgr, n)
+	wireNotifyReload(mgr, n.daemonNotifier)
 
 	nc, out := newNotifyHook(t)
 	next := &core.Config{Harnesses: map[string]core.Harness{}, Profiles: map[string]core.Profile{}, Notify: nc}
@@ -385,7 +506,7 @@ func TestDaemonNotifyFollowsReload(t *testing.T) {
 		t.Fatalf("dispatcher config after reload = %+v, want %+v", n.d.Config(), nc)
 	}
 	n.w.LoopStopped(loopguard.Trip{Harness: "x", Tool: "t", Count: 8})
-	waitHookEvent(t, out, core.NotifyLoopStopped)
+	waitHookEvent(t, n, out, core.NotifyLoopStopped)
 }
 
 // harness_notify_deliveries_total is on the /metrics registry the daemon
@@ -399,14 +520,13 @@ func TestDaemonNotifyMetricsRegistered(t *testing.T) {
 	opts.LogDir = filepath.Join(tmp, "logs")
 	mgr := supervisor.NewManager(&core.Config{Harnesses: map[string]core.Harness{}, Profiles: map[string]core.Profile{}, Notify: nc}, opts)
 	t.Cleanup(mgr.Close)
-	n := startDaemonNotify(mgr, notify.Options{})
-	t.Cleanup(n.Close)
+	n := startTestNotify(t, mgr)
 	dm := beginDaemonMetrics(mgr, metrics.Listener{Addr: "127.0.0.1:0"})
 	t.Cleanup(dm.Stop)
 	n.registerMetrics(dm)
 
 	if del := n.d.Test(t.Context()); del.Result != notify.ResultOK {
-		t.Fatalf("test delivery = %+v", del)
+		t.Fatalf("test delivery = %+v\ndispatcher log:\n%s", del, n.log.String())
 	}
 	families, err := dm.m.Registry().Gather()
 	if err != nil {
