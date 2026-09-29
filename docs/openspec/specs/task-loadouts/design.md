@@ -63,7 +63,7 @@ SPEC-0013 (metrics), ADR-0026 (served-model attestation).
 * **Templates shipped by packages.**
 * **The dispatcher.** This spec fixes what a lane choice may do; #541's
   ADR-0021 amendment says how a queue names a loadout.
-* **Per-run projection of skill-repo skills.** They stay served by search.
+* **Projecting skill-repo skills.** They stay served by search.
 
 ## Decisions
 
@@ -76,8 +76,8 @@ is written, outside the admission lock, and finishes before the kit is built.
 budget refuses never spends a router call, and budgets stay the authority on
 whether a run happens. Outside the lock means a slow router never serializes
 admission: SPEC-0021 REQ-4 holds the lock only for the decision and the ledger
-append. After admission the run has an id, so the brief file and the skill
-directory can be named beside its event file.
+append. After admission the run has an id, so the brief file can be named
+beside its event file.
 
 **Alternatives considered**: deciding at `Fire`, as screening does, would make
 one call per event. But each receiving harness has its own ceiling, so one
@@ -161,23 +161,41 @@ push event's fifty commit messages would crowd a small router's window without
 telling it which template applies. Drawing from the screened text keeps one
 invariant: no text reaches the router that screening did not see.
 
-### Per-run skill directories live in the jobs directory
+### One managed skill directory per harness, reconciled before every spawn
 
-**Choice**: `<jobs dir>/<harness>/<run_id>.skills/`, filled by copy, mode
-`0700`, pruned with the run. The adapter declares how a process is pointed at
-it in place of its `target`. An adapter that declares nothing keeps skill
-selection off, and the record says so.
+**Choice**: a harness that selects skills owns one directory,
+`<jobs dir>/<harness>/loadout-skills/`. It is bootstrapped on the harness's
+first qualifying spawn, then reconciled before every spawn to exactly that
+run's set: chosen skills, none, or the full merged set. Reconciling copies what
+differs, removes what is not in the set, and writes a manifest. The adapter's
+`skills.redirect` points every process of that harness at the directory, in
+place of its `target`, by a flag, an environment variable, or a config file the
+daemon bootstraps beside it. The directory is collected when the harness stops
+qualifying, and swept at daemon start.
 
-**Rationale**: the jobs directory already holds per-run files with the right
-lifetime and pruning (the log, the event file, the prompt file). Copying keeps
-SPEC-0006's no-link rule. "In place of `target`" matters because ADR-0039's
-built-in `claude-code` table uses `~/.claude/skills` as both a default root and
-the target. That directory is shared by every `claude-code` harness and by the
-operator, so a per-run directory added beside it would narrow nothing.
+**Rationale**: a directory per run is a directory per failure. A run killed
+mid-spawn, a crash before its record closes, or a pruning bug each leave a copy
+of a skill tree behind, and they pile up exactly where nobody looks. One
+directory per harness bounds skill state at one directory per qualifying
+harness, however many runs fail. Reconciliation is idempotent, so the next
+spawn repairs whatever a failed run left, including skills an agent edited.
+Nothing waits for a garbage collector. It is safe because SPEC-0014 never runs
+two processes of one harness at once. When #541 lifts that, the rule becomes
+one directory per concurrency slot: still a fixed pool, never per run. A stable
+path also means a family whose redirect is a config-file key needs that file
+written once at bootstrap, not per run. "In place of `target`" matters because
+ADR-0039's built-in `claude-code` table uses `~/.claude/skills` as both a
+default root and the target. That directory is shared by every `claude-code`
+harness and by the operator, so a directory added beside it would narrow
+nothing.
 
-**Alternatives considered**: a per-run home or config directory is one way a
-family might implement the declaration (see Open Questions), but it carries
-credentials and settings and cannot be the general rule.
+**Alternatives considered**:
+* A per-run directory under the jobs directory, pruned with the run, was the
+  first draft. It isolates concurrent runs that cannot happen today, and it
+  leaks on every failure path that skips pruning.
+* A per-run home or config directory is one way a family might implement the
+  redirect (see Open Questions), but it carries credentials and settings and
+  cannot be the general rule.
 
 ### The overlay is keyed by run through the spawn token
 
@@ -312,9 +330,9 @@ Where the pieces would live:
 |---|---|
 | `internal/config` | `[loadout.*]`, templates, the `loadout` key, validation against each harness, rejection on every front door |
 | a new `internal/loadout` | task text assembly, retrieval over the ceiling, the router and lane calls, validation, fallback |
-| `internal/supervisor` | the call site after admission, the per-run skill directory, the brief file, the kit check, pruning |
+| `internal/supervisor` | the call site after admission, the managed skill directory (bootstrap, reconcile, sweep), the brief file, the kit check, pruning |
 | `internal/tmpl` | the `loadout.*` context paths and the `loadout.brief` fence |
-| `internal/adapter` | the `skills.per_run` and `tools.read_only` declarations (ADR-0039) |
+| `internal/adapter` | the `skills.redirect` and `tools.read_only` declarations (ADR-0039) |
 | the gateway (ADR-0035) | token-to-run binding, overlays, `loadout_miss` |
 | `internal/ledger`, `internal/metrics` | the `loadout` object and the `harness_loadout_*` series |
 | `cmd/harness` | `loadout explain`, `loadout misses`, describe and doctor rows |
@@ -344,9 +362,12 @@ Where the pieces would live:
   `auto_accept` overrides narrows nothing. → REQ-14 requires the enforced
   property, tested against the real client, and records
   `builtin_tools = "unnarrowed"` wherever a family declares no set.
-* **Per-run projection depends on each client.** Until a family's
-  `skills.per_run` is settled, its harnesses get tool and template narrowing
+* **Skill narrowing depends on each client.** Until a family's
+  `skills.redirect` is settled, its harnesses get tool and template narrowing
   only. → The record says `unsupported`, and doctor warns.
+* **A managed directory can drift.** An agent or an operator may edit it
+  between runs. → The next spawn reconciles it against the winning copies, and
+  doctor warns when contents and manifest disagree.
 * **Templates multiply what the operator maintains.** → Each is an ordinary
   SPEC-0017 template, parsed at load against every harness that can render it.
 * **A loadout needs the embedding endpoint for skills.** → A decision degrades
@@ -368,7 +389,8 @@ without a `[loadout.*]` table or a `narrow` level, no run changes. In order:
    decision on the spawn path, the brief file, recording and metrics. Needs
    ADR-0035's tool index.
 4. **Skills.** The skill-index entries for ceiling skills, `projected/`
-   search, and each family's `skills.per_run` as it is settled and tested.
+   search, the managed directory with its bootstrap, reconcile and sweep, and
+   each family's `skills.redirect` as it is settled and tested.
    Needs ADR-0036's hybrid index and SPEC-0006's `skill_paths`.
 5. **Built-in narrowing.** Each family's `tools.read_only`, tested against the
    real client.
@@ -381,12 +403,14 @@ reader ignores if it does not know them (SPEC-0022 REQ-2).
 
 ## Open Questions
 
-* **How each family points a run at a per-run skill directory.** `claude-code`
+* **How each family is pointed at its managed skill directory.** `claude-code`
   reads skills from a user directory and a project directory, and ADR-0039's
   built-in table uses the user directory as its target. Relocating the whole
   configuration directory carries credentials and settings. `crush` and
-  `codex` each need their own mechanism. Each declaration needs a test that
-  drives the real client and observes which skills it loads.
+  `codex` each need their own mechanism. Because the path is stable per
+  harness, a mechanism that is a config-file key can be written once at
+  bootstrap. Each declaration needs a test that drives the real client and
+  observes which skills it loads.
 * **Skill-repo skills on the skills axis.** SPEC-0006 excludes skill repos from
   projection, and SPEC-0007 serves them only by search, so this spec keeps them
   off the axis, as ADR-0043 does. A small model that rarely searches would

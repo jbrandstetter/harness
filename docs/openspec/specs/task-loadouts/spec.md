@@ -27,9 +27,10 @@ is never wider than what the operator declared.
   skills, tools and a short brief from the candidates. Validation drops every
   name that was not offered. Any failure falls back to the ceiling or to a
   minimal kit.
-* **Delivery**: a per-run skill directory, a per-run overlay on the run's
-  gateway session, the chosen operator template, and the brief as untrusted
-  data in a `0600` file.
+* **Delivery**: one managed skill directory per harness, reconciled to the
+  run's set before every spawn; a per-run overlay on the run's gateway session;
+  the chosen operator template; and the brief as untrusted data in a `0600`
+  file.
 * A **`narrow` screening level** that runs a suspicious event with a read-only
   ceiling, with or without a loadout.
 * **Lanes**, where a router picks which harness takes unbound work, plus
@@ -56,7 +57,7 @@ The global `harness.toml` SHALL accept any number of `[loadout.<name>]` tables,
 |---|---|---|---|
 | `mode` | string | required | `model` or `retrieval` |
 | `model` | string | none | Required when `mode = "model"`. An exact model id served through `[model_api]` (ADR-0036), compared with the served model on every call (REQ-8) |
-| `timeout` | duration | `8s` | `1s` to `60s`. Bounds the whole decision (REQ-3) |
+| `timeout` | duration | `20s` | `1s` to `60s`. Bounds the whole decision (REQ-3). A local 30B router writing a 1,200-character brief takes several seconds |
 | `candidates` | integer | `12` | `1` to `50`, and at least `max_skills` and at least `max_tools` |
 | `max_skills` | integer | `3` | `0` to `16` |
 | `max_tools` | integer | `8` | `0` to `16` |
@@ -212,6 +213,10 @@ Timing:
 * While it waits, the run holds the concurrency slot admission gave it
   (SPEC-0021 REQ-6). Supervision, attach, recording, a resident harness's
   restart, and the admission of any other run SHALL NOT wait on a decision.
+* The webhook response and the channel session SHALL NOT wait on a decision.
+  The firing is reported `started`, with its `run_id`, once it is admitted,
+  as SPEC-0014 REQ "Webhook Responses" already reports a run that has not yet
+  spawned.
 * A stop or a daemon shutdown during a decision SHALL cancel it, spawn nothing,
   and close the record as SPEC-0022 REQ-5 specifies for that stop.
 
@@ -548,7 +553,7 @@ closed set:
   full policy with no overlay, the `default` template, no brief and no
   `loadout.*` context value. This is the status quo.
 * `fallback = "minimal"` SHALL spawn the run with the `default` template, no
-  brief, no `loadout.*` context value, an empty per-run skill directory
+  brief, no `loadout.*` context value, an empty managed skill directory
   (REQ-11), and an overlay with no upstream tool (REQ-12) whose session also
   refuses reserved-namespace write tools, so that the run reaches only
   reserved-namespace read tools. An axis the run cannot receive narrowed stays
@@ -576,39 +581,63 @@ closed set:
 
 #### Scenario: One axis unsupported
 
-- **GIVEN** `qwen-worker`'s adapter declares no `skills.per_run`
+- **GIVEN** `qwen-worker`'s adapter declares no `skills.redirect`
 - **WHEN** a decision chooses three tools
 - **THEN** the run's overlay holds those three tools, its skills are projected
   as SPEC-0006 specifies, and its record carries `tools`, no `skills`, and
   `fallback = "unsupported"`
 
-### Requirement: REQ-11 — Per-Run Skill Projection
+### Requirement: REQ-11 — The Managed Skill Directory
 
-Each effective adapter (ADR-0039) SHALL declare `skills.per_run`: either none,
+Each effective adapter (ADR-0039) SHALL declare `skills.redirect`: either none,
 or how one process of its family is made to read skills only from a directory
-the daemon names, in place of the adapter's `skills.target`.
-`harness adapters show` SHALL print it. The declarations for the built-in
-`claude-code`, `crush` and `codex` adapters are open (see design.md). Until a
-family's declaration is specified and covered by a test that drives the real
-client and observes which skills it loads, it SHALL be none.
+the daemon names, in place of the adapter's `skills.target`. The mechanism is a
+flag, an environment variable, or a key in a client configuration file the
+daemon writes. `harness adapters show` SHALL print it. The declarations for the
+built-in `claude-code`, `crush` and `codex` adapters are open (see design.md).
+Until a family's declaration is specified and covered by a test that drives the
+real client and observes which skills it loads, it SHALL be none.
 
-When a run's skills axis is narrowed (a decision applied, or `minimal`) and its
-adapter declares `skills.per_run`, the daemon SHALL, before exec:
+A harness whose loadout has `max_skills` above 0, and whose adapter declares
+`skills.redirect`, SHALL own exactly one **managed skill directory**,
+`<jobs dir>/<harness>/loadout-skills/`, mode `0700`. Any client configuration
+file the redirect needs lives beside it. The daemon SHALL maintain it as
+follows:
 
-* create `<jobs dir>/<harness>/<run_id>.skills/` with mode `0700`;
-* copy into it the winning copy of each chosen skill and nothing else, by copy
-  and never by link (SPEC-0006 REQ "Spawn-Time Projection");
-* apply `skills.per_run` so that the process reads skills from that directory,
-  and not project into the adapter's `target` for that run.
-
-Each run of a harness SHALL get its own directory and SHALL NOT see another
-run's skills. This holds for runs that overlap in time too, where a later spec
-allows them: ADR-0021 defers concurrent runs of one harness, and #541's
-dispatcher may lift that. The directory SHALL be pruned with the
-run's record, log and event file (SPEC-0014 REQ "Event Delivery To The Run").
-A failure to create or fill it SHALL fail the start with an error naming the
-adapter, the path and the cause, and the record SHALL read `failed` with reason
-`spawn`.
+* **Bootstrap.** The first spawn of the harness after it qualifies SHALL create
+  the directory, and any configuration file the redirect needs. Every later
+  spawn reuses them.
+* **Reconcile before every spawn.** Before exec of every spawn of that harness,
+  the daemon SHALL make the directory hold exactly that run's skill set. The
+  set is the chosen skills when a decision applied, none under `minimal`, and
+  the full merged set (SPEC-0006) when the run gets the ceiling, `no_event`
+  included. The daemon SHALL copy in each skill whose on-disk content differs
+  from its winning copy, remove every entry that is not in the set, and then
+  write `.harness-manifest.json` naming each skill and its content hash. Skills
+  are copied, never linked (SPEC-0006 REQ "Spawn-Time Projection"). The redirect
+  SHALL apply to every spawn of the harness, so a process of that harness reads
+  skills only from this directory, and the adapter's shared `target` is not
+  written for it.
+* **Idempotent, so failures leave nothing behind.** Reconciliation converges
+  from any prior state. A run that fails, times out or is killed, a daemon crash
+  mid-reconcile, or an agent that edits its own skill files, leaves a directory
+  the next spawn corrects. There is no per-run skill state to collect. A
+  reconcile failure SHALL fail the start with an error naming the adapter, the
+  path and the cause, and the record SHALL read `failed` with reason `spawn`.
+* **One directory is enough today.** SPEC-0014 REQ "Firing" never stacks a
+  second process for one harness, so no process of that harness is reading the
+  directory while it is reconciled. When a later spec allows concurrent runs of
+  one harness (#541), each concurrency slot SHALL get its own managed directory,
+  `loadout-skills-<slot>/`. That is a fixed pool bounded by the harness's
+  concurrency limit, never one directory per run.
+* **Garbage collection.** The daemon SHALL remove a harness's managed
+  directory, and any configuration file beside it, and SHALL then confirm the
+  path is absent:
+  * when a reload removes the harness or its `loadout`;
+  * when a reload sets the loadout's `max_skills` to 0;
+  * when a reload leaves the adapter with no `skills.redirect`;
+  * at daemon start, for every `loadout-skills*` directory whose harness no
+    longer qualifies.
 
 When the adapter declares none, the skills axis SHALL be neither retrieved nor
 offered to the router, the run SHALL be projected as SPEC-0006 specifies, and
@@ -625,16 +654,31 @@ through them.
 
 #### Scenario: Each run sees only its own skills
 
-- **GIVEN** run 7 of `qwen-worker` chose `go-testing`, and its
-  `7.skills/` directory is still on disk
+- **GIVEN** run 7 of `qwen-worker` chose `go-testing` and ended
 - **WHEN** run 8 chooses `forge-triage` and lists the skills its client loaded
 - **THEN** it sees only `forge-triage`: not `go-testing`, and not the rest of
   the ceiling in the adapter's `target`
 
-#### Scenario: A run cannot change a source
+#### Scenario: A failed run leaves nothing to collect
 
-- **WHEN** a run edits a file inside its `<run_id>.skills/` directory
-- **THEN** the same file under the contributing skill root is unchanged
+- **GIVEN** run 7 of `qwen-worker` was killed mid-run, and the daemon crashed
+  before it recorded the exit
+- **WHEN** the daemon restarts and run 8 spawns
+- **THEN** `loadout-skills/` holds exactly run 8's skills, its manifest matches
+  its contents, and no other skill directory exists under
+  `<jobs dir>/qwen-worker/`
+
+#### Scenario: A run cannot change a source, or the next run
+
+- **WHEN** run 7 edits a file inside `loadout-skills/`
+- **THEN** the same file under the contributing skill root is unchanged, and run
+  8's reconcile restores the winning copy before it spawns
+
+#### Scenario: Dropping the loadout collects the directory
+
+- **WHEN** a reload removes `loadout` from `qwen-worker`
+- **THEN** `<jobs dir>/qwen-worker/loadout-skills/` is absent, checked by `stat`,
+  and the next spawn projects as SPEC-0006 specifies
 
 #### Scenario: A left-out skill is recovered by search
 
@@ -792,8 +836,7 @@ The brief is written from untrusted text, and SHALL travel as that text does:
 #### Scenario: The brief is pruned with the run
 
 - **WHEN** `keep_runs` prunes run 7 of `qwen-worker`
-- **THEN** `7.brief.md` and `7.skills/` are removed with its record, log and
-  event file
+- **THEN** `7.brief.md` is removed with its record, log and event file
 
 ### Requirement: REQ-14 — The Narrow Level
 
@@ -1097,8 +1140,8 @@ harness_loadout_invalid_total{loadout}             counter
   run would get and why; and one line stating the calls it made, either one
   router call to `model` with the served model and duration, or, in `retrieval`
   mode, that no chat model was called;
-* spawn nothing, write no run record, ledger line, brief file or skill
-  directory, and register no overlay.
+* spawn nothing, write no run record, ledger line or brief file, leave the
+  managed skill directory untouched, and register no overlay.
 
 `harness loadout explain --lanes <loadout> --event FILE` SHALL make the lane
 call; print the lane catalog, the reply, the choice, and whether the first lane
@@ -1118,7 +1161,10 @@ harness can receive it narrowed. `harness doctor` SHALL add a warn row for
 each harness that:
 
 * names a loadout with `max_skills` above 0 while its adapter declares no
-  `skills.per_run`;
+  `skills.redirect`;
+* has a managed skill directory whose contents differ from its manifest, or
+  has an orphaned `loadout-skills*` directory. The next spawn, or the next
+  daemon start, repairs either;
 * names a loadout, or has `narrow` among its effective levels, while it has no
   gateway session or does not set `mcp_exclusive = true`;
 * has `narrow` among its effective levels while its adapter declares no
@@ -1130,8 +1176,8 @@ each harness that:
   `harness loadout explain qwen-worker --event 41.event.json` against a
   model-mode loadout
 - **THEN** a fake model server receives exactly one request, the output says
-  one router call was made and names the served model, and no process, ledger
-  line, brief file or skill directory appears
+  one router call was made and names the served model, no process, ledger line
+  or brief file appears, and the managed skill directory is unchanged
 
 #### Scenario: Explain in retrieval mode
 
@@ -1155,10 +1201,11 @@ this spec governs:
 * **SPEC-0005 REQ "Caller Identity".** Each spawn's token is bound to its run
   id when minted, and the gateway resolves a session's run from the token
   (REQ-12).
-* **SPEC-0006 REQ "Spawn-Time Projection".** A run whose skills axis is
-  narrowed is projected into its own `<run_id>.skills/` directory, and the
-  adapter's `target` is not written for that run (REQ-11). Every other start
-  projects as before.
+* **SPEC-0006 REQ "Spawn-Time Projection".** A harness whose loadout selects
+  skills, and whose adapter declares `skills.redirect`, reads skills from its
+  one managed directory, reconciled to the run's set before every spawn. The
+  adapter's `target` is not written for it (REQ-11). Every other start projects
+  as before.
 * **SPEC-0007 REQ "Search And Retrieval Tools".** For a run whose skills axis
   is narrowed, `search_skills` and `get_skill` also serve its skill ceiling as
   `projected/<name>`, and are registered for it even with no skill repo
@@ -1170,8 +1217,7 @@ this spec governs:
   roots, and serves them only as REQ-11 allows (REQ-6).
 * **SPEC-0013.** The `harness_loadout_*` series (REQ-19).
 * **SPEC-0014 REQ "Event Delivery To The Run".** `HARNESS_BRIEF_FILE` joins the
-  run variables (REQ-13). The brief file and the per-run skill directory are
-  pruned with the event file. A brief's path, never its text, enters a
+  run variables (REQ-13). The brief file is pruned with the event file. A brief's path, never its text, enters a
   variable.
 * **SPEC-0017 REQ-7.** The context gains the `loadout.*` paths (REQ-13).
 * **SPEC-0017 REQ-10.** `loadout.brief` joins the untrusted paths, usable only
@@ -1197,7 +1243,7 @@ when written:
 * ADR-0035: run-scoped sessions, overlays, `full` exposure over an overlay, and
   the call log's `loadout_miss` field (REQ-12, REQ-17);
 * ADR-0036: index entries for ceiling skills, and eval arms (REQ-6, REQ-18);
-* ADR-0039: the `skills.per_run` and `tools.read_only` declarations (REQ-11,
+* ADR-0039: the `skills.redirect` and `tools.read_only` declarations (REQ-11,
   REQ-14).
 
 `[loadout.*]` joins ADR-0009's global-only list (REQ-1).

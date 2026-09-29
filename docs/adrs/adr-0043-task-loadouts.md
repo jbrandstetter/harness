@@ -139,7 +139,7 @@ A dispatcher handling unbound work can also let the router pick which harness
 [loadout.small]
 mode            = "model"          # model | retrieval
 model           = "qwen3-30b-a3b"  # an ADR-0036 [model_api] chat model; exact id
-timeout         = "8s"
+timeout         = "20s"            # retrieval + router; a 1,200-char brief takes seconds on a local 30B
 candidates      = 12               # retrieval top-k per axis, before the model picks
 max_skills      = 3
 max_tools       = 8
@@ -184,7 +184,7 @@ prompt_template_file = "~/.config/harness/prompts/worker.md"   # the default tem
 
 | Axis | Ceiling | What the loadout does | Delivered by |
 |---|---|---|---|
-| Skills | The harness's merged, projected skill set (SPEC-0006), a stable's bundled skills included. Skill-repo skills are not on the axis: they stay search-served, as today | Chooses at most `max_skills` | A per-run projection holding only those skills. `search_skills` and `get_skill` can still reach the rest of the ceiling |
+| Skills | The harness's merged, projected skill set (SPEC-0006), a stable's bundled skills included. Skill-repo skills are not on the axis: they stay search-served, as today | Chooses at most `max_skills` | The harness's managed skill directory, reconciled to only those skills before the spawn. `search_skills` and `get_skill` can still reach the rest of the ceiling |
 | MCP tools | The harness's effective `mcp_policy` tool set (ADR-0035) | Chooses at most `max_tools` | A per-run overlay on the gateway session: its `tools/list`, `search_tools` and `call_tool` see only the overlay |
 | Template | The loadout's named templates plus the harness's default | Chooses one | SPEC-0017 rendering, as today |
 | Lane | `lanes`, a list of harness names, only for unbound work | Chooses one | The dispatcher starts that harness, whose own ceiling and loadout then apply |
@@ -197,13 +197,26 @@ prompt_template_file = "~/.config/harness/prompts/worker.md"   # the default tem
   family names its tools differently, and some cannot restrict them at all.
   Only the `narrow` level below touches them, and only where the family
   declares a read-only set.
-* **Per-run projection is new mechanics.** SPEC-0006 projects the whole
-  merged set into one directory per harness. A loadout run instead gets its own
-  directory, holding only its chosen skills, so one run's kit never carries
-  over into the next and the harness's usual target is left untouched. An
-  adapter family declares how to point a process at such a directory
-  (ADR-0039). A family that cannot do that keeps loadout skill selection off,
-  and records it on the run.
+* **One managed skill directory per harness, never one per run.** SPEC-0006
+  projects the whole merged set into a target that every harness of a family
+  shares, so a loadout cannot narrow there. A harness that selects skills
+  instead owns one directory:
+  * It is **bootstrapped** on the harness's first qualifying spawn.
+  * It is **reconciled** before every spawn to exactly that run's set: the
+    chosen skills, none, or the ceiling. Reconciling copies what differs,
+    deletes what is not in the set, and writes a manifest.
+  * It is **collected** when the harness stops using a loadout, and swept at
+    daemon start.
+
+  Reconciliation is idempotent, so a run that fails, is killed or crashes the
+  daemon leaves nothing to clean up: the next spawn corrects the directory.
+  This is safe because a harness never runs two processes at once
+  (SPEC-0014). When the dispatcher lifts that (#541), the rule becomes one
+  directory per concurrency slot, still a fixed pool. An adapter family
+  declares how to point a process at the directory: a flag, an environment
+  variable, or a config file written once at bootstrap (ADR-0039). A family
+  that cannot do that keeps loadout skill selection off, and records it on the
+  run.
 
 ### Choosing a loadout
 
@@ -369,8 +382,8 @@ lanes = ["qwen-worker", "claude-worker"]   # each harness's description is its c
 * Bad, because the brief is a new channel for injected text into the agent.
   It is bounded, fenced, never operator instructions, and no more trusted than
   the payload it came from, but it exists.
-* Bad, because it depends on five unbuilt pieces, and per-run skill projection
-  is new, client-specific mechanics.
+* Bad, because it depends on five unbuilt pieces, and pointing each client
+  at a managed skill directory is new, client-specific mechanics.
 * Bad, because templates multiply the prompts an operator maintains.
 * Bad, because built-in tools, the widest exfiltration path, are narrowed only
   by the `narrow` level and only for families that declare a read-only set.
@@ -401,6 +414,10 @@ Acceptance tests that matter:
 * Two consecutive runs of one harness with different loadouts each see only
   their own projected skills, never the previous run's or the rest of the
   ceiling.
+* After a run is killed and the daemon crashes, the next spawn finds the
+  harness's managed skill directory holding exactly its own set, with a
+  matching manifest, and no other skill directory exists. Removing the
+  harness's `loadout` removes the directory, checked by `stat`.
 * `mode = "retrieval"` makes zero chat calls, counted at a fake model server.
 * `loadout` on a resident harness, in a project file or in a package manifest
   fails, naming the key. So does `lanes` on a loadout a harness names.
