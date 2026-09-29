@@ -155,8 +155,10 @@ keep_runs = 48         # default 20
 - **`keep_runs`** bounds per-run log files. Older logs are deleted; their run
   records stay in the run ledger, marked `log_pruned`.
 
-All three, like `catch_up`, require `schedule`. A scheduled harness cannot also
-be `enabled = true` or belong to a profile. The schedule is what starts it.
+All three, like `catch_up`, require `schedule` or `triggers` (`catch_up` also
+accepts `operating_hours` on a triggered harness, where an in-hours reopen is
+the firing that can be missed). A scheduled harness cannot also be
+`enabled = true` or belong to a profile. The schedule is what starts it.
 
 ## Drop-in files: one harness per file
 
