@@ -94,7 +94,14 @@ const (
 	// OldestSeq on RunsData, and the SPEC-0022 REQ-4 record fields on RunInfo
 	// — additive only. A request carrying only Name and Limit is answered as
 	// before.
-	ProtoMinor = 19
+	// ProtoMinor 20 added NoAgentActivity on LogsData (issue #825): a run
+	// window that carried no attributable agent session is flagged so the
+	// dashboard's preview falls back to the formatted live stream instead of
+	// showing an activity view that is only notices. Additive only — an
+	// older daemon omits it, and the client keeps the activity view, the
+	// behaviour it has always had. (Renumbered from 19 after #695 landed
+	// 19 first.)
+	ProtoMinor = 20
 )
 
 // ProtoVersion is the "major.minor" string carried in HELLO.
@@ -567,6 +574,13 @@ type LogsData struct {
 	// durable-log tail in Text (#279, #328 — the tail of a full-screen agent
 	// is a screenshot of its idle TUI).
 	Notices []string `json:"notices,omitempty"`
+	// NoAgentActivity is set when a run window exists but carried no
+	// attributable agent session, so the activity view is notices and
+	// lifecycle lines only (issue #825). The dashboard's preview falls back
+	// to the formatted live stream in that case. A daemon older than
+	// ProtoMinor 20 leaves it unset for every reply, which the client reads
+	// as "unknown" and keeps the activity view it has always shown.
+	NoAgentActivity bool `json:"no_agent_activity,omitempty"`
 }
 
 // LogSourceAgentTrace marks a logs reply rendered from agent-trace sessions.

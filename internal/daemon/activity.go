@@ -24,6 +24,9 @@ package daemon
 // @joestump-agent 09/11/2026 - Review of #307: a dead run's open window closes
 // at this daemon's start; peers match through symlinks, and a peer with no
 // workdir claims the daemon's own directory.
+//
+// @joestump-agent 09/29/2026 - Issue #825: the no-attributable-session reply
+// now carries NoAgentActivity, so the preview can fall back to the live stream.
 
 import (
 	"context"
@@ -150,6 +153,12 @@ func (c *conn) activity(req protocol.ControlReq, snap supervisor.Snapshot, lines
 		// did this run do"; when nothing is attributable, the honest answer is
 		// the notices and where to look next, not a screenshot of the TUI.
 		// Governing: #279, and the operator report behind it.
+		//
+		// NoAgentActivity tells a client (the dashboard's preview, #825) that
+		// this emptiness is a fact about the run, not a fetch error — the
+		// never-run early return above deliberately does not set it, because
+		// "has not run yet" is itself worth showing in the activity view.
+		data.NoAgentActivity = true
 		data.Notices = append(data.Notices,
 			"no agent-trace session is attributable to this run; run `harness logs "+req.Name+" --raw` to read the durable log itself")
 	}

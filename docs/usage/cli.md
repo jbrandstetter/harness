@@ -325,11 +325,14 @@ harness attach <name> --ro    # read-only: attach but ignore keystrokes
 
 A stream-json one-shot has no terminal to attach to, and the daemon keeps no
 screen for it. Attaching shows its output as lines: its recent lines first,
-then new ones as they arrive, stdout's JSON lines masked, with its stderr lines
-between them. Keystrokes go nowhere, since its stdin is `/dev/null`, and
-resizing the window changes nothing for it. A client too slow to keep up sees
-an `output dropped` line where it fell behind; the run's `.stream.jsonl` has
-everything. `harness describe` lists the sessions, with no viewport.
+then new ones as they arrive, rendered readably — the same formatter the
+dashboard's preview uses, so Claude Code's stream becomes the tool calls and
+prose a human reads instead of masked JSON — with `Ctrl-b f` flipping back to
+the byte-faithful raw mirror. Keystrokes go nowhere, since its stdin is
+`/dev/null`, and resizing the window changes nothing for it. A client too slow
+to keep up sees an `output dropped` line where it fell behind; the run's
+`.stream.jsonl` has everything. `harness describe` lists the sessions, with no
+viewport.
 
 ## Scratchpads (`harness run`)
 

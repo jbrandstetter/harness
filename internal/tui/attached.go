@@ -14,11 +14,15 @@ import (
 	"github.com/charmbracelet/harmonica"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/stump-wtf/harness/internal/adapter"
 	"github.com/stump-wtf/harness/internal/protocol"
 )
 
 // attachSubstate is the mode within Attached: driving the live PTY, or frozen in
 // scrollback.
+//
+// @joestump-agent 09/29/2026 - Issue #825: attach renders a stream-json one-shot
+// through the adapter's PeekFormatter, with ^b f toggling the raw mirror.
 type attachSubstate int
 
 const (
@@ -38,6 +42,15 @@ type attachState struct {
 	mode      protocol.AttachMode
 	sessionID uint32
 	view      *vtView
+
+	// fmt renders the guest's PTY readably (the same PeekFormatter the
+	// preview uses, issue #825: attach to a stream-json one-shot showed raw
+	// masked JSON). It is the adapter's opt-in, so it is nil for every other
+	// backend and raw stays the default. Fresh per attach session — it is
+	// stateful, so a reused one would carry a partial line across hops.
+	fmt adapter.PeekFormatter
+	// raw flips the readable view back to the byte-faithful mirror (^b f).
+	raw bool
 
 	substate attachSubstate
 	scroll   *scrollback
@@ -90,6 +103,16 @@ func newAttachStateWith(name string, mode protocol.AttachMode, sessionID uint32,
 
 // readOnly reports whether input should be ignored (ADR-0008 read-only attach).
 func (a *attachState) readOnly() bool { return a.mode == protocol.AttachRO }
+
+// attachBytes routes one ATTACH_DATA frame to the bytes the embedded terminal
+// should render: the adapter's readable form when it has one and the user has
+// not asked for raw, the guest's own bytes otherwise (#825).
+func (a *attachState) attachBytes(p []byte) []byte {
+	if a.fmt == nil || a.raw {
+		return p
+	}
+	return a.fmt.FormatPTY(p)
+}
 
 // impulseHop kicks the slide spring so the next few ticks animate a slide, and
 // starts the ribbon flash (SPEC-0001 REQ "Harness Hop": slide + ribbon flash).

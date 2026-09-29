@@ -285,6 +285,39 @@ func TestLogsEventsGenericFallsBackToText(t *testing.T) {
 	}
 }
 
+// TestLogsNoAgentActivityFlag is the daemon half of issue #825: a run window
+// that carried no attributable session sets NoAgentActivity, so the
+// dashboard's preview falls back to the formatted live stream instead of
+// showing an activity view that is notices alone. A harness that has never
+// run keeps it unset — "has not run yet" is itself worth showing in the
+// activity view.
+func TestLogsNoAgentActivityFlag(t *testing.T) {
+	td, _ := sweepsDaemon(t)
+	writeLog(t, td, "sweep-pdx",
+		lifecycleLine(local(7, 40, 0), "state changed from=stopped to=starting")+
+			lifecycleLine(local(7, 56, 21), "exited code=0"))
+	c := td.dial(t, nil)
+
+	ld, err := c.LogEvents("sweep-pdx", client.LogOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ld.Source != protocol.LogSourceAgentTrace || !ld.NoAgentActivity {
+		t.Fatalf("source = %q, NoAgentActivity = %v; want agent-trace with the flag set", ld.Source, ld.NoAgentActivity)
+	}
+	if !containsNotice(ld, "no agent-trace session is attributable") {
+		t.Errorf("notices = %q, want the no-attributable-session notice", ld.Notices)
+	}
+
+	ld, err = c.LogEvents("sweep-pr", client.LogOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ld.NoAgentActivity {
+		t.Errorf("a harness that has never run set NoAgentActivity; notices = %q", ld.Notices)
+	}
+}
+
 // TestLogsRawKeepsStructure: the raw op still answers with the file's own
 // lines, in order, with no Source or Entries — what the peek pane and
 // `harness logs --raw` depend on. Credential-free content is byte-exact;

@@ -104,6 +104,44 @@ func TestPeekOneShotMatchesHarnessLogs(t *testing.T) {
 	}
 }
 
+// TestPeekFallsBackToLiveWhenNothingIsAttributable is issue #825's second
+// acceptance: a one-shot whose run window has no attributable session shows
+// the formatted live stream — the activity view would be notices alone. The
+// daemon flags that case (NoAgentActivity); a daemon too old to flag it keeps
+// the activity view, the behaviour every earlier client saw.
+func TestPeekFallsBackToLiveWhenNothingIsAttributable(t *testing.T) {
+	m, _ := peekModelWithAdapter(t, "claude-code")
+	m.harnesses[0].Prompt = "sweep the PR backlog"
+	fc := m.ctrl.(*fakeController)
+	fc.events = func(name string) protocol.LogsData {
+		ld := oneShotActivity(name)
+		ld.Entries = nil
+		ld.NoAgentActivity = true
+		ld.Notices = append(ld.Notices, "no agent-trace session is attributable to this run")
+		return ld
+	}
+
+	// Paint the live stream first: the formatted preview is the thing the
+	// fallback exists to show.
+	drain(m.syncPeekSession())
+	if m.peekFmt == nil {
+		t.Fatal("a claude-code selection opened without a peek formatter")
+	}
+	m.Update(attachDataMsg{sessionID: m.peekSess, data: toolCall("Push branch to GitHub")})
+	if !m.peekLive() {
+		t.Fatal("the formatted stream did not paint the preview")
+	}
+
+	pump(m, m.peekCmd())
+	got := ansi.Strip(m.viewPeek(120, m.bodyHeight()))
+	if strings.Contains(got, "run activity") {
+		t.Errorf("preview showed the empty activity view:\n%s", got)
+	}
+	if !strings.Contains(got, "Push branch to GitHub") {
+		t.Errorf("preview did not fall back to the formatted live stream:\n%s", got)
+	}
+}
+
 func TestPeekInteractiveHarnessNeverFetchesActivity(t *testing.T) {
 	m, _ := peekModel()
 	fc := m.ctrl.(*fakeController)

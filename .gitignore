@@ -15,3 +15,6 @@ dist/
 # Worktrees
 .claude/
 .claude/worktrees/
+# Issue-scoped throwaway worktrees cut from origin/main (one concern per
+# branch; a worktree visible to git, builds or linters breaks all three).
+.wt-*/

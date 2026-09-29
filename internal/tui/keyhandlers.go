@@ -15,6 +15,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/stump-wtf/harness/internal/adapter"
 	"github.com/stump-wtf/harness/internal/protocol"
 	"github.com/stump-wtf/harness/internal/tui/chatroom"
 )
@@ -571,6 +572,16 @@ func (m *Model) dispatchPrefixKey(msg tea.KeyPressMsg) tea.Cmd {
 	switch msg.String() {
 	case "d":
 		return m.detach()
+	// ^b f (#825): flip a formatter-rendered attach between the readable
+	// view and the byte-faithful mirror. Only a backend with a formatter
+	// toggles — one without has only ever had the mirror. Matched as a bare
+	// "f" like every sibling chord above: the prefix state machine has
+	// already consumed the Ctrl-b half.
+	case "f":
+		if m.att.fmt != nil {
+			m.att.raw = !m.att.raw
+		}
+		return nil
 	case "s":
 		return m.performAction(ActionStart, m.att.name)
 	case "r":
@@ -758,6 +769,10 @@ func (m *Model) attachTo(info protocol.HarnessInfo, direction int) tea.Cmd {
 		m.attachView.reset(cols, rows)
 	}
 	m.att = newAttachStateWith(info.Name, mode, sid, m.attachView)
+	// Fresh formatter per session (#825): the same PeekFormatter the preview
+	// uses, resolved from the harness's adapter — nil for every backend that
+	// keeps the byte-faithful mirror.
+	m.att.fmt = adapter.PeekFormatterFor(info.Adapter)
 	if direction != 0 {
 		m.att.impulseHop(direction)
 	}

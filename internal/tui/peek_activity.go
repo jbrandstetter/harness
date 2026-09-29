@@ -105,7 +105,13 @@ func (m *Model) onPeekActivity(msg peekActivityMsg) {
 	if sel, ok := m.selectedHarness(); !ok || sel.Name != msg.name {
 		return
 	}
-	a.name, a.data, a.ok = msg.name, msg.data, msg.data.Source == protocol.LogSourceAgentTrace
+	// NoAgentActivity (#825) marks a run window that carried no attributable
+	// session: the activity view is then notices and lifecycle lines only,
+	// and the formatted live stream is the better thing to show. A daemon
+	// older than ProtoMinor 20 never sets it, so ok keeps the historical
+	// preference for the activity view.
+	a.name, a.data, a.ok = msg.name, msg.data,
+		msg.data.Source == protocol.LogSourceAgentTrace && !msg.data.NoAgentActivity
 	a.lines = nil
 }
 

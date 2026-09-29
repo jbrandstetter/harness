@@ -795,6 +795,12 @@ func (m *Model) viewStatusBar() string {
 	if m.att.readOnly() {
 		badge = " " + m.theme.ReadOnlyBadge()
 	}
+	// The raw mirror gets its own badge while the adapter offers a readable
+	// view (#825): an attach that has been flipped otherwise reads as broken
+	// rendering rather than a mode the user chose.
+	if m.att.fmt != nil && m.att.raw {
+		badge += " " + m.theme.Header().Render("RAW")
+	}
 	// Visual feedback when the Ctrl-b prefix is armed: a highlighted "^b"
 	// prompt tells the user the next key will be a harness command (not
 	// forwarded to the agent).

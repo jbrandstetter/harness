@@ -109,7 +109,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the bytes would leave the live view stale (and missing partial
 		// escape sequences) when the user exits scrollback.
 		if m.att != nil && msg.sessionID == m.att.sessionID {
-			m.att.view.write(msg.data)
+			// The backend's peek formatter (claude-code's stream-json, issues
+			// #13 and #825) renders the guest's bytes readably in attached
+			// mode too; ^b f flips to the byte-faithful mirror, and nil
+			// keeps the mirror as the only view.
+			m.att.view.write(m.att.attachBytes(msg.data))
 		}
 		// The dashboard's preview is its own read-only session on the same
 		// connection (#200), so route by id — ids are unique across both, and

@@ -55,6 +55,11 @@ type KeyMap struct {
 	AttStart   key.Binding // s — start the attached harness if stopped.
 	AttRestart key.Binding // r — restart the attached harness.
 	AttHelp    key.Binding // ^b ? — open the keymap overlay from attached mode.
+	// AttRaw flips a formatter-rendered attach between the adapter's readable
+	// view and the byte-faithful mirror (issue #825). It only appears in the
+	// help of an attach that can honor it — a backend with no formatter has
+	// only ever had the mirror.
+	AttRaw key.Binding
 
 	// Scrollback substate.
 	PageUp   key.Binding
@@ -125,6 +130,10 @@ func Default() KeyMap {
 		// by harness.
 		AttStart:   key.NewBinding(key.WithKeys("ctrl+b s"), key.WithHelp("^b s", "start")),
 		AttRestart: key.NewBinding(key.WithKeys("ctrl+b r"), key.WithHelp("^b r", "restart")),
+		// ^b f toggles the readable stream-json view back to the raw mirror
+		// and back (#825). Behind the prefix like every attached intercept:
+		// a bare `f` still reaches the embedded agent.
+		AttRaw: key.NewBinding(key.WithKeys("ctrl+b f"), key.WithHelp("^b f", "raw view")),
 		// AttHelp opens the keymap overlay from attached mode. It's behind the
 		// prefix (like every other attached intercept) so a bare `?` still
 		// reaches the embedded agent — many agent TUIs treat `?` as input.
@@ -165,7 +174,7 @@ func (k KeyMap) ShortHelp() []key.Binding {
 // / "prev" / "next" / "scrollback" / "start" are discoverable without
 // opening full help.
 func (k KeyMap) AttachedShortHelp() []key.Binding {
-	return []key.Binding{k.AttStart, k.AttRestart, k.HopPrev, k.HopNext, k.Scrollback, k.Detach, k.AttHelp}
+	return []key.Binding{k.AttStart, k.AttRestart, k.AttRaw, k.HopPrev, k.HopNext, k.Scrollback, k.Detach, k.AttHelp}
 }
 
 // FullHelp implements help.KeyMap — the `?` expanded grid. It returns EVERY
@@ -176,7 +185,7 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 		{k.Up, k.Down, k.Top, k.Bot},
 		{k.Attach, k.Start, k.Stop, k.Restart, k.Toggle, k.Edit, k.New, k.Delete},
 		{k.Profile, k.ShowAll, k.Logs, k.Copy, k.Search, k.Palette, k.Help, k.Quit},
-		{k.Detach, k.Scrollback, k.HopPrev, k.HopNext, k.AttStart, k.AttRestart, k.AttHelp},
+		{k.Detach, k.Scrollback, k.HopPrev, k.HopNext, k.AttStart, k.AttRestart, k.AttRaw, k.AttHelp},
 		{k.PageUp, k.PageDown, k.Live, k.Confirm, k.Back},
 		{k.Chatroom, k.ChatUp, k.ChatDown, k.ChatFollow, k.ChatFilter, k.ChatAll},
 	}
