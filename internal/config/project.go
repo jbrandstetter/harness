@@ -193,6 +193,10 @@ func ParseProject(data []byte, filename string) (*Project, error) {
 		if len(h.parts) >= 1 && h.parts[0] == "mergetrain" {
 			return nil, forbiddenTableErr(filename, full, h.line)
 		}
+		// One run ledger per daemon (SPEC-0022 REQ-19).
+		if len(h.parts) >= 1 && h.parts[0] == "ledger" {
+			return nil, ledgerGlobalOnlyErr(filename, h.line)
+		}
 		// The notify hook is a program the daemon runs; a cloned repository
 		// does not get to choose one (SPEC-0003 REQ "Operator Notification").
 		if len(h.parts) >= 1 && h.parts[0] == "notify" {

@@ -672,6 +672,9 @@ type RunInfo struct {
 	// stopping, outside_hours, template_unresolved), why an interrupted run
 	// was (shutdown, daemon_crash). SPEC-0022 REQ-5, SPEC-0017 REQ-11.
 	Reason string `json:"reason,omitempty"`
+	// TodoID is the Switchboard todo the run worked, when known: an opaque
+	// identifier, never a payload (SPEC-0022 REQ-9).
+	TodoID string `json:"todo_id,omitempty"`
 	// Source is the trigger source reference behind the run, e.g.
 	// "webhook.gitea-pr" (SPEC-0014 REQ "Run Record Fields").
 	Source string `json:"source,omitempty"`
