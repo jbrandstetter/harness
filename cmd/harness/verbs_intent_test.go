@@ -14,8 +14,10 @@ import (
 
 	"github.com/stump-wtf/harness/internal/attach"
 	"github.com/stump-wtf/harness/internal/buildinfo"
+	"github.com/stump-wtf/harness/internal/client"
 	"github.com/stump-wtf/harness/internal/config"
 	"github.com/stump-wtf/harness/internal/daemon"
+	"github.com/stump-wtf/harness/internal/protocol"
 	"github.com/stump-wtf/harness/internal/supervisor"
 )
 
@@ -78,7 +80,10 @@ func TestDescribeShowsLastIntentChange(t *testing.T) {
 	if _, err := callLifecycle(c, "start", "demo", ""); err != nil {
 		t.Fatal(err)
 	}
-	waitForRunning(t, c, "demo")
+	// 30s, not the shared 5s: this test boots a whole daemon and races the
+	// whole package, and a loaded CI runner has starved the 5s wait (#835
+	// review, CI run 15822).
+	waitIntentRunning(t, c, "demo", 30*time.Second)
 	h, err = c.Describe("demo")
 	if err != nil {
 		t.Fatal(err)
@@ -95,16 +100,10 @@ func TestDescribeShowsLastIntentChange(t *testing.T) {
 	if _, err := callLifecycle(c, "stop", "demo", ""); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		h, err = c.Describe("demo")
-		if err == nil && h.State == "stopped" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("demo never reached stopped (last: %+v, err %v)", h, err)
-		}
-		time.Sleep(25 * time.Millisecond)
+	waitIntentState(t, c, "demo", "stopped", 30*time.Second)
+	h, err = c.Describe("demo")
+	if err != nil {
+		t.Fatal(err)
 	}
 	if h.LastIntentSource != "verb:stop" || h.LastIntentPeer == "" {
 		t.Fatalf("after stop, last intent = %q @ %q peer %q, want verb:stop with the peer", h.LastIntentSource, h.LastIntentAt, h.LastIntentPeer)
@@ -122,4 +121,26 @@ func TestDescribeShowsLastIntentChange(t *testing.T) {
 	if !strings.Contains(out, "last intent") || !strings.Contains(out, "verb:stop") {
 		t.Fatalf("describe does not show the last intent change and its source:\n%s", out)
 	}
+}
+
+// waitIntentRunning polls until the harness reports running, with the given
+// deadline (the shared helper's 5s is too tight on a loaded runner).
+func waitIntentRunning(t *testing.T, c *client.Client, name string, within time.Duration) {
+	waitIntentState(t, c, name, "running", within)
+}
+
+func waitIntentState(t *testing.T, c *client.Client, name, state string, within time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	var last protocol.HarnessInfo
+	var lastErr error
+	for time.Now().Before(deadline) {
+		h, err := c.Describe(name)
+		if err == nil && h.State == state {
+			return
+		}
+		last, lastErr = h, err
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("%s never reached %s within %v (last: %+v, err %v)", name, state, within, last, lastErr)
 }
