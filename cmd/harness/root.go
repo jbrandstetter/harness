@@ -131,6 +131,7 @@ func newRootCmd() *cobra.Command {
 		newTriggerCmd(g),
 		newRunsCmd(g),
 		newAttachCmd(g),
+		newCaptureCmd(g),
 		newSkillsCmd(g),
 		newDoctorCmd(g),
 		newInitCmd(g),
@@ -303,6 +304,28 @@ func newAttachCmd(g *globalOpts) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&ro, "ro", false, "read-only (ignore keystrokes)")
+	return cmd
+}
+
+func newCaptureCmd(g *globalOpts) *cobra.Command {
+	var ansi bool
+	cmd := &cobra.Command{
+		Use:           "capture",
+		Short:         "dump a harness's current screen without attaching",
+		Args:          cobra.MaximumNArgs(1),
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name, err := bindName("capture", nameRequired, args)
+			if err != nil {
+				return err
+			}
+			o := g.opts()
+			o.name, o.ansi = name, ansi
+			return run("capture", o)
+		},
+	}
+	cmd.Flags().BoolVar(&ansi, "ansi", false, "print the styled ANSI repaint instead of plain text")
 	return cmd
 }
 
