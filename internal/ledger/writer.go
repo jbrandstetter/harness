@@ -499,9 +499,8 @@ func (l *Ledger) run() {
 		l.mu.Unlock()
 
 		if len(batch) > 0 {
-			n, err := l.writeBatch(batch)
+			n, err := l.writeBatch(batch) // commits its durable prefix itself
 			l.mu.Lock()
-			l.commitLocked(n)
 			if err != nil {
 				l.stats.AppendErrors++
 				l.stats.LastError = err.Error()
@@ -534,11 +533,7 @@ func (l *Ledger) run() {
 					l.mu.Lock()
 					rest := slices.Clone(l.queue)
 					l.mu.Unlock()
-					if m, err := l.writeBatch(rest); err == nil || m > 0 {
-						l.mu.Lock()
-						l.commitLocked(m)
-						l.mu.Unlock()
-					}
+					l.writeBatch(rest)
 					return
 				}
 				continue
@@ -582,9 +577,12 @@ func (l *Ledger) run() {
 }
 
 // writeBatch writes lines in order and syncs when any of them asks for it, a
-// buffered line has waited FlushEvery, or a write failed after some landed. It
-// returns how many leading lines are done (written, and synced when they asked
-// to be) and may leave the queue, and the first failure.
+// buffered line has waited FlushEvery, or a write failed after some landed.
+// It returns how many leading lines are done (written, and synced when they
+// asked to be) and may leave the queue, and the first failure. Its durable
+// prefix is committed to the index here, before ack tells the synced callers
+// they are done: a synced Append must not return while its record is still
+// invisible to readers (SPEC-0022 REQ-6, "committed before counted").
 //
 // A line is written once. One that landed but whose sync failed stays queued
 // marked written, and the retry syncs it rather than writing it again: a second
@@ -614,6 +612,7 @@ func (l *Ledger) writeBatch(batch []*pending) (int, error) {
 			if n < 0 {
 				n = w
 			}
+			l.commitBatch(n)
 			return n, err
 		}
 	}
@@ -622,8 +621,26 @@ func (l *Ledger) writeBatch(batch []*pending) (int, error) {
 		// the retried line starts on a line of its own.
 		l.dropFile()
 	}
+	l.commitBatch(w)
 	l.ack(batch[:w])
 	return w, werr
+}
+
+// commitBatch moves the first n queued lines — the same lines the caller
+// cloned as its batch prefix — into the index. Call it before the batch's
+// synced callers are acked: between the ack and the commit there was a window
+// where a synced Append had returned and OpenRun, Records and every other
+// reader still could not see the record, so the accumulator folded a
+// just-opened run's first items as NoRun (TestCheckpointsAreRateLimited,
+// actions run 15494). The writer goroutine is the only popper of the queue, so
+// the head of the queue is still this batch when it runs.
+func (l *Ledger) commitBatch(n int) {
+	if n <= 0 {
+		return
+	}
+	l.mu.Lock()
+	l.commitLocked(n)
+	l.mu.Unlock()
 }
 
 // ack tells synced lines' callers they are durable.

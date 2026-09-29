@@ -309,6 +309,29 @@ func TestShutdownDrainsTheQueue(t *testing.T) {
 	}
 }
 
+// REQ-6 "committed before counted": a synced Append promises more than its own
+// line on disk — by the time it returns, readers must see the record. The
+// writer used to ack synced callers before moving their lines into the index,
+// so a reader racing that window (the accumulator folding a just-opened run's
+// first items) saw no open run and counted them NoRun;
+// TestCheckpointsAreRateLimited failed that way on a loaded runner (actions
+// run 15494). The commit now strictly precedes the ack, which makes the loop
+// below an invariant rather than a timing test: it cannot flake, and fails
+// only if the gap comes back.
+func TestSyncedAppendIsVisibleWhenItReturns(t *testing.T) {
+	dir := t.TempDir()
+	l := openT(t, dir, Options{})
+	for i := 1; i <= 200; i++ {
+		if _, err := l.Append(opened("svc", i, time.Now()), true); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+		f, ok := l.OpenRun("svc")
+		if !ok || f.RunID != i {
+			t.Fatalf("append %d: OpenRun = %d, %v; the synced append returned before its record was committed", i, f.RunID, ok)
+		}
+	}
+}
+
 // REQ-6 "A read-only disk": the failure is counted, a synced append does not
 // wait on the retry, and the queued lines land in order once the disk is back.
 func TestFailingDiskQueuesInOrderAndDoesNotBlock(t *testing.T) {
