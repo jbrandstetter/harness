@@ -133,7 +133,7 @@ harness runs --trigger webhook,channel --wide  # add MODEL, TOKENS, COST and TOD
 | `--outcome O[,O...]` | only these outcomes; an unknown value fails and lists the valid ones |
 | `--trigger T[,T...]` | only these triggers (`schedule`, `manual`, `catch_up`, `channel`, `webhook`, `autostart`, `restart`, `release`, `lease`) |
 | `--limit N` | at most N records, newest first (1–1000) |
-| `--wide` | add MODEL, TOKENS, COST and TODO |
+| `--wide` | add MODEL, TOKENS, COST, TODO, and SERVED columns for every run in the table |
 | `--json` | the records as a JSON list |
 
 `harness runs NAME` with no other filter is the one-harness history it has

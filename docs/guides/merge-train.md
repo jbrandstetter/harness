@@ -66,6 +66,21 @@ proposed the train, and by stump.wtf/harness#540:
 
 ## Cutover
 
+**(a)** At cutover, cancel auto-merge armed on `main`, because an approval fires
+Gitea's merge ahead of the train. Arm it only after the train lands the first
+PR.
+
+**(b)** With `block_on_outdated_branch` off, reviewers must NOT rebase a merely-behind
+branch, because it dismisses the approval.
+
+**(c)** A harness redeploy kills scratchpad workers and loses all detached runs.
+Anything that must survive a daemon restart belongs in `[harness.*]` with
+triggers/schedule (see `harness run` in the CLI guide).
+
+**(d)** REQ-10 attempt memory means a red (head) pair is retried only after `main`
+or the head moves, so leaning the train in place for an hour to wait for a
+flake is the right treatment.
+
 In one change, and for one repository only:
 
 1. Set `mode = "merge"` and restart the daemon.
