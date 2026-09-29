@@ -36,6 +36,11 @@ const (
 	// NotifyRunFailed fires when a scheduled or triggered run ends failed
 	// or timed out. Opt-in: a job that fails on purpose would otherwise page.
 	NotifyRunFailed = "run_failed"
+	// NotifyIntentLost fires when a daemon boot finds an autostart member
+	// left down by a persisted enabled=false (issue #835): the intent
+	// flipped at some point without notice, and a later restart made the
+	// change stick.
+	NotifyIntentLost = "intent_lost"
 	// NotifyRecovered fires when a harness that was reported failed or
 	// loop-stopped is running again, so the alert thread can close.
 	NotifyRecovered = "recovered"
@@ -46,7 +51,7 @@ const (
 
 // NotifyEvents is every event `events` may name, in documentation order.
 var NotifyEvents = []string{
-	NotifyFailed, NotifyFlapping, NotifyLoopStopped, NotifySessionRotated, NotifyRunFailed, NotifyRecovered,
+	NotifyFailed, NotifyFlapping, NotifyLoopStopped, NotifySessionRotated, NotifyRunFailed, NotifyIntentLost, NotifyRecovered,
 }
 
 // DefaultNotifyEvents is `events` when the table omits it: everything that
@@ -54,7 +59,7 @@ var NotifyEvents = []string{
 // is left out because a scheduled job's failure already lands in `harness
 // jobs`, and some jobs fail as their normal "nothing to do" answer.
 var DefaultNotifyEvents = []string{
-	NotifyFailed, NotifyFlapping, NotifyLoopStopped, NotifySessionRotated, NotifyRecovered,
+	NotifyFailed, NotifyFlapping, NotifyLoopStopped, NotifySessionRotated, NotifyIntentLost, NotifyRecovered,
 }
 
 // Notify defaults and bounds.

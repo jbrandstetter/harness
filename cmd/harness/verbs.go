@@ -193,6 +193,22 @@ func cmdDescribe(c *client.Client, o verbOpts) error {
 	} else {
 		t.Row("enabled", t.enabledCell(h.Enabled))
 	}
+	// The last change of the enabled intent and its source (issue #835): the
+	// answer to "who turned this off, and when" that the journal was the only
+	// place to find it before.
+	if h.LastIntentAt != "" {
+		if when, err := time.Parse(time.RFC3339Nano, h.LastIntentAt); err == nil {
+			word := "disabled"
+			if h.Enabled {
+				word = "enabled"
+			}
+			cell := fmt.Sprintf("%s %s (%s)", when.Format("2006-01-02 15:04:05"), word, h.LastIntentSource)
+			if h.LastIntentPeer != "" {
+				cell += ", peer " + h.LastIntentPeer
+			}
+			t.Row("last intent change", t.faintPlain(cell))
+		}
+	}
 	// A prompt harness has no configured cmd — show what the user wrote (the
 	// prompt), not the synthesized agent argv (ADR-0011 spawn-time synthesis).
 	switch {

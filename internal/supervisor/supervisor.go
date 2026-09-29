@@ -19,6 +19,8 @@ import (
 
 	clog "github.com/charmbracelet/log"
 
+	dlog "charm.land/log/v2"
+
 	"github.com/stump-wtf/harness/internal/core"
 	"github.com/stump-wtf/harness/internal/runtrace"
 )
@@ -63,6 +65,10 @@ type restoreData struct {
 	restartCount int
 	lastExitCode int
 	lastExitAt   time.Time
+	// lastIntent is the persisted record of the last intent change (issue
+	// #835): restore carries it forward so describe keeps answering who last
+	// flipped the intent, and when — across a daemon restart.
+	lastIntent IntentChange
 	// lastStarted is restored so a post-mortem `harness logs` after a daemon
 	// restart still knows when the last run began (SPEC-0006 REQ "Run
 	// Correlation").
@@ -100,7 +106,13 @@ type command struct {
 	reason RunReason
 	// trigger is what started a resident for cmdStart (SPEC-0022 REQ-3).
 	trigger RunTrigger
-	enable  bool // cmdHold: also record enabled intent (a held autostart)
+	// source names the path that set the enabled intent for an intent-changing
+	// command (issue #835): the verb, the autostart path, or the restart-policy
+	// branch. peer is the socket peer the platform reported for a socket verb,
+	// empty for every other path.
+	source string
+	peer   string
+	enable bool // cmdHold: also record enabled intent (a held autostart)
 	// cmdHold: the close the gate decided. mode selects graceful vs
 	// immediate; closeAt is the instant the harness went out of hours, from
 	// which the graceful deadline is measured (SPEC-0012 REQ "Graceful
@@ -117,13 +129,27 @@ type command struct {
 	done   chan struct{}
 }
 
+// IntentChange records one change of the enabled intent (issue #835): when it
+// happened, the new value's source — the verb, the autostart path, or the
+// restart-policy branch that set it — and, for a socket verb, the peer the
+// platform reported. The last change rides the snapshot and is persisted in
+// state.json, so `harness describe` can show it across daemon restarts.
+type IntentChange struct {
+	At     time.Time
+	Source string // "verb:start", "verb:stop", "verb:restart", "autostart", "policy", "guard"
+	Peer   string // "uid=N pid=N" for a socket verb; empty otherwise
+}
+
 // Snapshot is a race-free copy of a harness's observable runtime state, for the
 // TUI/daemon to render. `Enabled` is intent; `State` is reality (SPEC-0003 REQ
 // "State Model").
 type Snapshot struct {
-	Name          string
-	State         core.State
-	Enabled       bool
+	Name    string
+	State   core.State
+	Enabled bool
+	// LastIntent is the last enabled-intent change and its source (issue
+	// #835); zero when the intent has never changed since first boot.
+	LastIntent    IntentChange
 	RestartCount  int // ↻ total restarts
 	LastExitCode  int
 	LastExitAt    time.Time
@@ -205,10 +231,11 @@ type Supervisor struct {
 	done      chan struct{}
 
 	// ---- loop-owned state (touch only from loop) ----
-	harness core.Harness
-	pending *core.Harness // config change awaiting next (re)start
-	state   core.State
-	enabled bool
+	harness    core.Harness
+	pending    *core.Harness // config change awaiting next (re)start
+	state      core.State
+	enabled    bool
+	lastIntent IntentChange // last enabled-intent change, for describe (issue #835)
 
 	proc *process
 	gen  uint64 // increments each spawn; guards stale waiter/survive events
@@ -380,7 +407,22 @@ func (s *Supervisor) Start() { s.StartWith(TriggerManual) }
 // StartWith is Start, naming the start path for the resident run it opens
 // (SPEC-0022 REQ-3): autostart, lease or manual.
 func (s *Supervisor) StartWith(trigger RunTrigger) {
-	s.send(command{kind: cmdStart, trigger: trigger})
+	s.send(command{kind: cmdStart, trigger: trigger, source: intentSourceFor(trigger)})
+}
+
+// StartWithPeer is StartWith naming the socket peer the platform reported for
+// the verb (issue #835): the intent-change line carries it.
+func (s *Supervisor) StartWithPeer(trigger RunTrigger, peer string) {
+	s.send(command{kind: cmdStart, trigger: trigger, source: intentSourceFor(trigger), peer: peer})
+}
+
+// intentSourceFor maps a start path to the intent-change source it logs under
+// (issue #835). Everything that is not boot autostart is an operator verb.
+func intentSourceFor(trigger RunTrigger) string {
+	if trigger == TriggerAutostart {
+		return "autostart"
+	}
+	return "verb:start"
 }
 
 // StartTransient brings the process up WITHOUT setting enabled=true or
@@ -407,12 +449,24 @@ func (s *Supervisor) StartRun(req RunRequest) RunDecision {
 
 // Stop performs a graceful stop and sets enabled=false (SPEC-0003 REQ
 // "Graceful Stop"). Blocks until the harness is stopped.
-func (s *Supervisor) Stop() { s.send(command{kind: cmdStop}) }
+func (s *Supervisor) Stop() { s.StopBy("verb:stop", "") }
+
+// StopBy is Stop naming the path that clears the intent and the socket peer
+// the platform reported for a socket verb (issue #835): the intent-change
+// line says who stopped it, and whether a process issued it.
+func (s *Supervisor) StopBy(source, peer string) {
+	s.send(command{kind: cmdStop, source: source, peer: peer})
+}
 
 // Restart clears any failed latch, resets crash-loop state, and begins a fresh
 // start cycle (SPEC-0003 REQ "Backoff Give-Up" manual recovery). Blocks until
 // processed.
-func (s *Supervisor) Restart() { s.send(command{kind: cmdRestart}) }
+func (s *Supervisor) Restart() { s.RestartBy("verb:restart", "") }
+
+// RestartBy is Restart naming the socket peer of a socket verb (issue #835).
+func (s *Supervisor) RestartBy(source, peer string) {
+	s.send(command{kind: cmdRestart, source: source, peer: peer})
+}
 
 // LogEvent writes msg as a durable-log lifecycle line (ADR-0007), with the
 // given key/value pairs, on the actor loop — the same path hold/release/
@@ -498,7 +552,7 @@ func (s *Supervisor) loop() {
 func (s *Supervisor) handleCommand(c command) (shutdown bool) {
 	switch c.kind {
 	case cmdStart:
-		s.enabled = true
+		s.setIntent(true, c.source, c.peer)
 		s.stoppedByOperator = false // an explicit start re-arms the schedule (#786)
 		s.held = false              // an operator start overrides the hours hold
 		s.closing = false           // and cancels a graceful close in flight
@@ -535,7 +589,7 @@ func (s *Supervisor) handleCommand(c command) (shutdown bool) {
 		}
 		s.suppressPersist = false
 	case cmdStop:
-		s.enabled = false
+		s.setIntent(false, c.source, c.peer)
 		// The stop also pauses a triggered harness's schedule (issue #786):
 		// enabled is deliberately not the pause intent for a one-shot — the
 		// schedule is (#159, #266) — so the suppression gets its own flag,
@@ -555,7 +609,7 @@ func (s *Supervisor) handleCommand(c command) (shutdown bool) {
 			s.publishChangeUnchanged()
 		}
 	case cmdRestart:
-		s.enabled = true
+		s.setIntent(true, c.source, c.peer)
 		s.stoppedByOperator = false // a restart is an explicit start
 		s.held = false
 		// A restart cancels a graceful close in flight, as a start does.
@@ -579,6 +633,7 @@ func (s *Supervisor) handleCommand(c command) (shutdown bool) {
 	case cmdRestore:
 		r := c.restore
 		s.enabled = r.enabled
+		s.lastIntent = r.lastIntent
 		s.stoppedByOperator = r.operatorStopped
 		s.restartCount = r.restartCount
 		s.lastExitCode = r.lastExitCode
@@ -604,7 +659,7 @@ func (s *Supervisor) handleCommand(c command) (shutdown bool) {
 			s.proc.writeInput(c.input)
 		}
 	case cmdHold:
-		s.hold(c.enable, c.mode, c.closeAt)
+		s.hold(c.enable, c.mode, c.closeAt, c.source)
 	case cmdRelease:
 		s.release()
 	case cmdCloseStep:
@@ -999,7 +1054,7 @@ func (s *Supervisor) onProcessGone(code int, spawnFailed bool) {
 	// Restart policy gates automatic respawn (core.RestartPolicy, mirroring
 	// Docker Compose's `restart` directive; SPEC-0003 REQ "Restart On Exit").
 	if !s.harness.Restart.ShouldRestart(code) {
-		s.enabled = false // honor the policy: this exit is final
+		s.setIntent(false, "policy", "") // honor the policy: this exit is final
 		s.consecFailures = 0
 		// This harness will never retry on its own: clear flap bookkeeping so
 		// the final snapshot (and state.json) don't advertise a bogus
@@ -1349,6 +1404,28 @@ func (s *Supervisor) closeLog() {
 
 // publishSnapshot refreshes the guarded snapshot from loop-owned state and
 // notifies the persist hook.
+// setIntent records one change of the enabled intent (issue #835): the new
+// value, the path that set it, and — for a socket verb — the peer the platform
+// reported. It logs the flip at INFO so the daemon journal always says who
+// turned the intent, and keeps the last change on the snapshot so `harness
+// describe` can show it. It returns whether the intent actually flipped; a
+// flip to the value already held records nothing and returns false (an
+// already-enabled start is not a change). Callers publish the snapshot as they
+// already do; setIntent itself only mutates loop-owned state.
+func (s *Supervisor) setIntent(value bool, source, peer string) bool {
+	if value == s.enabled {
+		return false
+	}
+	s.enabled = value
+	s.lastIntent = IntentChange{At: time.Now(), Source: source, Peer: peer}
+	kv := []any{"harness", s.harness.Name, "enabled", value, "source", source}
+	if peer != "" {
+		kv = append(kv, "peer", peer)
+	}
+	dlog.Info("intent changed", kv...)
+	return true
+}
+
 func (s *Supervisor) publishSnapshot() {
 	pid := 0
 	if s.proc != nil {
@@ -1359,6 +1436,7 @@ func (s *Supervisor) publishSnapshot() {
 		Name:            s.harness.Name,
 		State:           s.state,
 		Enabled:         s.enabled,
+		LastIntent:      s.lastIntent,
 		OperatorStopped: s.stoppedByOperator,
 		RestartCount:    s.restartCount,
 		LastExitCode:    s.lastExitCode,
@@ -1390,8 +1468,10 @@ func (s *Supervisor) publishSnapshot() {
 func (s *Supervisor) publishChangeUnchanged() { s.publishSnapshot() }
 
 // Restore seeds persisted intent + counters (ADR-0007) before the harness is
-// started. Call immediately after New, before Start/Autostart.
-func (s *Supervisor) Restore(enabled, operatorStopped bool, restartCount, lastExitCode int, lastExitAt, lastStarted time.Time) {
+// started. Call immediately after New, before Start/Autostart. lastIntent
+// carries the persisted record of the last intent change (issue #835); zero
+// means the file predates it, and describe stays quiet.
+func (s *Supervisor) Restore(enabled, operatorStopped bool, restartCount, lastExitCode int, lastExitAt, lastStarted time.Time, lastIntent IntentChange) {
 	s.send(command{kind: cmdRestore, restore: &restoreData{
 		enabled:         enabled,
 		operatorStopped: operatorStopped,
@@ -1399,5 +1479,6 @@ func (s *Supervisor) Restore(enabled, operatorStopped bool, restartCount, lastEx
 		lastExitCode:    lastExitCode,
 		lastExitAt:      lastExitAt,
 		lastStarted:     lastStarted,
+		lastIntent:      lastIntent,
 	}})
 }

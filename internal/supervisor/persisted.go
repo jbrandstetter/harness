@@ -215,6 +215,15 @@ type persistedHarness struct {
 	// leased start, so a crash in between leaves a bounded lease on disk
 	// rather than an unbounded run.
 	LeaseUntil *time.Time `json:"lease_until,omitempty"`
+	// LastIntentAt / LastIntentSource / LastIntentPeer record the harness's
+	// last enabled-intent change (issue #835): when it flipped, through which
+	// path (verb:stop, policy, autostart, ...) and the socket peer, when the
+	// platform reported one. Omitted when the intent never changed, which is
+	// the additive case for a file written by an older daemon — no schema
+	// version bump.
+	LastIntentAt     *time.Time `json:"last_intent_at,omitempty"`
+	LastIntentSource string     `json:"last_intent_source,omitempty"`
+	LastIntentPeer   string     `json:"last_intent_peer,omitempty"`
 }
 
 // StateHome returns $XDG_STATE_HOME/harness (falling back to ~/.local/state).

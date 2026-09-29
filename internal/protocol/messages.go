@@ -443,6 +443,14 @@ type HarnessInfo struct {
 	// ADR-0015 chatroom identity). Empty when never started / never exited.
 	LastStarted string `json:"last_started,omitempty"`
 	LastExitAt  string `json:"last_exit_at,omitempty"`
+	// LastIntentAt / LastIntentSource / LastIntentPeer record the harness's
+	// last enabled-intent change (issue #835): when it flipped, the path that
+	// set it (verb:stop, policy, autostart, ...) and the socket peer, when
+	// the platform reported one. Empty when the intent never changed since
+	// first boot.
+	LastIntentAt     string `json:"last_intent_at,omitempty"`
+	LastIntentSource string `json:"last_intent_source,omitempty"`
+	LastIntentPeer   string `json:"last_intent_peer,omitempty"`
 	// Prompt is the agent one-shot instruction for a prompt harness; the
 	// argv is synthesized at spawn from the same adapter (ADR-0011).
 	Prompt string `json:"prompt,omitempty"`

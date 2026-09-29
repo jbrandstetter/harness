@@ -113,6 +113,13 @@ func (c *conn) infoFor(snap supervisor.Snapshot) protocol.HarnessInfo {
 	if !snap.LastExitAt.IsZero() {
 		info.LastExitAt = snap.LastExitAt.Format(time.RFC3339Nano)
 	}
+	// The last intent change (issue #835) rides the wire so describe can
+	// answer who flipped the enabled intent and when, across a restart.
+	if !snap.LastIntent.At.IsZero() {
+		info.LastIntentAt = snap.LastIntent.At.Format(time.RFC3339Nano)
+		info.LastIntentSource = snap.LastIntent.Source
+		info.LastIntentPeer = snap.LastIntent.Peer
+	}
 	// HarnessRecord resolves the definition and provenance together under one
 	// manager lock hold — so a list of N harnesses costs N+1 lock round-trips
 	// instead of 2N+1, and Cmd/Backend and Project can never come from two
@@ -296,11 +303,11 @@ func (c *conn) opLifecycle(req protocol.ControlReq) {
 			ok = true
 			break
 		}
-		ok = c.srv.mgr.Start(req.Name)
+		ok = c.srv.mgr.StartPeer(req.Name, c.peer)
 	case protocol.OpStop:
-		ok = c.srv.mgr.Stop(req.Name)
+		ok = c.srv.mgr.StopPeer(req.Name, c.peer)
 	case protocol.OpRestart:
-		ok = c.srv.mgr.Restart(req.Name)
+		ok = c.srv.mgr.RestartPeer(req.Name, c.peer)
 	}
 	if !ok {
 		_ = c.pc.WriteError(req.ID, protocol.ErrUnknownHarness, "unknown harness %q", req.Name)
@@ -318,9 +325,9 @@ func (c *conn) opEnableDisable(req protocol.ControlReq) {
 	var ok bool
 	switch req.Op {
 	case protocol.OpEnable:
-		ok = c.srv.mgr.Enable(req.Name)
+		ok = c.srv.mgr.EnablePeer(req.Name, c.peer)
 	case protocol.OpDisable:
-		ok = c.srv.mgr.Disable(req.Name)
+		ok = c.srv.mgr.DisablePeer(req.Name, c.peer)
 	}
 	if !ok {
 		_ = c.pc.WriteError(req.ID, protocol.ErrUnknownHarness, "unknown harness %q", req.Name)
