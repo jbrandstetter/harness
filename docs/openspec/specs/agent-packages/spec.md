@@ -1,7 +1,7 @@
 ---
 status: approved
 date: 2026-09-27
-implements: [ADR-0040]
+implements: [ADR-0044]
 extends: [SPEC-0006]
 ---
 
@@ -28,7 +28,7 @@ This spec adds a package manager for harness definitions:
   clones, scans, or confirms anything; all of that lives in the
   `harness agent` CLI tree.
 
-See ADR-0040 for the decision and the options it rejected. This spec extends
+See ADR-0044 for the decision and the options it rejected. This spec extends
 SPEC-0006's skill-path merge order (REQ-10) and otherwise adds new
 requirements rather than amending existing ones.
 

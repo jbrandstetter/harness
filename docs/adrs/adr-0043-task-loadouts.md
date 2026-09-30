@@ -4,7 +4,7 @@ date: 2026-09-29
 decision-makers: [joestump]
 extends: [ADR-0042, ADR-0036, ADR-0035, ADR-0021]
 governs: [SPEC-0032]
-related: [ADR-0011, ADR-0023, ADR-0026, ADR-0030, ADR-0039, ADR-0040]
+related: [ADR-0011, ADR-0023, ADR-0026, ADR-0030, ADR-0039, ADR-0044]
 ---
 
 # ADR-0043: Task loadouts — a router model narrows each run's skills, tools, prompt and lane from an operator-declared ceiling
@@ -576,7 +576,7 @@ flowchart TB
   brief opens nothing new.
 * **Related ADR-0026:** the router's served model is attested like any pinned
   model, and a mismatch is a fallback.
-* **Related ADR-0030 and ADR-0040:** a stable's bundled skills are part of the
+* **Related ADR-0030 and ADR-0044:** a stable's bundled skills are part of the
   skill ceiling. Skill-repo skills stay search-served and off the axis. A
   package cannot declare a loadout.
 * **Deferred:**

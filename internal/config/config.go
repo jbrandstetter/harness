@@ -116,8 +116,8 @@ type rawHarness struct {
 	// load against the content-addressed store on local disk only — the
 	// package's [harness] values apply first and any key set directly on the
 	// table overrides them. The daemon never fetches, clones, scans or
-	// confirms; that lives in the `harness agent` CLI tree (ADR-0040).
-	// Governing: ADR-0040; SPEC-0026 REQ-7.
+	// confirms; that lives in the `harness agent` CLI tree (ADR-0044).
+	// Governing: ADR-0044; SPEC-0026 REQ-7.
 	Source string `toml:"source"`
 }
 

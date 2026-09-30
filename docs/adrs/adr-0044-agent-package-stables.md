@@ -7,7 +7,7 @@ governs: [SPEC-0026]
 related: [ADR-0008, ADR-0011, ADR-0023, ADR-0024, ADR-0029, ADR-0038, ADR-0039]
 ---
 
-# ADR-0040: Agent package stables — installable, trust-gated harness definitions shared as git repositories
+# ADR-0044: Agent package stables — installable, trust-gated harness definitions shared as git repositories
 
 > **Partially implemented.** The daemon-side foundation is in the tree:
 > the `package.toml` manifest loader, the pin-store layout and the `source`

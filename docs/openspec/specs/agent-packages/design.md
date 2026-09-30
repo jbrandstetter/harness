@@ -18,7 +18,7 @@ feature is neither of them, deliberately:
 What's missing is Homebrew's actual shape: a git repository of many
 installable things, added to a trust list once, searched and installed by
 name, upgraded explicitly, with the operator seeing exactly what changes
-each time. ADR-0040 decides that shape for Harness. Governing spec:
+each time. ADR-0044 decides that shape for Harness. Governing spec:
 SPEC-0026.
 
 Related specs: SPEC-0006 (adapters, skill-path merge order this spec
@@ -47,7 +47,7 @@ installer, converge rules), ADR-0029 (no supply-chain opt-in), ADR-0030
 
 ### Non-Goals
 
-* **A central package index.** Discovery is per-stable, by design (ADR-0040
+* **A central package index.** Discovery is per-stable, by design (ADR-0044
   Decision 1).
 * **Package build steps, install hooks, or scripts of any kind.** A package
   is data. An author who needs a wrapper script publishes it separately and
@@ -193,7 +193,7 @@ sequenceDiagram
 * **Confirm-fatigue.** Requiring confirmation on every install and upgrade
   risks operators learning to click through without reading, the way any
   repeated security prompt does. → Accepted as the lesser risk versus
-  Option 1 (silent after the first trust), per ADR-0040 Decision 3; the
+  Option 1 (silent after the first trust), per ADR-0044 Decision 3; the
   typed-retype requirement for `high` findings and for `mcp_allow` "write"
   specifically resists rubber-stamping those two cases.
 * **Two more pieces of local git/filesystem state per stable.** More moving

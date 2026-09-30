@@ -4,7 +4,7 @@
 // key, and any string containing "${" (the ADR-0038 secret-reference grammar)
 // fails the load naming the key and the manifest's path.
 //
-// Governing: ADR-0040, SPEC-0026 REQ-3, Error Handling Standards.
+// Governing: ADR-0044, SPEC-0026 REQ-3, Error Handling Standards.
 package agentpkg
 
 import (

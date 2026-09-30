@@ -1,4 +1,4 @@
-// Governing: ADR-0040; SPEC-0026 REQ-3 (manifest schema), REQ-7 (source
+// Governing: ADR-0044; SPEC-0026 REQ-3 (manifest schema), REQ-7 (source
 // grammar), Error Handling Standards.
 package agentpkg
 

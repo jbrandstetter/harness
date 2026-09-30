@@ -159,7 +159,7 @@ type Harness struct {
 	// list, describe and doctor can attribute fields without re-reading the
 	// manifest. Named PackageSource, not Source, because this package's
 	// SourceKind* constants already mean trigger sources and a bare Source
-	// reads as one of them (#809). Governing: ADR-0040; SPEC-0026 REQ-7,
+	// reads as one of them (#809). Governing: ADR-0044; SPEC-0026 REQ-7,
 	// REQ-12.
 	PackageSource string
 	// Args are the command arguments, appended after the adapter's

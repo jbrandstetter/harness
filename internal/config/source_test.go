@@ -4,7 +4,7 @@
 // operation is ever attempted (structurally true: applySource only reads
 // local disk).
 //
-// Governing: ADR-0040; SPEC-0026 REQ-3, REQ-7.
+// Governing: ADR-0044; SPEC-0026 REQ-3, REQ-7.
 package config
 
 import (

@@ -1076,7 +1076,7 @@ The reply SHALL carry the aggregate verdict, the chunk count, the hash, and one
 entry per chunk and policy with `policy`, `guard`, `served_model`, `chunk`,
 `verdict`, `score` and `error`. It SHALL NOT echo `text` or any part of it.
 The daemon SHALL use the text only to call the guard. It SHALL NOT read a file,
-fetch a URL, or write configuration for this op (ADR-0040).
+fetch a URL, or write configuration for this op (ADR-0044).
 
 The protocol minor version SHALL be bumped for the op and for REQ-16's record
 fields.
