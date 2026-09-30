@@ -35,21 +35,34 @@ func TestOrderDropsIneligible(t *testing.T) {
 	draft.Draft = true
 	red := approvedAt(2, t0)
 	red.CIState = "failure"
-	got := Order([]PullRequest{draft, approvedAt(3, t0), red})
+	got := Order([]PullRequest{draft, approvedAt(3, t0), red}, "main")
+	if !slices.Equal(numbers(got), []int{3}) {
+		t.Fatalf("Order = %v, want [3]", numbers(got))
+	}
+}
+
+func TestOrderDropsStackedPR(t *testing.T) {
+	// #870: a PR whose base is another PR's branch never enters the train,
+	// however green and approved it is.
+	stacked := approvedAt(1, t0)
+	stacked.BaseRef = "feat/owner-columns"
+	unknown := approvedAt(2, t0)
+	unknown.BaseRef = ""
+	got := Order([]PullRequest{stacked, approvedAt(3, t0), unknown}, "main")
 	if !slices.Equal(numbers(got), []int{3}) {
 		t.Fatalf("Order = %v, want [3]", numbers(got))
 	}
 }
 
 func TestOrderEarlierApprovalFirst(t *testing.T) {
-	got := Order([]PullRequest{approvedAt(1, t0.Add(time.Minute)), approvedAt(2, t0)})
+	got := Order([]PullRequest{approvedAt(1, t0.Add(time.Minute)), approvedAt(2, t0)}, "main")
 	if !slices.Equal(numbers(got), []int{2, 1}) {
 		t.Fatalf("Order = %v, want [2 1]", numbers(got))
 	}
 }
 
 func TestOrderTieBreaksOnNumber(t *testing.T) {
-	got := Order([]PullRequest{approvedAt(9, t0), approvedAt(4, t0)})
+	got := Order([]PullRequest{approvedAt(9, t0), approvedAt(4, t0)}, "main")
 	if !slices.Equal(numbers(got), []int{4, 9}) {
 		t.Fatalf("Order = %v, want [4 9]", numbers(got))
 	}
@@ -63,7 +76,7 @@ func TestOrderUsesEarliestQualifyingApproval(t *testing.T) {
 	// #3 has two qualifying approvals; the earlier one is its key.
 	three := approvedAt(3, t0.Add(3*time.Minute))
 	three.Reviews = append(three.Reviews, Review{Author: "y", State: StateApproved, CommitID: three.HeadSHA, SubmittedAt: t0.Add(-time.Minute)})
-	got := Order([]PullRequest{one, approvedAt(2, t0), three})
+	got := Order([]PullRequest{one, approvedAt(2, t0), three}, "main")
 	if !slices.Equal(numbers(got), []int{3, 2, 1}) {
 		t.Fatalf("Order = %v, want [3 2 1]", numbers(got))
 	}
@@ -74,12 +87,12 @@ func TestOrderIgnoresInputOrder(t *testing.T) {
 		approvedAt(5, t0), approvedAt(3, t0), approvedAt(8, t0.Add(time.Second)),
 		approvedAt(1, t0.Add(time.Hour)), approvedAt(2, t0.Add(-time.Hour)), approvedAt(7, t0),
 	}
-	want := numbers(Order(in))
+	want := numbers(Order(in, "main"))
 	rng := rand.New(rand.NewPCG(1, 2))
 	for i := range 10 {
 		shuffled := slices.Clone(in)
 		rng.Shuffle(len(shuffled), func(a, b int) { shuffled[a], shuffled[b] = shuffled[b], shuffled[a] })
-		if got := numbers(Order(shuffled)); !slices.Equal(got, want) {
+		if got := numbers(Order(shuffled, "main")); !slices.Equal(got, want) {
 			t.Fatalf("shuffle %d: Order = %v, want %v", i, got, want)
 		}
 	}
@@ -95,7 +108,7 @@ func TestOrderDoesNotMutate(t *testing.T) {
 		before[i] = pr
 		before[i].Reviews = slices.Clone(pr.Reviews)
 	}
-	_ = Order(in)
+	_ = Order(in, "main")
 	if !reflect.DeepEqual(in, before) {
 		t.Fatalf("Order mutated its argument:\n got %+v\nwant %+v", in, before)
 	}
@@ -103,7 +116,7 @@ func TestOrderDoesNotMutate(t *testing.T) {
 
 func TestOrderEmpty(t *testing.T) {
 	for _, in := range [][]PullRequest{nil, {}} {
-		got := Order(in)
+		got := Order(in, "main")
 		if got == nil || len(got) != 0 {
 			t.Fatalf("Order(%v) = %#v, want empty non-nil", in, got)
 		}

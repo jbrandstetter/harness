@@ -181,7 +181,7 @@ func (d *Driver) Tick(ctx context.Context) error {
 	d.lastMain = base
 	d.forget(prs)
 
-	queue := Order(prs)
+	queue := Order(prs, d.cfg.BaseBranch)
 	if q := queueString(queue); q != d.lastQueue {
 		d.log.Info(event("queue"), d.kv("base", base, "prs", q)...)
 		d.lastQueue = q
@@ -260,7 +260,7 @@ func (d *Driver) merge(ctx context.Context, key attemptKey, pr PullRequest, res 
 	case now != res.Base:
 		why = d.cfg.BaseBranch + " moved to " + now
 	default:
-		if ok, reason := Eligible(cur); !ok {
+		if ok, reason := Eligible(cur, d.cfg.BaseBranch); !ok {
 			why = "no longer eligible: " + reason
 		}
 	}

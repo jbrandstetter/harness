@@ -24,6 +24,7 @@ func ready() PullRequest {
 		Number:    7,
 		Author:    "joestump",
 		HeadSHA:   head,
+		BaseRef:   "main",
 		CIState:   "success",
 		Mergeable: true,
 		Reviews: []Review{
@@ -40,6 +41,8 @@ func TestEligible(t *testing.T) {
 		reason string
 	}{
 		{"every condition met", func(*PullRequest) {}, true, ""},
+		{"stacked on another branch", func(p *PullRequest) { p.BaseRef = "feat/owner-columns" }, false, wrongBaseReason("main")},
+		{"base unknown", func(p *PullRequest) { p.BaseRef = "" }, false, wrongBaseReason("main")},
 		{"draft", func(p *PullRequest) { p.Draft = true }, false, ReasonDraft},
 		{"ci pending", func(p *PullRequest) { p.CIState = "pending" }, false, ReasonCINotGreen},
 		{"ci failure", func(p *PullRequest) { p.CIState = "failure" }, false, ReasonCINotGreen},
@@ -64,6 +67,11 @@ func TestEligible(t *testing.T) {
 			true, "",
 		},
 		{
+			"first failing rule wins: base before draft",
+			func(p *PullRequest) { p.BaseRef, p.Draft = "feat/x", true },
+			false, wrongBaseReason("main"),
+		},
+		{
 			"first failing rule wins: draft before ci",
 			func(p *PullRequest) { p.Draft, p.CIState, p.Mergeable, p.Reviews = true, "failure", false, nil },
 			false, ReasonDraft,
@@ -83,7 +91,7 @@ func TestEligible(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pr := ready()
 			tc.mutate(&pr)
-			ok, reason := Eligible(pr)
+			ok, reason := Eligible(pr, "main")
 			if ok != tc.ok || reason != tc.reason {
 				t.Fatalf("Eligible = (%v, %q), want (%v, %q)", ok, reason, tc.ok, tc.reason)
 			}
