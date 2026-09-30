@@ -66,6 +66,42 @@ Two properties shape everything below:
   agent running, restart it when it falls over, and let you attach to see what
   it is doing.
 
+### `catch_up` when the channel was down
+
+That second property leaves a gap: while the session was down, doorbells were
+dropped and the todos sat on the queue. You can make the worker notice such a
+gap itself. Give its harness a channel trigger and `catch_up = true`:
+
+```toml
+[channel.switchboard]
+url = "https://switchboard.example.com/mcp/sb-worker"
+env_file = "~/.config/harness/triggers.env"
+headers = { Authorization = "Bearer ${SB_TOKEN}" }
+
+[harness.sb-worker]
+harness = "crush"
+prompt = "…"
+triggers = ["channel.switchboard"]
+catch_up = true
+```
+
+It is not periodic — there is nothing to schedule. `catch_up` starts exactly
+**one** run, with no event file (there is no event; only the agent can find
+out what was missed), in two cases:
+
+- the channel connects for the **first time since the daemon started**, and
+- the channel **reconnects after being down for more than a minute**.
+
+The one-minute threshold is the scheduler's late grace, shared with
+[scheduled sweeps](./scheduled-sweeps#catch_up-sleep-and-outages). Shorter
+blips do not fire it: Switchboard re-rings unclaimed todos within minutes, so
+a run per flap would be worse than the gap it papers over. A flapping link is
+the exception to the exception — the channel's backoff resets only after the
+stream has stayed open five minutes, so a link that drops sooner every time
+climbs past the minute within a few flaps, and from then on each reconnect
+catches up, about once per backoff ceiling. That behaviour is bounded by the
+ceiling and by `on_overlap`, not prevented.
+
 ## What you need
 
 1. **A Switchboard endpoint** for the agent: its URL and `sbk_…` token. See

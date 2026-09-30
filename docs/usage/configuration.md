@@ -209,10 +209,16 @@ fires every hour, or an `@every` interval, keeps running once per real hour.
 
 ### Sleep, outages, and `catch_up`
 
-The daemon checks the wall clock every second rather than setting a timer, so a
-laptop that sleeps through a window notices the moment it wakes, and a daemon
-that starts after an outage notices at boot. A window noticed more than a minute
-late is **missed**, and `catch_up` decides what happens:
+`catch_up` is never periodic: however many firings were missed, it starts at
+most **one** run. It is accepted where something can miss a firing —
+`schedule`, a channel trigger, or `operating_hours` on a harness with
+`triggers` — and is rejected on presence anywhere else. The three cases:
+
+**Schedule.** The daemon checks the wall clock every second rather than
+setting a timer, so a laptop that sleeps through a window notices the moment
+it wakes, and a daemon that starts after an outage notices at boot. A window
+noticed more than a minute late is **missed**, and `catch_up` decides what
+happens:
 
 ```toml
 [harness.nightly-sweep]
@@ -228,9 +234,24 @@ catch_up = true   # default false
   warning in the daemon log naming the harness, the first and last missed
   windows, and how many there were. The next window fires normally.
 
-`catch_up` requires `schedule`. The daemon records the last window it decided in
-`state.json`, so a restart never runs the same window twice. A missed window is
-also a `missed` entry in the harness's run history.
+**Channel trigger.** On a harness with a `channel.…` trigger, one run when
+the channel connects for the **first time since the daemon started**, and one
+on every reconnect after the link was down for **more than a minute**. A
+flapping link re-fires about once per backoff ceiling (its backoff resets only
+after five open minutes, so a link that drops sooner every time climbs past
+the minute within a few flaps); blips shorter than a minute do not, because
+Switchboard re-rings unclaimed todos within minutes. The run carries no event
+file — it is the agent's cue to go and look
+([push events](../guides/push-events#catch_up-when-the-channel-was-down)).
+
+**Operating hours.** On a triggered harness with `operating_hours`, one run
+at the first in-hours check after the window reopens, if anything was skipped
+while it was closed
+([on a triggered harness](#on-a-triggered-harness-hours-gate-firings)).
+
+The daemon records the last window it decided in `state.json`, so a restart
+never runs the same window twice. A missed window is also a `missed` entry in
+the harness's run history.
 
 ### Runs: history, logs, timeout, overlap
 
