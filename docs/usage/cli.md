@@ -382,7 +382,7 @@ To see what tripped the marker, `harness capture <NAME>` prints the screen the
 verdict came from; `harness attach <NAME>` takes over the interactive session. The
 process lifecycle state is unchanged — `waiting` says what the **glass** is
 doing, `state` says what the **process** is doing
-([ADR-0040](https://github.com/stump-wtf/harness)).
+([ADR-0044](https://github.com/stump-wtf/harness)).
 
 ## Scratchpads (`harness run`)
 

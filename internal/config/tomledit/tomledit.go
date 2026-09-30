@@ -2,7 +2,7 @@
 // families SPEC-0026 commands write: [stable.<name>] and harness tables
 // ([harness.<name>] or the bare [<name>] spelling the loader accepts). The
 // daemon never edits config on its own; this package exists for the
-// `harness agent` CLI tree (ADR-0040).
+// `harness agent` CLI tree (ADR-0044).
 //
 // It operates on the file's bytes with TOML-aware header detection — a "["
 // inside a multi-line array or multi-line string is not a header — so every
@@ -15,7 +15,7 @@
 // [adapter.*] or [skill_repo.*] — the structural half of REQ-11, which #813
 // checks end to end.
 //
-// Governing: ADR-0040; SPEC-0026 REQ-1, REQ-6, REQ-8, REQ-9, REQ-11.
+// Governing: ADR-0044; SPEC-0026 REQ-1, REQ-6, REQ-8, REQ-9, REQ-11.
 package tomledit
 
 import (

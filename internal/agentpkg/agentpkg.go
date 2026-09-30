@@ -3,9 +3,9 @@
 // the `source` reference grammar a [harness.*] table carries. The daemon-side
 // half is deliberately tiny — resolve `source` from local disk at config load
 // and nothing else; every fetch, clone, scan and confirmation lives in the
-// `harness agent` CLI tree (ADR-0040).
+// `harness agent` CLI tree (ADR-0044).
 //
-// Governing: ADR-0040 (agent package stables), SPEC-0026 REQ-3 (manifest
+// Governing: ADR-0044 (agent package stables), SPEC-0026 REQ-3 (manifest
 // schema), REQ-7 (source field and config-load resolution), Error Handling
 // Standards.
 package agentpkg

@@ -7,7 +7,7 @@
 // daemon on its last-good configuration, exactly as an unknown adapter does
 // (ADR-0006).
 //
-// Governing: ADR-0040, SPEC-0026 REQ-7, Error Handling Standards.
+// Governing: ADR-0044, SPEC-0026 REQ-7, Error Handling Standards.
 package config
 
 import (

@@ -5,7 +5,7 @@
 Harness defends against prompt injection structurally. ADR-0021 keeps an event
 payload out of prompt text and argv: the agent gets a `0600` file named by
 `HARNESS_EVENT_FILE`. ADR-0023 fences untrusted free text behind a global-only
-opt-in. ADR-0040 runs a heuristic scan over a stable's bundled text and makes
+opt-in. ADR-0044 runs a heuristic scan over a stable's bundled text and makes
 the operator read a diff before every install and upgrade. Each of these tells
 the agent where untrusted text starts. None stops the agent from obeying it.
 
@@ -286,7 +286,7 @@ operator sees the verdict in the run record, the notification and
 the daemon calls the guard and returns verdicts, never text. `classify` and
 `probe` are refused to any caller not on the local socket, whatever its tier.
 
-**Rationale**: this is the condition ADR-0040's design set for a model pass:
+**Rationale**: this is the condition ADR-0044's design set for a model pass:
 the process that reads attacker-reachable text and writes config holds no
 model key, and the process that holds the key writes no config and fetches
 nothing. `classify` over TCP would hand any authenticated remote client an
@@ -302,7 +302,7 @@ in package manifests. `skip_trusted_actors` exists only on forge-preset sources
 that declare `trusted_actors`.
 
 **Rationale**: a cloned repository or a third-party package must never choose,
-weaken or re-point its own screening (ADR-0009, ADR-0040). Drop-ins hold source
+weaken or re-point its own screening (ADR-0009, ADR-0044). Drop-ins hold source
 and harness tables today, so a `screen` key beside them follows the table it
 modifies. Drop-ins may loosen as well as tighten: `mode = "off"`, an empty
 `policies` or a lower level. The operator writes drop-ins as they write the

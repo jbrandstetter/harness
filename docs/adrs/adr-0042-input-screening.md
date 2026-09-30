@@ -2,7 +2,7 @@
 status: proposed
 date: 2026-09-29
 decision-makers: [joestump]
-extends: [ADR-0036, ADR-0021, ADR-0040]
+extends: [ADR-0036, ADR-0021, ADR-0044]
 enables: [ADR-0043]
 governs: [SPEC-0031]
 related: [ADR-0008, ADR-0010, ADR-0023, ADR-0025, ADR-0026, ADR-0027, ADR-0028, ADR-0035, ADR-0041]
@@ -18,7 +18,7 @@ related: [ADR-0008, ADR-0010, ADR-0023, ADR-0025, ADR-0026, ADR-0027, ADR-0028, 
 Harness's defense against prompt injection is structural today. ADR-0021 keeps
 a webhook body out of prompt text and argv: it reaches the agent only as a
 `0600` file named by `HARNESS_EVENT_FILE`. ADR-0023 fences untrusted free text
-behind a global-only `untrusted_inline` opt-in. ADR-0040 scans a stable's
+behind a global-only `untrusted_inline` opt-in. ADR-0044 scans a stable's
 bundled text with a heuristic pattern list and makes the human read a diff
 before every install and upgrade. Each of these tells the agent where untrusted
 text starts. None of them stops the agent from obeying it: the agent still
@@ -32,7 +32,7 @@ Two inputs worry the owner most:
   comment on a public GitHub repository writes text that an unattended one-shot
   reads minutes later, with no human watching. The owner's private Gitea is the
   opposite case: the owner writes every issue there.
-* **Third-party stables.** ADR-0040's heuristic scan is, by its own account, a
+* **Third-party stables.** ADR-0044's heuristic scan is, by its own account, a
   tripwire over natural language that misses a well-disguised instruction. Its
   design left an "opt-in, model-assisted second pass" as an open question, on
   the condition that the model credential not sit in the process that reads the
@@ -76,7 +76,7 @@ its verdict do? And how does the operator say which sources they trust?
   nothing on another, so the model that answered must be the model configured.
   This follows ADR-0026's attestation logic.
 * **Split the credential for stables.** The process that writes config never
-  holds the classifier's key. This is the condition ADR-0040's design set.
+  holds the classifier's key. This is the condition ADR-0044's design set.
 * **Measure before enforcing.** A new policy can run in shadow first, as a fleet
   rule does (SPEC-0029 REQ-9).
 
@@ -401,8 +401,8 @@ Levels are cumulative, like fleet-rule levels (SPEC-0029 REQ-10):
 The CLI never holds the guard's key. It sends each file's text to the daemon's
 `screen` op (ADR-0002, ADR-0034), with entry `package` and the file's path. The
 daemon calls the guard and returns only verdicts. The daemon still never
-fetches a stable or writes config (ADR-0040): it reads the text only to forward
-it to the classifier. This is the split ADR-0040's design asked for. The
+fetches a stable or writes config (ADR-0044): it reads the text only to forward
+it to the classifier. This is the split ADR-0044's design asked for. The
 process that reads attacker-reachable text and writes config (the CLI) holds no
 model key. The process that holds the key (the daemon) writes no config.
 
@@ -441,7 +441,7 @@ classifier is a model endpoint, and the daemon calls it the way ADR-0036 calls
 * Good, because trust matches who can write: the private Gitea is `off`, public
   GitHub is `enforce`, and the choice is one key on the source.
 * Good, because stable installs get a scored, attributable second opinion while
-  the heuristic scan stays the floor. That settles ADR-0040's open question on
+  the heuristic scan stays the floor. That settles ADR-0044's open question on
   the terms its design set.
 * Good, because nothing hostile enters the ledger. A verdict is auditable by
   hash against the kept event file.
@@ -668,7 +668,7 @@ sequenceDiagram
   a named entry point.
 * **Extends ADR-0021:** screening happens at `Fire`. The event file stays the
   only way a payload reaches an agent, and replay becomes the release path.
-* **Extends ADR-0040:** this answers SPEC-0026's open question on a
+* **Extends ADR-0044:** this answers SPEC-0026's open question on a
   model-assisted second pass, with the credential split its design required.
 * **Enables ADR-0043:** the `narrow` level, and the rule that a gate call only
   takes away, both come from here.
