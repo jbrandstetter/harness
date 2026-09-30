@@ -3,8 +3,9 @@ package mergetrain
 // Eligibility
 //
 // Whether a pull request may enter the train. Pure: it reads only the
-// PullRequest it is given. The rules are evaluated in a fixed order and the
-// first failure is the reason, so the same PR always logs the same reason.
+// PullRequest it is given and the train's base branch. The rules are evaluated
+// in a fixed order and the first failure is the reason, so the same PR always
+// logs the same reason.
 //
 // Governing: SPEC-0025 REQ-2.
 
@@ -17,10 +18,22 @@ const (
 	ReasonChangesRequested = "changes requested"
 )
 
-// Eligible reports whether pr may enter the train, and why not when it may not.
-// reason is a short lowercase phrase for a log line, and is "" when ok is true.
-func Eligible(pr PullRequest) (ok bool, reason string) {
+// wrongBaseReason is the ineligibility reason for a PR whose base branch is
+// not the train's base branch — a PR stacked on another PR's branch (#870).
+// It names the train's branch so the log line reads whole.
+func wrongBaseReason(base string) string { return "base is not " + base }
+
+// Eligible reports whether pr may enter the train whose base branch is base,
+// and why not when it may not. reason is a short lowercase phrase for a log
+// line, and is "" when ok is true.
+func Eligible(pr PullRequest, base string) (ok bool, reason string) {
 	switch {
+	case pr.BaseRef != base:
+		// A PR stacked on another branch is merged by the forge into that
+		// branch, never into base; the train would then fail to verify and
+		// halt. A PR the forge's payload leaves without a base never enters
+		// either — the train does not guess (#870).
+		return false, wrongBaseReason(base)
 	case pr.Draft:
 		return false, ReasonDraft
 	case pr.CIState != CISuccess:

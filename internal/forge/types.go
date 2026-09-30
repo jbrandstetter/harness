@@ -26,6 +26,7 @@ type PullRequest struct {
 	Number    int
 	Author    string
 	HeadSHA   string
+	BaseRef   string // the branch this PR targets; "" when the forge does not say
 	Reviews   []Review
 	CIState   string // "success", "pending", "failure", "error"
 	Draft     bool

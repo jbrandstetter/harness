@@ -201,6 +201,9 @@ type apiPull struct {
 	Head           struct {
 		SHA string `json:"sha"`
 	} `json:"head"`
+	Base struct {
+		Ref string `json:"ref"`
+	} `json:"base"`
 }
 
 type apiReview struct {
@@ -244,6 +247,7 @@ func (c *Client) ListOpenPRs(ctx context.Context, repo string) ([]forge.PullRequ
 			Number:    p.Number,
 			Author:    p.User.Login,
 			HeadSHA:   p.Head.SHA,
+			BaseRef:   p.Base.Ref,
 			Draft:     p.Draft,
 			Mergeable: p.Mergeable,
 		}

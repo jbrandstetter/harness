@@ -15,16 +15,16 @@ import (
 	"time"
 )
 
-// Order returns the eligible PRs in the order the train will merge them.
-// It does not mutate prs.
-func Order(prs []PullRequest) []PullRequest {
+// Order returns the eligible PRs in the order the train will merge them,
+// considering only PRs whose base branch is base. It does not mutate prs.
+func Order(prs []PullRequest, base string) []PullRequest {
 	type keyed struct {
 		pr       PullRequest
 		approved time.Time
 	}
 	ks := make([]keyed, 0, len(prs))
 	for _, pr := range prs {
-		if ok, _ := Eligible(pr); !ok {
+		if ok, _ := Eligible(pr, base); !ok {
 			continue
 		}
 		first, _ := firstQualifyingApproval(pr)

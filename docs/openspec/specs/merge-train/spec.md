@@ -61,11 +61,12 @@ naming the mode and every repo it will act on.
 A PR SHALL enter the train only when all of these hold, evaluated in this
 order, and the first that fails SHALL be the reason reported:
 
-1. it is not a draft — reason `draft`;
-2. the combined CI status of its head is `success` — `ci not green`;
-3. the forge reports it mergeable — `not mergeable`;
-4. it has at least one qualifying approval — `no approval on current head`;
-5. no review with state `REQUEST_CHANGES` was left on its current head —
+1. its base branch is the train's base branch — `base is not <branch>`;
+2. it is not a draft — reason `draft`;
+3. the combined CI status of its head is `success` — `ci not green`;
+4. the forge reports it mergeable — `not mergeable`;
+5. it has at least one qualifying approval — `no approval on current head`;
+6. no review with state `REQUEST_CHANGES` was left on its current head —
    `changes requested`.
 
 #### Scenario: A stale approval
@@ -77,6 +78,13 @@ order, and the first that fails SHALL be the reason reported:
 
 - **WHEN** the only approval is by the PR's author
 - **THEN** the PR is ineligible with `no approval on current head`
+
+#### Scenario: A stacked PR
+
+- **WHEN** a PR's base branch is another PR's branch, not the train's base
+  branch
+- **THEN** the PR is ineligible with `base is not <branch>` and can never be
+  squash-merged into its parent branch (#870)
 
 ### Requirement: REQ-3 Ordering
 

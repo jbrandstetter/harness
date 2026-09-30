@@ -55,7 +55,7 @@ type Review = forge.Review
 ```
 
 Every signature in the stories keeps its spelling: `mergetrain.PullRequest`,
-`mergetrain.Eligible(pr)`, `forge.Forge`, `VerifyLanded(ctx, f forge.Forge, …)`.
+`mergetrain.Eligible(pr, base)`, `forge.Forge`, `VerifyLanded(ctx, f forge.Forge, …)`.
 `internal/forge` imports nothing internal, and `internal/forge/fake` imports
 only `internal/forge`, so tests in `package mergetrain` can use the fake
 directly.
@@ -76,6 +76,7 @@ type PullRequest struct {
 	Number    int
 	Author    string
 	HeadSHA   string
+	BaseRef   string // the branch this PR targets; "" when the forge does not say
 	Reviews   []Review
 	CIState   string // "success", "pending", "failure", "error"
 	Draft     bool

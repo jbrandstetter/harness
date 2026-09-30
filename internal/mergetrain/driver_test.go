@@ -27,7 +27,7 @@ import (
 func prAt(n int, approvedAfter time.Duration) PullRequest {
 	head := fmt.Sprintf("%040x", 0xa0000+n)
 	return PullRequest{
-		Number: n, Author: fmt.Sprintf("author%d", n), HeadSHA: head, CIState: "success", Mergeable: true,
+		Number: n, Author: fmt.Sprintf("author%d", n), HeadSHA: head, BaseRef: "main", CIState: "success", Mergeable: true,
 		Reviews: []Review{{Author: "joestump-agent", State: StateApproved, CommitID: head, SubmittedAt: t0.Add(approvedAfter)}},
 	}
 }

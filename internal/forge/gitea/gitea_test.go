@@ -213,6 +213,7 @@ func TestListOpenPRs(t *testing.T) {
 			_ = json.NewEncoder(w).Encode([]map[string]any{{
 				"number": 99, "draft": true, "mergeable": false,
 				"user": map[string]any{"login": "joestump"}, "head": map[string]any{"sha": "h99"},
+				"base": map[string]any{"ref": "main"},
 			}})
 		default:
 			t.Errorf("unexpected page %q", r.URL.Query().Get("page"))
@@ -242,7 +243,7 @@ func TestListOpenPRs(t *testing.T) {
 		t.Fatalf("got %d PRs, want %d (two pages)", len(prs), pageSize+1)
 	}
 	last := prs[len(prs)-1]
-	if last.Number != 99 || !last.Draft || last.Mergeable || last.Author != "joestump" || last.HeadSHA != "h99" {
+	if last.Number != 99 || !last.Draft || last.Mergeable || last.Author != "joestump" || last.HeadSHA != "h99" || last.BaseRef != "main" {
 		t.Fatalf("PR 99 = %+v", last)
 	}
 	if last.CIState != "pending" {
