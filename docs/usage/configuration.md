@@ -242,7 +242,7 @@ after five open minutes, so a link that drops sooner every time climbs past
 the minute within a few flaps); blips shorter than a minute do not, because
 Switchboard re-rings unclaimed todos within minutes. The run carries no event
 file — it is the agent's cue to go and look
-([push events](../guides/push-events.md#catch_up-when-the-channel-was-down)).
+([push events](../guides/push-events#catch_up-when-the-channel-was-down)).
 
 **Operating hours.** On a triggered harness with `operating_hours`, one run
 at the first in-hours check after the window reopens, if anything was skipped
