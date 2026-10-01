@@ -503,6 +503,14 @@ func TestSixtyFifthConcurrentRequestIs503(t *testing.T) {
 // disconnected at the header timeout, even though every line arrives well
 // inside any per-read deadline. The timeout is shortened for the test; the
 // production value is asserted separately.
+//
+// The server starts its header deadline at accept time, while the test
+// clocks from after Dial, so the disconnect can land a few milliseconds
+// before the test's 300ms elapses; the assert allows that skew.
+//
+// @joestump-agent 10/01/2026 - Allowed a small clock-skew tolerance; CI
+// saw a legitimate 297.9ms cutoff fail the strict took < cutoff check on
+// the merge train (run 16033).
 func TestSlowHeadersAreCutOff(t *testing.T) {
 	if DefaultReadHeaderTimeout != 10*time.Second || DefaultReadTimeout != 30*time.Second ||
 		DefaultWriteTimeout != 30*time.Second || DefaultIdleTimeout != 60*time.Second || DefaultMaxHeaderBytes != 64<<10 {
@@ -536,8 +544,9 @@ func TestSlowHeadersAreCutOff(t *testing.T) {
 	for i := 0; ; i++ {
 		select {
 		case took := <-closed:
-			if took < cutoff {
-				t.Errorf("cut off after %v, before the %v timeout", took, cutoff)
+			const skew = 25 * time.Millisecond
+			if took < cutoff-skew {
+				t.Errorf("cut off after %v, well before the %v timeout", took, cutoff)
 			}
 			return
 		case <-ticker.C:
