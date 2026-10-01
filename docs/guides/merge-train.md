@@ -22,11 +22,7 @@ first, the cutover, and how to back out.
    `branches: [main, 'train/**']` line in `.gitea/workflows/pipeline.yaml`.
    Nothing else in the pipeline changes. The image push and the docs deploy
    are already limited to `main`.
-2. **Only the train can create train branches.** On the forge, add a
-   branch-protection rule for `train/*` whose push allowlist contains only
-   the train's identity (`joestump-agent`). Without it, anyone with write
-   access could push a `train/<pr>` branch that looks tested.
-3. **A token for the train's identity**, with write access to the repo, in
+2. **A token for the train's identity**, with write access to the repo, in
    the daemon's environment. It never goes in `harness.toml`.
 
 ## Pilot: report mode
@@ -178,3 +174,17 @@ bypass that skipped step 3 still shows up in the daemon log.
   PR's changes, including any change to `.gitea/workflows/`. That is the
   same trust PR CI already extends to a same-repo branch, and review is what
   covers it.
+- **No `train/*` branch-protection rule.** A `train/*` rule whose push
+  allowlist holds only the train's identity would stop anyone with write
+  access from pushing a `train/<pr>` branch, but on Gitea 1.27 it also
+  stops the train: the pre-receive hook refuses deletion of a protected
+  branch before it checks any allowlist, and the train deletes
+  `train/<pr>` through the REST API after every attempt. With the rule in
+  place, every attempt leaves its branch behind, the next attempt's push
+  onto the leftover is refused as non-fast-forward, and every later tick
+  for that PR fails (stump.wtf/harness#821). That cost buys little: the
+  train never trusts a branch tip. It waits on the combined status of the
+  SHA it built itself and pins `head_commit_id` on the merge, so a foreign
+  push to `train/<pr>` cannot make an untested tree look tested; the rule
+  would only protect humans reading branch names. The #605 pilot runs
+  without the rule for this reason.
