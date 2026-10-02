@@ -108,7 +108,11 @@ const (
 	// fields, which a client reads as "not waiting", exactly like any other
 	// unknown field. (16 through 20 were taken on main while this branch was
 	// in flight; renumbered here during the merge.)
-	ProtoMinor = 21
+	// ProtoMinor 22 added PackageKeys on HarnessInfo (issue #815;
+	// ADR-0044): additive only — an older daemon omits it, so describe
+	// shows the source without per-key attribution; an older client
+	// ignores the unknown field.
+	ProtoMinor = 22
 )
 
 // ProtoVersion is the "major.minor" string carried in HELLO.
