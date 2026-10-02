@@ -67,6 +67,7 @@ var helpText = struct {
 		{"agent stable update [NAME]", "fetch and fast-forward stable clones — the only agent command that fetches"},
 		{"agent stable list", "list trusted stables and their clones"},
 		{"agent install STABLE/PACKAGE[@VERSION]", "pin a package, scan and confirm it, bind it to a harness table (--as, --replace, --yes, --force-unsafe; never fetches)"},
+		{"agent upgrade STABLE/PACKAGE[@VERSION]", "re-pin a package-sourced harness to a newer local-clone commit (--all, --yes; diff, rescan, confirm)"},
 		{"agent uninstall NAME", "remove a package-installed harness table; the pin stays until prune"},
 		{"agent prune", "remove store pins no source in the global harness.toml references"},
 		{"agent search [QUERY] [--stable NAME]", "search agent packages in local stable clones (case-insensitive on name or description)"},
