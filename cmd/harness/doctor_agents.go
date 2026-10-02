@@ -16,6 +16,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/stump-wtf/harness/internal/agentpkg"
 	"github.com/stump-wtf/harness/internal/cliui"
@@ -53,22 +54,11 @@ func agentPinsCheck(c agentsListClient) *check {
 	if len(missing) == 0 {
 		return nil
 	}
-	detail := fmt.Sprintf("%d harness pin(s) missing from local disk: %s", len(missing), joinComma(missing))
+	detail := fmt.Sprintf("%d harness pin(s) missing from local disk: %s", len(missing), strings.Join(missing, ", "))
 	return &check{
 		name:   "agent_pins",
 		level:  cliui.LevelWarn,
 		detail: detail,
 		hint:   "re-install with `harness agent install <stable>/<package>@<sha>` (the daemon keeps serving its last-good config until then)",
 	}
-}
-
-func joinComma(parts []string) string {
-	out := ""
-	for i, p := range parts {
-		if i > 0 {
-			out += ", "
-		}
-		out += p
-	}
-	return out
 }
