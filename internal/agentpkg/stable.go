@@ -258,3 +258,34 @@ func shortSHA(sha string) string {
 	}
 	return sha
 }
+
+// DefaultTip reports the default branch's tip commit in the stable's local
+// clone, as of its last stable update — a read-only rev-parse, never a
+// fetch (SPEC-0026 REQ-12: informational staleness only).
+func DefaultTip(name string) (string, error) {
+	dir := StableDir(name)
+	def, err := defaultBranch(dir)
+	if err != nil {
+		return "", err
+	}
+	return gitcmd.Output(dir, "rev-parse", "--verify", "origin/"+def+"^{commit}")
+}
+
+// NewerThanPin reports whether the clone's default-branch tip is a commit
+// the pin does not already name: the tip differs from the pin and the pin
+// is its ancestor. Read-only, never a fetch; a missing clone answers false.
+func NewerThanPin(name, pinSHA string) bool {
+	tip, err := DefaultTip(name)
+	if err != nil || tip == pinSHA {
+		return false
+	}
+	dir := StableDir(name)
+	out, err := gitcmd.Run(dir, "merge-base", "--is-ancestor", pinSHA, tip)
+	if err != nil {
+		// Exit 1 means the histories diverged rather than the clone moving
+		// ahead: not "a newer version available" either way.
+		_ = out
+		return false
+	}
+	return true
+}

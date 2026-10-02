@@ -162,6 +162,12 @@ type Harness struct {
 	// reads as one of them (#809). Governing: ADR-0044; SPEC-0026 REQ-7,
 	// REQ-12.
 	PackageSource string
+	// PackageKeys names the effective keys the package's manifest supplied
+	// at load (SPEC-0026 REQ-12): every key is one describe can attribute
+	// to the package rather than the operator's table. A key set on the
+	// table itself never appears here — the local value wins and the key
+	// is the operator's.
+	PackageKeys []string
 	// Args are the command arguments, appended after the adapter's
 	// executable; {workdir} placeholders are expanded at spawn time by the
 	// supervisor, not here. Never set on a "command" harness, whose Argv

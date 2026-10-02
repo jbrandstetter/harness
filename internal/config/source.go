@@ -14,6 +14,7 @@ import (
 	"errors"
 	"io/fs"
 	"path/filepath"
+	"sort"
 
 	"github.com/stump-wtf/harness/internal/agentpkg"
 )
@@ -54,35 +55,51 @@ func applySource(filename, name string, line int, rh rawHarness) (rawHarness, er
 		return filepath.Join(pinDir, p)
 	}
 
-	if rh.Harness == "" {
+	// Every key filled below is the package's, not the operator's: record
+	// it so describe can attribute the effective value (SPEC-0026 REQ-12).
+	fromPackage := func(key string) {
+		rh.PackageKeys = append(rh.PackageKeys, key)
+	}
+	if rh.Harness == "" && hv.Harness != "" {
 		rh.Harness = hv.Harness
+		fromPackage("harness")
 	}
-	if rh.Args == nil {
+	if rh.Args == nil && hv.Args != nil {
 		rh.Args = hv.Args
+		fromPackage("args")
 	}
-	if rh.Argv == nil {
+	if rh.Argv == nil && hv.Argv != nil {
 		rh.Argv = hv.Argv
+		fromPackage("argv")
 	}
-	if rh.Model == "" {
+	if rh.Model == "" && hv.Model != "" {
 		rh.Model = hv.Model
+		fromPackage("model")
 	}
-	if rh.AutoAccept == nil {
+	if rh.AutoAccept == nil && hv.AutoAccept != nil {
 		rh.AutoAccept = hv.AutoAccept
+		fromPackage("auto_accept")
 	}
-	if rh.MaxTurns == nil {
+	if rh.MaxTurns == nil && hv.MaxTurns != nil {
 		rh.MaxTurns = hv.MaxTurns
+		fromPackage("max_turns")
 	}
-	if rh.Quiet == nil {
+	if rh.Quiet == nil && hv.Quiet != nil {
 		rh.Quiet = hv.Quiet
+		fromPackage("quiet")
 	}
-	if rh.SystemPromptFile == "" {
+	if rh.SystemPromptFile == "" && hv.SystemPromptFile != "" {
 		rh.SystemPromptFile = manifestPath(hv.SystemPromptFile)
+		fromPackage("system_prompt_file")
 	}
-	if rh.MCPConfig == "" {
+	if rh.MCPConfig == "" && hv.MCPConfig != "" {
 		rh.MCPConfig = manifestPath(hv.MCPConfig)
+		fromPackage("mcp_config")
 	}
-	if rh.AllowedTools == nil {
+	if rh.AllowedTools == nil && hv.AllowedTools != nil {
 		rh.AllowedTools = hv.AllowedTools
+		fromPackage("allowed_tools")
 	}
+	sort.Strings(rh.PackageKeys)
 	return rh, nil
 }
