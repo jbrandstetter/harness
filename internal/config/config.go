@@ -294,7 +294,7 @@ func Parse(data []byte, filename string) (*core.Config, error) {
 
 	// Decode the [harness.*], [profile.*] and trigger-source namespaces
 	// lazily.
-	var harnessNS, profileNS, channelNS, webhookNS, skillRepoNS map[string]toml.Primitive
+	var harnessNS, profileNS, channelNS, webhookNS, skillRepoNS, stableNS map[string]toml.Primitive
 	if p, ok := top["harness"]; ok {
 		if err := md.PrimitiveDecode(p, &harnessNS); err != nil {
 			return nil, newError(filename, lineOf(headers, "harness"), "[harness]: %v", err)
@@ -318,6 +318,11 @@ func Parse(data []byte, filename string) (*core.Config, error) {
 	if p, ok := top["skill_repo"]; ok {
 		if err := md.PrimitiveDecode(p, &skillRepoNS); err != nil {
 			return nil, newError(filename, lineOf(headers, "skill_repo"), "[skill_repo]: %v", err)
+		}
+	}
+	if p, ok := top["stable"]; ok {
+		if err := md.PrimitiveDecode(p, &stableNS); err != nil {
+			return nil, newError(filename, lineOf(headers, "stable"), "[stable]: %v", err)
 		}
 	}
 
@@ -472,6 +477,19 @@ func Parse(data []byte, filename string) (*core.Config, error) {
 				return nil, newError(filename, h.line, "[skill_repo.%s]: %v", name, err)
 			}
 			if err := addSkillRepo(cfg, filename, name, h.line, rr); err != nil {
+				return nil, err
+			}
+
+		case len(h.parts) == 2 && h.parts[0] == "stable":
+			// A trusted agent package stable (SPEC-0026 REQ-1). Reading one
+			// is all the load ever does; the clone, the fetch and the writes
+			// live in the `harness agent` CLI tree.
+			name := h.parts[1]
+			var rs rawStable
+			if err := md.PrimitiveDecode(stableNS[name], &rs); err != nil {
+				return nil, newError(filename, h.line, "[stable.%s]: %v", name, err)
+			}
+			if err := addStable(cfg, filename, name, h.line, rs); err != nil {
 				return nil, err
 			}
 

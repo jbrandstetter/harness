@@ -14,8 +14,9 @@ package skillserve
 
 import (
 	"fmt"
-	"os/exec"
 	"strings"
+
+	"github.com/stump-wtf/harness/internal/gitcmd"
 )
 
 // SyncResult is the outcome of syncing one skill repo.
@@ -47,7 +48,7 @@ func SyncRepo(repoName, remote, cloneDir string) (SyncResult, error) {
 		return res, fmt.Errorf("skillserve: inspect %s: %w", repoName, err)
 	}
 	if info.State == CloneMissing {
-		if out, err := runGit("", "clone", remote, cloneDir); err != nil {
+		if out, err := gitcmd.Run("", "clone", remote, cloneDir); err != nil {
 			return res, fmt.Errorf("skillserve: clone %s: %v: %s", repoName, err, out)
 		}
 		def := defaultBranch(cloneDir)
@@ -61,7 +62,7 @@ func SyncRepo(repoName, remote, cloneDir string) (SyncResult, error) {
 
 	def := info.DefaultBranch
 	res.DefaultBranch = def
-	if _, err := runGit(cloneDir, "fetch", "origin"); err != nil {
+	if _, err := gitcmd.Run(cloneDir, "fetch", "origin"); err != nil {
 		return res, fmt.Errorf("skillserve: fetch %s: %w", repoName, err)
 	}
 	// A detached or dirty clone must not be "fixed" by the sync command: the
@@ -77,19 +78,9 @@ func SyncRepo(repoName, remote, cloneDir string) (SyncResult, error) {
 	if errL == nil && errR == nil && local == remote {
 		return res, nil
 	}
-	if out, err := runGit(cloneDir, "merge", "--ff-only", "origin/"+def); err != nil {
+	if out, err := gitcmd.Run(cloneDir, "merge", "--ff-only", "origin/"+def); err != nil {
 		return res, fmt.Errorf("skillserve: fast-forward %s: %v: %s", repoName, err, strings.TrimSpace(out))
 	}
 	res.FastForwarded = true
 	return res, nil
-}
-
-// runGit runs a git command, optionally inside dir.
-func runGit(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	out, err := cmd.CombinedOutput()
-	return string(out), err
 }

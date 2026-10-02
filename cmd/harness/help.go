@@ -62,6 +62,12 @@ var helpText = struct {
 		{"reload", "re-read the daemon config"},
 		{"doctor [--notify-test]", "run health checks (config, daemon, harnesses, notify); --notify-test fires a test notification"},
 		{"attach NAME [--ro]", "attach to a harness's terminal (a stream-json one-shot: its output lines)"},
+		{"agent stable add NAME REMOTE [--private]", "trust a stable: clone REMOTE, then write [stable.NAME] (the clone must succeed first)"},
+		{"agent stable remove NAME", "remove a stable's [stable.NAME] table; installed harnesses are untouched and named"},
+		{"agent stable update [NAME]", "fetch and fast-forward stable clones — the only agent command that fetches"},
+		{"agent stable list", "list trusted stables and their clones"},
+		{"agent search [QUERY] [--stable NAME]", "search agent packages in local stable clones (case-insensitive on name or description)"},
+		{"agent info STABLE/PACKAGE", "show a package's manifest, requests and bundled files without installing it"},
 	},
 	projectHead: "project commands (repo-root harness.toml, discovered by walking up from cwd):",
 	projectCmds: [][2]string{
