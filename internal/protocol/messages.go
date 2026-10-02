@@ -437,6 +437,11 @@ type HarnessInfo struct {
 	// defined by an installed package (SPEC-0026 REQ-7). On the wire so the
 	// TUI edit form can round-trip it; the TUI never edits it.
 	Source string `json:"source,omitempty"`
+	// PackageKeys names the effective keys the resolved package's manifest
+	// supplied (SPEC-0026 REQ-12), so describe can mark each field as the
+	// package's or the operator's own. Empty on daemons older than
+	// ProtoMinor 22, where describe shows the source without attribution.
+	PackageKeys []string `json:"package_keys,omitempty"`
 	// LastStarted / LastExitAt (RFC 3339) bound the harness's latest run, so a
 	// client can attribute a session to the harness whose run covers it, not
 	// merely to one sharing its workdir (SPEC-0006 REQ "Run Correlation";

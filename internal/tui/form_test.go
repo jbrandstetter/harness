@@ -1012,6 +1012,11 @@ var harnessFormFields = []string{
 	// is listed here only so the census below (which walks every
 	// core.Harness field) doesn't flag it as unaccounted for.
 	"HoursExpr",
+	// PackageKeys is the same kind of derived field (SPEC-0026 REQ-12):
+	// config.Parse recomputes it from the package's manifest on every load,
+	// it is never serialized to TOML, and the form's save path can neither
+	// carry nor drop it.
+	"PackageKeys",
 }
 
 // TestHarnessFormCoversEveryHarnessField is the census half of the issue #161
