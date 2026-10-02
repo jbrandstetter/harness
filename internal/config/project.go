@@ -210,6 +210,12 @@ func ParseProject(data []byte, filename string) (*Project, error) {
 		if len(h.parts) >= 1 && (h.parts[0] == "skills" || h.parts[0] == "skill_repo") {
 			return nil, forbiddenTableErr(filename, full, h.line)
 		}
+		// A stable is a git remote this machine is told to trust: a cloned
+		// repository must not be able to expand what is trusted on the
+		// machine that clones it. Governing: SPEC-0026 REQ-1.
+		if len(h.parts) >= 1 && h.parts[0] == "stable" {
+			return nil, forbiddenTableErr(filename, full, h.line)
+		}
 		// Trigger sources are daemon-owned: the daemon holds a channel
 		// session and serves a webhook route from the config of record, and
 		// a project harness never enters that view. A project source would
