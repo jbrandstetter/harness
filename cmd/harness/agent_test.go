@@ -421,7 +421,7 @@ func TestAgentSearchEmptyStable(t *testing.T) {
 func TestAgentInfoDoesNotInstall(t *testing.T) {
 	e := newAgentEnv(t)
 	remote, _ := agentRemote(t, map[string]string{
-		"packages/pr-reviewer/package.toml": agentPkg,
+		"packages/pr-reviewer/package.toml":           agentPkg,
 		"packages/pr-reviewer/skills/review/SKILL.md": "---\nname: review\n---\nbody",
 	})
 	if _, _, err := e.run("agent", "stable", "add", "stump-wtf", remote); err != nil {
