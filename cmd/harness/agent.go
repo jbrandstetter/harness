@@ -29,6 +29,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stump-wtf/harness/internal/agentpkg"
+	"github.com/stump-wtf/harness/internal/agentpkg/scan"
 	"github.com/stump-wtf/harness/internal/config"
 	"github.com/stump-wtf/harness/internal/config/tomledit"
 	"github.com/stump-wtf/harness/internal/core"
@@ -409,9 +410,10 @@ func newAgentInfoCmd(g *globalOpts) *cobra.Command {
 	return cmd
 }
 
-// runAgentInfo prints a package's manifest, [requests] table and bundled
-// file list from the stable's local clone, without installing anything
-// (SPEC-0026 REQ-2: no entry appears under the content-addressed store).
+// runAgentInfo prints a package's manifest, [requests] table, scan findings
+// and bundled file list from the stable's local clone, without installing
+// anything (SPEC-0026 REQ-2: no entry appears under the content-addressed
+// store; REQ-5: the findings and the no-guarantee statement print too).
 func runAgentInfo(cmd *cobra.Command, o verbOpts, ref string) error {
 	slash := strings.IndexByte(ref, '/')
 	if slash < 0 {
@@ -432,6 +434,12 @@ func runAgentInfo(cmd *cobra.Command, o verbOpts, ref string) error {
 		return err
 	}
 	files, err := agentpkg.BundledFiles(stable, pkg)
+	if err != nil {
+		return err
+	}
+	// The scan runs read-only over the local clone (SPEC-0026 REQ-5): info
+	// never fetches and never writes anything under the pin store.
+	findings, err := scan.Scan(agentpkg.PackageDir(stable, pkg), man)
 	if err != nil {
 		return err
 	}
@@ -497,10 +505,18 @@ func runAgentInfo(cmd *cobra.Command, o verbOpts, ref string) error {
 		fmt.Fprintf(out, "  network %t\n", *req.Network)
 	}
 
+	fmt.Fprintf(out, "scan findings:\n")
+	if len(findings) == 0 {
+		fmt.Fprintf(out, "  none\n")
+	}
+	for _, f := range findings {
+		fmt.Fprintf(out, "  %s:%d  %s  %s\n", f.File, f.Line, f.PatternID, f.Severity)
+	}
 	fmt.Fprintf(out, "bundled files:\n")
 	for _, f := range files {
 		fmt.Fprintf(out, "  %s\n", f)
 	}
+	fmt.Fprintf(out, "%s\n", agentpkg.NoGuarantee)
 	return nil
 }
 
