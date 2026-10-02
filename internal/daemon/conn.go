@@ -109,6 +109,17 @@ func (c *conn) handshake() bool {
 		return false
 	}
 
+	// Honor an events subscription (SPEC-0002 REQ "Event Subscription"). A
+	// one-shot CLI omits "events" and never gets a forwarder. Registered
+	// BEFORE the HELLO reply: the reply is what unblocks the client, and a
+	// subscriber that starts emitting-triggering work the moment Dial
+	// returns must not race the registration — the queue must exist before
+	// the client can ask for anything that broadcasts (seen on main's CI:
+	// a subscriber dialed before a trigger still missed job_run_started).
+	if wants(hello.Wants, "events") {
+		c.sub = c.srv.subscribe()
+	}
+
 	// Reply HELLO with our versions + capabilities.
 	reply := protocol.Hello{
 		ProtoVersion:  protocol.ProtoVersion,
@@ -119,10 +130,7 @@ func (c *conn) handshake() bool {
 		return false
 	}
 
-	// Honor an events subscription (SPEC-0002 REQ "Event Subscription"). A
-	// one-shot CLI omits "events" and never gets a forwarder.
-	if wants(hello.Wants, "events") {
-		c.sub = c.srv.subscribe()
+	if c.sub != nil {
 		c.srv.wg.Add(1)
 		go c.forwardEvents()
 	}

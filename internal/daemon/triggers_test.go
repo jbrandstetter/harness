@@ -10,6 +10,9 @@ package daemon
 // "Handshake And Versioning".
 //
 // @joestump 09/24/2026 - Introduced for stump.wtf/harness#476.
+//
+// @joestump-agent 10/02/2026 - Scaled the job_run_* read deadline with the
+// go test budget; the fixed 10s failed on a loaded runner (main CI run 16079).
 
 import (
 	"encoding/json"
@@ -18,6 +21,7 @@ import (
 	"time"
 
 	"github.com/stump-wtf/harness/internal/protocol"
+	"github.com/stump-wtf/harness/internal/testwait"
 )
 
 // TestJobsListsAnEventOnlyHarness: jobs includes every TRIGGERED harness, and
@@ -76,7 +80,9 @@ func TestJobRunEventsCarryTheirSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	pc := sub.Conn()
-	_ = sub.SetReadDeadline(time.Now().Add(10 * time.Second))
+	// Scaled by testwait.Budget: the run's start and finish are asynchronous
+	// events, and on a loaded CI runner a fixed 10s was not enough.
+	_ = sub.SetReadDeadline(time.Now().Add(testwait.Budget(t, 10*time.Second)))
 	seen := map[protocol.EventKind]protocol.EventMsg{}
 	for len(seen) < 2 {
 		f, err := pc.ReadFrame()
