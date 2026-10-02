@@ -32,11 +32,20 @@ func readRetype(w io.Writer, ref string) (string, error) {
 		return "", errors.New("agent: cannot prompt for a retype on a non-interactive stdin")
 	}
 	fmt.Fprintf(w, "agent: retype %s to continue: ", ref)
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-	if err != nil && line == "" {
+	line, err := readLine()
+	if err != nil {
 		return "", fmt.Errorf("agent: read retype: %w", err)
 	}
 	return strings.TrimSpace(line), nil
+}
+
+// readLine reads one line from stdin (TTY or pipe).
+func readLine() (string, error) {
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && line == "" {
+		return "", err
+	}
+	return line, nil
 }
 
 // runGate drives the confirmation decision to a terminal outcome. A Retype
@@ -58,10 +67,19 @@ func runGate(cmd *cobra.Command, in agentpkg.DecisionInput) error {
 	case agentpkg.Proceed:
 		return nil
 	case agentpkg.Confirm:
-		// The ordinary y/N prompt lands with the install command (#813);
-		// until then an interactive Confirm that reaches here is a wiring
-		// bug, not a silent pass.
-		return errors.New("agent: confirmation prompt is not wired for this command yet")
+		// The ordinary y/N prompt: only ever asked on an interactive stdin
+		// (Decide refuses non-interactive runs before returning Confirm).
+		fmt.Fprintf(cmd.OutOrStdout(), "agent: proceed? [y/N]: ")
+		typed, err := readLine()
+		if err != nil {
+			return fmt.Errorf("agent: read confirmation: %w", err)
+		}
+		switch strings.ToLower(strings.TrimSpace(typed)) {
+		case "y", "yes":
+			return nil
+		default:
+			return errors.New("agent: cancelled")
+		}
 	default:
 		if d.Blocked {
 			return fmt.Errorf("%w: %s", agentpkg.ErrBlockedFinding, d.Reason)

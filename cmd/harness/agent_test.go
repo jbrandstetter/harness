@@ -40,6 +40,15 @@ func newAgentEnv(t *testing.T) *agentEnv {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", dir)
+	// Never reach a real daemon from a test: reload notices are fine, a
+	// reload of the operator's live daemon is not.
+	t.Setenv("HARNESS_SOCKET", filepath.Join(dir, "none.sock"))
+	// The store is deliberately read-only, so the temp dir's cleanup needs
+	// write permission restored first.
+	t.Cleanup(func() {
+		_ = agentpkg.ChmodTreeWritable(agentpkg.StateHome())
+		_ = os.RemoveAll(agentpkg.StateHome())
+	})
 	cliui.SetJSON(false)
 	t.Cleanup(func() { cliui.SetJSON(false) })
 	return &agentEnv{t: t, stateDir: dir, cfgPath: filepath.Join(dir, "harness.toml")}

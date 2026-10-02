@@ -29,6 +29,26 @@ func Run(dir string, args ...string) (string, error) {
 	return string(out), err
 }
 
+// Raw runs git with args in dir and returns stdout as raw bytes, with
+// stderr carried on the error. Binary outputs (git archive) use this.
+func Raw(dir string, args ...string) ([]byte, error) {
+	cmd := exec.Command("git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			return nil, fmt.Errorf("git %s: %w", args[0], err)
+		}
+		return nil, fmt.Errorf("git %s: %w: %s", args[0], err, msg)
+	}
+	return stdout.Bytes(), nil
+}
+
 // Output runs git with args in dir and returns trimmed stdout only, with
 // stderr carried on the error. Read-only commands use this so a warning on
 // stderr cannot pollute a parsed ref.

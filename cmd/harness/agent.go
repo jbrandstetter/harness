@@ -45,6 +45,9 @@ func newAgentCmd(g *globalOpts) *cobra.Command {
 	}
 	cmd.AddCommand(
 		newAgentStableCmd(g),
+		newAgentInstallCmd(g),
+		newAgentUninstallCmd(g),
+		newAgentPruneCmd(g),
 		newAgentSearchCmd(g),
 		newAgentInfoCmd(g),
 	)

@@ -232,29 +232,13 @@ func LoadPackage(stable, pkg string) (*Manifest, error) {
 // BundledFiles lists the package's bundled files as slash-separated paths
 // relative to its package directory, sorted. It reads the local clone only.
 func BundledFiles(stable, pkg string) ([]string, error) {
-	root := PackageDir(stable, pkg)
-	var files []string
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		files = append(files, filepath.ToSlash(rel))
-		return nil
-	})
+	files, err := BundledFilesIn(PackageDir(stable, pkg))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("%w: package %q is not present in stable %q's clone", ErrUnknownPackage, pkg, stable)
 		}
 		return nil, fmt.Errorf("agentpkg: list files of %s/%s: %w", stable, pkg, err)
 	}
-	sort.Strings(files)
 	return files, nil
 }
 
