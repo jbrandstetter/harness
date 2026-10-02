@@ -164,6 +164,32 @@ func formatArgv(argv []string) string {
 	return "[" + strings.Join(parts, ", ") + "]"
 }
 
+// describeMark returns the origin marker describe uses on each effective
+// key of a package-sourced harness (SPEC-0026 REQ-12): a key the package's
+// manifest supplied renders "(package)", the operator's own override
+// "(local)". A hand-written harness (no source) and a daemon older than the
+// package_keys wire field both render the value unchanged.
+func describeMark(h protocol.HarnessInfo) func(key, value string) string {
+	packageKey := func(key string) bool {
+		for _, k := range h.PackageKeys {
+			if k == key {
+				return true
+			}
+		}
+		return false
+	}
+	attributable := h.Source != "" && len(h.PackageKeys) > 0
+	return func(key, value string) string {
+		if !attributable {
+			return value
+		}
+		if packageKey(key) {
+			return value + " (package)"
+		}
+		return value + " (local)"
+	}
+}
+
 func cmdDescribe(c *client.Client, o verbOpts) error {
 	h, err := c.Describe(o.name)
 	if err != nil {
@@ -209,6 +235,15 @@ func cmdDescribe(c *client.Client, o verbOpts) error {
 			t.Row("last intent change", t.faintPlain(cell))
 		}
 	}
+	// A package-sourced harness shows its pin and where each effective key
+	// came from: the package's manifest, or the operator's own table
+	// (SPEC-0026 REQ-12). A hand-written harness renders exactly as before,
+	// and a daemon older than the package_keys wire field shows the source
+	// without per-field attribution.
+	mark := describeMark(h)
+	if h.Source != "" {
+		t.Row("source", t.faintPlain(h.Source))
+	}
 	// A prompt harness has no configured cmd — show what the user wrote (the
 	// prompt), not the synthesized agent argv (ADR-0011 spawn-time synthesis).
 	switch {
@@ -220,13 +255,13 @@ func cmdDescribe(c *client.Client, o verbOpts) error {
 		// (ADR-0018).
 		t.Row("prompt_file", t.faintPlain(h.PromptFile))
 	default:
-		t.Row("harness", t.faintPlain(h.Adapter))
+		t.Row("harness", t.faintPlain(mark("harness", h.Adapter)))
 		// A command harness's argv is what runs, so it is the row an operator
 		// came for. Each element is quoted, TOML-style, because the element
 		// boundaries are the point: "a b" is one argument, not two, and no
 		// shell ever re-splits it. Governing: SPEC-0017 REQ-16 "Visibility".
 		if len(h.Argv) > 0 {
-			t.Row("argv", t.faintPlain(formatArgv(h.Argv)))
+			t.Row("argv", t.faintPlain(mark("argv", formatArgv(h.Argv))))
 		}
 		// The binding decides whether this harness is observed at all, so
 		// it is shown beside the argv it describes (SPEC-0017 REQ-4).
@@ -235,20 +270,20 @@ func cmdDescribe(c *client.Client, o verbOpts) error {
 		}
 	}
 	if h.Model != "" {
-		t.Row("model", t.faintPlain(h.Model))
+		t.Row("model", t.faintPlain(mark("model", h.Model)))
 	}
 	if h.AutoAccept {
-		t.Row("auto_accept", t.faintPlain("true"))
+		t.Row("auto_accept", t.faintPlain(mark("auto_accept", "true")))
 	}
 	// SPEC-0018 REQ-11: the claude-code one-shot persona keys, shown when set.
 	if h.SystemPromptFile != "" {
-		t.Row("system_prompt_file", t.faintPlain(h.SystemPromptFile))
+		t.Row("system_prompt_file", t.faintPlain(mark("system_prompt_file", h.SystemPromptFile)))
 	}
 	if h.MCPConfig != "" {
-		t.Row("mcp_config", t.faintPlain(h.MCPConfig))
+		t.Row("mcp_config", t.faintPlain(mark("mcp_config", h.MCPConfig)))
 	}
 	if len(h.AllowedTools) > 0 {
-		t.Row("allowed_tools", t.faintPlain(strings.Join(h.AllowedTools, ", ")))
+		t.Row("allowed_tools", t.faintPlain(mark("allowed_tools", strings.Join(h.AllowedTools, ", "))))
 	}
 	t.Row("backend", t.faintPlain(h.Backend))
 	switch {

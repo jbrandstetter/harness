@@ -536,7 +536,10 @@ override. `harness doctor` SHALL add a warn row for any harness whose
 `source` pin is missing from local disk, distinct from an ordinary load
 error, when config as a whole otherwise loaded (i.e., when the missing pin
 was caught before the rest of the file, `doctor` reports it as a load
-failure instead, per existing behavior).
+failure instead, per existing behavior). Clarification (issue #815): the
+row reads the running daemon's harness records — its last-good config
+view — which is the only place a pin can be referenced while missing from
+disk: one pruned or deleted after the daemon loaded its config.
 
 #### Scenario: list shows staleness without fetching
 
