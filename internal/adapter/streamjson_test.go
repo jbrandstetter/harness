@@ -56,7 +56,7 @@ func TestStreamJSONTallyClosesBeforeNextContent(t *testing.T) {
 		`{"type":"tool_progress","heartbeat":true,"elapsed_time_seconds":60}`+"\n",
 		`{"type":"assistant","message":{"content":[{"type":"text","text":"Done."}]}}`+"\n",
 	)
-	want := "[1 heartbeat over 30s]\r[2 heartbeats over 1m00s]\nDone.\n"
+	want := "[1 heartbeat over 30s]\r[2 heartbeats over 1m00s]\r\nDone.\r\n"
 	if got != want {
 		t.Errorf("tally did not close cleanly before the next line:\n got %q\nwant %q", got, want)
 	}
@@ -64,28 +64,28 @@ func TestStreamJSONTallyClosesBeforeNextContent(t *testing.T) {
 	got = renderAll(t, got,
 		`{"type":"tool_progress","heartbeat":true,"elapsed_time_seconds":10}`+"\n",
 	)
-	if !strings.Contains(got, "\n[1 heartbeat over 10s]") {
+	if !strings.Contains(got, "\r\n[1 heartbeat over 10s]") {
 		t.Errorf("a second run did not start its own tally:\n%q", got)
 	}
 }
 
 func TestStreamJSONToolUseLeadsWithDescription(t *testing.T) {
 	got := renderAll(t, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"git push origin main","description":"Push branch to GitHub"}}]}}`+"\n")
-	if got != "▸ Push branch to GitHub\n" {
+	if got != "▸ Push branch to GitHub\r\n" {
 		t.Errorf("tool_use did not lead with its description:\n%q", got)
 	}
 }
 
 func TestStreamJSONToolUseFallsBackToName(t *testing.T) {
 	got := renderAll(t, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Agent","input":{"prompt":"do things"}}]}}`+"\n")
-	if got != "▸ Agent\n" {
+	if got != "▸ Agent\r\n" {
 		t.Errorf("tool_use without a description did not fall back to the tool name:\n%q", got)
 	}
 }
 
 func TestStreamJSONTextBlocksPlain(t *testing.T) {
 	got := renderAll(t, `{"type":"assistant","message":{"content":[{"type":"text","text":"Looking at the failing test now.\n"},{"type":"text","text":"Second thought."}]}}`+"\n")
-	want := "Looking at the failing test now.\nSecond thought.\n"
+	want := "Looking at the failing test now.\r\nSecond thought.\r\n"
 	if got != want {
 		t.Errorf("text blocks did not render as plain text:\n got %q\nwant %q", got, want)
 	}
@@ -93,7 +93,7 @@ func TestStreamJSONTextBlocksPlain(t *testing.T) {
 
 func TestStreamJSONResultSummary(t *testing.T) {
 	got := renderAll(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":41230,"num_turns":12,"total_cost_usd":0.41}`+"\n")
-	want := "✓ result · success · 12 turns · 41s · $0.41\n"
+	want := "✓ result · success · 12 turns · 41s · $0.41\r\n"
 	if got != want {
 		t.Errorf("result line:\n got %q\nwant %q", got, want)
 	}
@@ -116,21 +116,23 @@ func TestStreamJSONNoiseSkipped(t *testing.T) {
 
 func TestStreamJSONNonJSONPassthrough(t *testing.T) {
 	raw := "bash: line 1: foo: command not found\n\x1b[31mred escape output\x1b[0m\n"
-	if got := renderAll(t, raw); got != raw {
+	want := "bash: line 1: foo: command not found\r\n\x1b[31mred escape output\x1b[0m\r\n"
+	if got := renderAll(t, raw); got != want {
 		t.Errorf("non-JSON terminal output was not passed through byte-for-byte:\n got %q\nwant %q", got, raw)
 	}
 }
 
 func TestStreamJSONUnparseableJSONPassthrough(t *testing.T) {
 	raw := "{not json at all\n"
-	if got := renderAll(t, raw); got != raw {
+	if got := renderAll(t, raw); got != "{not json at all\r\n" {
 		t.Errorf("unparseable JSON was not passed through:\n got %q\nwant %q", got, raw)
 	}
 }
 
 func TestStreamJSONUnknownEventKindPassthrough(t *testing.T) {
 	raw := `{"type":"control_request","request_id":"x","request":{"subtype":"can_use_tool"}}` + "\n"
-	if got := renderAll(t, raw); got != raw {
+	want := `{"type":"control_request","request_id":"x","request":{"subtype":"can_use_tool"}}` + "\r\n"
+	if got := renderAll(t, raw); got != want {
 		t.Errorf("unmodeled event kind was not passed through:\n got %q\nwant %q", got, raw)
 	}
 }
@@ -138,15 +140,32 @@ func TestStreamJSONUnknownEventKindPassthrough(t *testing.T) {
 func TestStreamJSONLineSplitAcrossChunks(t *testing.T) {
 	line := `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"description":"Split across reads"}}]}}`
 	got := renderAll(t, line[:20], line[20:60], line[60:]+"\n")
-	if got != "▸ Split across reads\n" {
+	if got != "▸ Split across reads\r\n" {
 		t.Errorf("a line split across chunks did not render once:\n%q", got)
 	}
 }
 
 func TestStreamJSONCRLEFPassthrough(t *testing.T) {
 	raw := "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}\r\n"
-	if got := renderAll(t, raw); got != "hi\n" {
+	if got := renderAll(t, raw); got != "hi\r\n" {
 		t.Errorf("CRLF line was not normalized:\n%q", got)
+	}
+}
+
+// The PTY terminates each guest line with CRLF and the VT emulator treats a
+// bare LF as "down one row, no carriage return", so every byte the formatter
+// emits must carry its CR (#877).
+func TestStreamJSONFormatPTYNeverEmitsBareLF(t *testing.T) {
+	in := "bash: line 1: foo: command not found\r\n" +
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"First line.\nSecond line."}]}}\r\n` +
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls","description":"List files"}}]}}\r\n` +
+		`{"type":"tool_progress","heartbeat":true,"elapsed_time_seconds":30}\r\n` +
+		`{"type":"result","subtype":"success","is_error":false,"duration_ms":1000,"num_turns":1,"total_cost_usd":0.01}\r\n`
+	got := renderAll(t, in)
+	for i := 1; i < len(got); i++ {
+		if got[i] == '\n' && got[i-1] != '\r' {
+			t.Fatalf("a bare \\n reached the emulator; every LF must be a CRLF pair:\n%q", got)
+		}
 	}
 }
 

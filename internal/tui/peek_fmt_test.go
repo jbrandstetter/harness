@@ -46,6 +46,38 @@ func TestPeekFormatsClaudeCodeStreamJSON(t *testing.T) {
 	}
 }
 
+// TestPeekFormatterLinesStartAtColumnZero is the regression for #877: the
+// formatter consumed the CR the PTY's ONLCR added, so its lines staircased
+// instead of each starting its own row at column zero.
+func TestPeekFormatterLinesStartAtColumnZero(t *testing.T) {
+	m, _ := peekModelWithAdapter(t, "claude-code")
+	drain(m.syncPeekSession())
+
+	data := "Remote Control is only available with claude.ai subscriptions.\r\n" +
+		"Error: You must be logged in to use Remote Control.\r\n"
+	m.Update(attachDataMsg{sessionID: m.peekSess, data: []byte(data + data)})
+
+	rows := peekRows(m, 110, 30)
+	for _, want := range []string{
+		"Remote Control is only available with claude.ai subscriptions.",
+		"Error: You must be logged in to use Remote Control.",
+	} {
+		found := false
+		for _, row := range rows {
+			// Whole line, flush left: a staircased row carries the line after
+			// a run of spaces, and a wrapped one carries only a fragment.
+			if row == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("line not rendered on a row of its own: %q\n--- pane ---\n%s",
+				want, strings.Join(rows, "\n"))
+		}
+	}
+}
+
 func TestPeekOtherAdaptersStayByteFaithful(t *testing.T) {
 	for _, name := range []string{"", "crush", "generic"} {
 		m, _ := peekModelWithAdapter(t, name)
