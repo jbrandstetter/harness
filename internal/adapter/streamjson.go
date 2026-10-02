@@ -162,6 +162,34 @@ func (r *streamJSONRenderer) FormatPTY(chunk []byte) []byte {
 		out = append(out, r.buf...)
 		r.buf = r.buf[:0]
 	}
+	// The PTY's ONLCR ended every guest line with CRLF and renderLine
+	// consumed that CR, so put it back before the bytes reach the
+	// emulator, where a bare LF means "down one row" only (#877).
+	return onlcr(out)
+}
+
+// onlcr translates every bare \n into \r\n, leaving existing \r\n pairs
+// and lone \r untouched. Its semantics are exactly those of onlcr in
+// internal/tui/vtview.go; that function is copied rather than imported
+// because the adapter package must not depend on the TUI.
+//
+// The heartbeat tally rewrites itself with a lone \r (the cursor returns
+// to column zero and overwrites the line it painted), so that \r must not
+// gain a newline: only LFs are translated, and a CR already in front of
+// one is not duplicated.
+func onlcr(p []byte) []byte {
+	if !bytes.ContainsRune(p, '\n') {
+		return p
+	}
+	out := make([]byte, 0, len(p)+bytes.Count(p, []byte{'\n'}))
+	var prev byte
+	for _, b := range p {
+		if b == '\n' && prev != '\r' {
+			out = append(out, '\r')
+		}
+		out = append(out, b)
+		prev = b
+	}
 	return out
 }
 
