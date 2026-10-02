@@ -24,6 +24,7 @@ import (
 	"github.com/stump-wtf/harness/internal/core"
 	"github.com/stump-wtf/harness/internal/daemon"
 	"github.com/stump-wtf/harness/internal/supervisor"
+	"github.com/stump-wtf/harness/internal/testwait"
 )
 
 // clientKey mints an ed25519 signer plus its authorized_keys line for a test.
@@ -288,7 +289,8 @@ func TestRemoteSessionReleasesDaemonConns(t *testing.T) {
 
 	// Wait until the in-process TUI has dialed the daemon (two connections above
 	// baseline: control + events/attach) so we know the session truly landed.
-	if !waitForConns(daemonSrv, base+2, 5*time.Second) {
+	// Scaled by testwait.Budget for the same loaded-runner reason as below.
+	if !waitForConns(daemonSrv, base+2, testwait.Budget(t, 5*time.Second)) {
 		// Read some output to surface why it never connected, then fail.
 		go func() { io.Copy(io.Discard, stdout) }()
 		t.Fatalf("TUI never opened its daemon connections: ConnCount=%d want %d", daemonSrv.ConnCount(), base+2)
@@ -299,7 +301,11 @@ func TestRemoteSessionReleasesDaemonConns(t *testing.T) {
 	_ = sess.Close()
 	_ = conn.Close()
 
-	if !waitForConns(daemonSrv, base, 5*time.Second) {
+	// Scaled by testwait.Budget: on a loaded train runner the TUI's teardown
+	// after sess.Close() was not finished within a fixed 5s (merge-train
+	// commit 83efbd2, 10/02). Both waits stay bounded hang guards; the
+	// connection counts decide correctness.
+	if !waitForConns(daemonSrv, base, testwait.Budget(t, 5*time.Second)) {
 		t.Fatalf("daemon connections leaked after SSH session closed: ConnCount=%d want %d", daemonSrv.ConnCount(), base)
 	}
 }
