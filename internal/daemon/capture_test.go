@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/stump-wtf/harness/internal/protocol"
+	"github.com/stump-wtf/harness/internal/testwait"
 )
 
 // promptTOML is a harness that paints a permission dialog onto its screen and
@@ -37,7 +38,10 @@ description = "silent, no prompt"
 // daemon's projections are asynchronous, so every assertion below polls.
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	// Scaled by testwait.Budget: on a loaded CI runner a fixed 5s was not
+	// enough for the PTY feed to reach the emulator (main run 16079, 10/01).
+	// The budget is still a hang guard: cond decides correctness.
+	deadline := time.Now().Add(testwait.Budget(t, 5*time.Second))
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
@@ -73,7 +77,13 @@ func TestCaptureServesScreenWithoutTTY(t *testing.T) {
 			t.Fatalf("capture: %v", err)
 		}
 		cd = got
-		return strings.Contains(cd.Text, "Read outside the working directories")
+		// Poll for the whole dialog, not the first line: the guest writes
+		// the two lines in separate printf calls, and on a loaded runner the
+		// poll can observe the screen between them — the main run 16079
+		// failure captured only "Read outside the working directories" and
+		// then failed the "Proceed? (y/n)" assertion below.
+		return strings.Contains(cd.Text, "Read outside the working directories") &&
+			strings.Contains(cd.Text, "Proceed? (y/n)")
 	})
 	if !strings.Contains(cd.Text, "Proceed? (y/n)") {
 		t.Errorf("capture text = %q, want the whole dialog", cd.Text)
