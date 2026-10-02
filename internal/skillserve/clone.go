@@ -40,10 +40,10 @@ package skillserve
 
 import (
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/stump-wtf/harness/internal/gitcmd"
 	"github.com/stump-wtf/harness/internal/supervisor"
 )
 
@@ -87,13 +87,7 @@ type CloneInfo struct {
 
 // gitRO runs a read-only git command in dir. Nothing here mutates a clone.
 func gitRO(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("git %s: %w", args[0], err)
-	}
-	return strings.TrimSpace(string(out)), nil
+	return gitcmd.Output(dir, args...)
 }
 
 // defaultBranch reads the clone's recorded default branch (origin/HEAD),
