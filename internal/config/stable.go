@@ -50,9 +50,9 @@ func addStable(cfg *core.Config, filename, name string, line int, rs rawStable) 
 		cfg.Stables = map[string]core.Stable{}
 	}
 	cfg.Stables[name] = core.Stable{
-		Name:    name,
-		Remote:  strings.TrimSpace(rs.Remote),
-		Public:  public,
+		Name:   name,
+		Remote: strings.TrimSpace(rs.Remote),
+		Public: public,
 	}
 	cfg.StableOrder = append(cfg.StableOrder, name)
 	return nil
