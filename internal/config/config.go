@@ -34,6 +34,10 @@ import (
 type rawHarness struct {
 	Harness string   `toml:"harness"`
 	Args    []string `toml:"args"`
+	// PackageKeys records which effective keys the resolved package's
+	// manifest supplied (SPEC-0026 REQ-12): filled by applySource for every
+	// key it merged in, never decoded from TOML.
+	PackageKeys []string `toml:"-"`
 	// Argv is a `command` harness's whole process (SPEC-0017 REQ-2), and is
 	// rejected on every other kind. A plain slice checked on presence
 	// (non-nil), so `argv = []` on a claude-code harness is still refused.
@@ -1286,6 +1290,7 @@ func registerHarness(cfg *core.Config, filename, name string, line int, rh rawHa
 	h := core.Harness{
 		Name:             name,
 		PackageSource:    sourceValue,
+		PackageKeys:      rh.PackageKeys,
 		Adapter:          adapter,
 		Args:             rh.Args,
 		Argv:             rh.Argv,

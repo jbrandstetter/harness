@@ -73,6 +73,7 @@ type doctorResult struct {
 	// Skills is the skill-repo serving-clone row (SPEC-0007 REQ
 	// "Default-Branch Gate"); absent when no skill repo is declared.
 	Skills     *checkResult `json:"skills,omitempty"`
+	AgentPins  *checkResult `json:"agent_pins,omitempty"`
 	Notify     *checkResult `json:"notify,omitempty"`
 	NotifyTest *checkResult `json:"notify_test,omitempty"`
 	// Settings reports every process setting with the source that supplied it,
@@ -322,6 +323,15 @@ func runDoctorWith(o verbOpts, notifyTest bool) int {
 	// branch or dirty keeps its previous index, so doctor is the only place
 	// the condition is visible.
 	if r := skillsCheck(cfg, c); r != nil {
+		rows = append(rows, *r)
+	}
+
+	// --- Check: agent package pins -----------------------------------------
+	// Governing: SPEC-0026 REQ-12. A package-sourced harness whose pin was
+	// pruned or deleted after the daemon loaded its config: the daemon keeps
+	// serving the last-good view, so only this row names it. A missing pin
+	// that fails the config load itself is the config row's load failure.
+	if r := agentPinsCheck(c); r != nil {
 		rows = append(rows, *r)
 	}
 
@@ -589,6 +599,9 @@ func emitDoctorJSON(w io.Writer, rows []check, resolved []settings.Resolved, tel
 		case "operating_hours":
 			c := cr
 			res.OperatingHours = &c
+		case "agent_pins":
+			c := cr
+			res.AgentPins = &c
 		case "skills":
 			c := cr
 			res.Skills = &c
