@@ -1,6 +1,7 @@
 package agentpkg
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -85,6 +86,14 @@ func TestResolvePinDefaultBranchTip(t *testing.T) {
 	// An explicit version resolves through the clone too.
 	if _, err := ResolvePin("stump-wtf", "pr-reviewer", "main"); err != nil {
 		t.Fatalf("resolve by branch name: %v", err)
+	}
+}
+
+// A version beginning with "-" is refused before it can reach git: fed to
+// rev-parse it would be parsed as an option, not a ref.
+func TestResolvePinRefusesOptionLikeVersion(t *testing.T) {
+	if _, err := ResolvePin("stump-wtf", "pr-reviewer", "--flags"); !errors.Is(err, ErrInvalidSource) {
+		t.Fatalf("an option-like version must be refused as an invalid source, got %v", err)
 	}
 }
 

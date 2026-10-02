@@ -42,6 +42,9 @@ func ResolvePin(stable, pkg, version string) (Source, error) {
 	if !NamePattern.MatchString(pkg) {
 		return Source{}, fmt.Errorf("%w: package name %q must match %s", ErrInvalidSource, pkg, NamePattern)
 	}
+	if strings.HasPrefix(version, "-") {
+		return Source{}, fmt.Errorf("%w: version %q must not begin with \"-\"", ErrInvalidSource, version)
+	}
 	if shaRe.MatchString(version) {
 		if _, err := os.Stat(PinDir(Source{Stable: stable, Package: pkg, SHA: version})); err == nil {
 			return Source{Stable: stable, Package: pkg, SHA: version}, nil
