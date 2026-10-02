@@ -37,6 +37,10 @@ var (
 	ErrManifestViolation = errors.New("manifest schema violation")
 	// ErrDivergedClone names a stable clone that cannot fast-forward.
 	ErrDivergedClone = errors.New("diverged stable clone")
+	// ErrBlockedFinding names an install or upgrade refused by a
+	// high-severity scan finding. Only --force-unsafe with a re-typed
+	// <stable>/<package> clears it (SPEC-0026 REQ-5).
+	ErrBlockedFinding = errors.New("blocked high-severity finding")
 )
 
 // NamePattern is the shared stable and package name grammar (SPEC-0026 REQ-1,
