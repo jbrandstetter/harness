@@ -19,6 +19,7 @@ import (
 	"github.com/stump-wtf/harness/internal/daemon"
 	"github.com/stump-wtf/harness/internal/protocol"
 	"github.com/stump-wtf/harness/internal/supervisor"
+	"github.com/stump-wtf/harness/internal/testwait"
 )
 
 // bootIntentDaemon is bootTestDaemon with a real resident command, so the
@@ -80,10 +81,11 @@ func TestDescribeShowsLastIntentChange(t *testing.T) {
 	if _, err := callLifecycle(c, "start", "demo", ""); err != nil {
 		t.Fatal(err)
 	}
-	// 30s, not the shared 5s: this test boots a whole daemon and races the
-	// whole package, and a loaded CI runner has starved the 5s wait (#835
-	// review, CI run 15822).
-	waitIntentRunning(t, c, "demo", 30*time.Second)
+	// Scaled by testwait.Budget, not the shared 5s: this test boots a whole
+	// daemon and races the whole package, and a loaded CI runner starved both
+	// the 5s wait (#835 review, CI run 15822) and a fixed 30s (CI run on
+	// 10/01). The budget is a hang guard, not a correctness window.
+	waitIntentRunning(t, c, "demo", testwait.Budget(t, 30*time.Second))
 	h, err = c.Describe("demo")
 	if err != nil {
 		t.Fatal(err)
@@ -100,7 +102,7 @@ func TestDescribeShowsLastIntentChange(t *testing.T) {
 	if _, err := callLifecycle(c, "stop", "demo", ""); err != nil {
 		t.Fatal(err)
 	}
-	waitIntentState(t, c, "demo", "stopped", 30*time.Second)
+	waitIntentState(t, c, "demo", "stopped", testwait.Budget(t, 30*time.Second))
 	h, err = c.Describe("demo")
 	if err != nil {
 		t.Fatal(err)
