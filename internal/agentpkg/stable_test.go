@@ -375,14 +375,24 @@ harness = "claude-code"
 	if _, err := CloneStable("stump-wtf", remote2); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ResolvePin("stump-wtf", "pr-reviewer", ""); err != nil {
+	src2, err := ResolvePin("stump-wtf", "pr-reviewer", "")
+	if err != nil {
 		t.Fatal(err)
 	}
-	// ResolvePin re-resolves the same tip; simulate the unset case by
-	// pointing at the new pin with a manifest that does not request.
-	src2, _ := ResolvePin("stump-wtf", "pr-reviewer", "")
-	tmp2, _ := Materialize(src2)
-	Place(src2, tmp2)
+	tmp2, err := Materialize(src2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Place(src2, tmp2); err != nil {
+		t.Fatal(err)
+	}
+	man2, err := LoadManifest(ManifestPath(src2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if man2.Requests.SkillPaths != nil {
+		t.Fatal("fixture: the second pin must leave the request unset")
+	}
 	if _, ok := BundleSkillsDir(src2.String()); ok {
 		t.Fatal("an unset request contributes no roots")
 	}
