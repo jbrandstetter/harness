@@ -5,10 +5,10 @@ package supervisor
 // The scheduler's gate pass decides when to hold, when to step a graceful
 // close, and when a close's conditions were met; this file is the Manager
 // half of those decisions. It owns the turn-state bridge (the daemon's
-// internal/runtrace watcher by default): Hold arms it, CloseStep samples it
-// and hands the observation to the supervisor's actor loop, and every path
-// that ends or cancels a close tears the watch down again, so the daemon does
-// no trace I/O outside a close.
+// internal/runtrace watcher by default): Hold (manager_holds.go) arms it,
+// CloseStep samples it and hands the observation to the supervisor's actor
+// loop, and every path that ends or cancels a close tears the watch down
+// again, so the daemon does no trace I/O outside a close.
 //
 // It also answers the pass's "when did this harness go out of hours" — the
 // instant a close's deadline is anchored to (SPEC-0012 REQ "Graceful
@@ -23,6 +23,9 @@ package supervisor
 //
 // @joestump-agent 09/22/2026 - Hold follows with the anchor the actor loop
 // settled on, so an unanchored close is watched until its real deadline.
+//
+// @joestump 10/04/2026 - Hold and Release take a hold reason and moved to
+// manager_holds.go; GateStatus answers the reason set (stump.wtf/harness#468).
 
 import (
 	"os"
@@ -50,44 +53,17 @@ type TurnBridge interface {
 const armSlack = time.Minute
 
 // GateStatus reports whether name is up (starting, running, degraded or
-// restarting — the states a close holds), whether it is held, and whether a
-// graceful close is in flight, for the scheduler's operating-hours gate pass.
-// ok is false for an unknown harness. Governing: SPEC-0012 REQ "Gate
-// Enforcement", REQ "Graceful Shutdown".
-func (m *Manager) GateStatus(name string) (up, held, closing, ok bool) {
+// restarting — the states a close holds), the reasons it is held for, and
+// whether a graceful close is in flight, for the scheduler's gate pass. ok is
+// false for an unknown harness. Governing: SPEC-0012 REQ "Gate Enforcement",
+// REQ "Graceful Shutdown"; SPEC-0021 REQ-14 (held became a reason set).
+func (m *Manager) GateStatus(name string) (up bool, holds core.HoldSet, closing, ok bool) {
 	s := m.get(name)
 	if s == nil {
-		return false, false, false, false
+		return false, 0, false, false
 	}
 	snap := s.Snapshot()
-	return snapUp(snap.State), snap.Held, snap.Closing, true
-}
-
-// Hold stops a gated harness for its operating hours without touching its
-// enabled intent. Under HoursShutdownGraceful a running harness only marks
-// its close and the Manager arms the turn-state watch for it; CloseStep
-// finishes the close. closeAt anchors the close's deadline; the Manager
-// consumes the lease record (if any) that just expired, since this hold is
-// what enforces its end. Governing: ADR-0019, SPEC-0012 REQ "Gate
-// Enforcement", REQ "Graceful Shutdown".
-func (m *Manager) Hold(name string, mode core.HoursShutdownMode, closeAt time.Time) {
-	m.mu.Lock()
-	s := m.supervisors[name]
-	delete(m.expiredLease, name) // consumed: this hold enforces the lease's end
-	m.mu.Unlock()
-	if s == nil {
-		return
-	}
-	s.Hold(mode, closeAt)
-	if snap := s.Snapshot(); snap.Closing {
-		// Follow with the anchor the actor loop settled on, not the
-		// caller's: an unanchored hold (closeAt zero) is capped from now
-		// there, and the watch's linger backstop must be bounded by that
-		// same instant rather than by the zero time, which would retire
-		// the watch on its first poll and end the close as "graceful
-		// unavailable".
-		m.follow(name, snap.CloseAt)
-	}
+	return snapUp(snap.State), snap.Holds, snap.Closing, true
 }
 
 // CloseStep advances name's graceful close by one observation, sampled from

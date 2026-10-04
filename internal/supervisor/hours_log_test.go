@@ -69,7 +69,7 @@ func TestHoldLogsNextOpen(t *testing.T) {
 
 	m.Start("gated")
 	waitFor(t, 3*time.Second, "running", func() bool { s, _ := m.Snapshot("gated"); return s.State == core.StateRunning })
-	m.Hold("gated", core.HoursShutdownImmediate, time.Time{})
+	m.Hold("gated", core.HoldHours, core.HoursShutdownImmediate, time.Time{})
 
 	log := waitLogContains(t, logDir, "gated", "held")
 	if !strings.Contains(log, "reason=operating_hours") {
@@ -95,7 +95,7 @@ func TestGracefulHoldLogsCloseStartNotHeld(t *testing.T) {
 
 	m.Start("gated")
 	waitFor(t, 3*time.Second, "running", func() bool { s, _ := m.Snapshot("gated"); return s.State == core.StateRunning })
-	m.Hold("gated", core.HoursShutdownGraceful, time.Now())
+	m.Hold("gated", core.HoldHours, core.HoursShutdownGraceful, time.Now())
 
 	log := waitLogContains(t, logDir, "gated", "close start")
 	if !strings.Contains(log, "reason=operating_hours") {
@@ -121,9 +121,9 @@ func TestReleaseLogsOpenWithNextClose(t *testing.T) {
 
 	m.Start("gated")
 	waitFor(t, 3*time.Second, "running", func() bool { s, _ := m.Snapshot("gated"); return s.State == core.StateRunning })
-	m.Hold("gated", core.HoursShutdownImmediate, time.Time{})
+	m.Hold("gated", core.HoldHours, core.HoursShutdownImmediate, time.Time{})
 	waitFor(t, 3*time.Second, "stopped", func() bool { s, _ := m.Snapshot("gated"); return s.State == core.StateStopped })
-	m.Release("gated")
+	m.Release("gated", core.HoldHours)
 
 	log := waitLogContains(t, logDir, "gated", "open")
 	if !strings.Contains(log, "reason=operating_hours") {

@@ -178,8 +178,9 @@ var stateValues = []string{stateRunning, stateStopped, stateFailed, stateFlappin
 //     happens to be in at the instant of the scrape.
 //   - running:  core running or starting. Starting is the spawn in progress,
 //     a moment long; calling it anything else would make every start blip.
-//   - stopped:  a harness held by its operating hours (SPEC-0012), whatever
-//     else the snapshot carries; then core stopped, stopping, or restarting
+//   - stopped:  a held harness — for its operating hours (SPEC-0012), a
+//     quota park or a spent budget (SPEC-0021 REQ-14) — whatever else the
+//     snapshot carries; then core stopped, stopping, or restarting
 //     outside a crash loop — no process is up at this instant (restarting is
 //     the restart_delay wait before a respawn). A harness failing too slowly
 //     to trip the crash window shows here, alternating with running, while
@@ -191,7 +192,9 @@ var stateValues = []string{stateRunning, stateStopped, stateFailed, stateFlappin
 // supervisor never holds a failed harness (hold refuses one, and every start
 // clears the hold), so held-and-failed cannot arise; were it to, failed is
 // the one that needs a human. Held is not a fifth state value: REQ-2's enum is
-// fixed, so held reads as stopped here.
+// fixed, so held reads as stopped here. A park is a hold like any other:
+// SPEC-0021 REQ-18 requires a harness held for quota to map to stopped,
+// never failed.
 //
 // A graceful close (SPEC-0012 REQ "Graceful Shutdown") is the exception: the
 // harness is already held but still up, finishing its agent's turn, so it
@@ -204,11 +207,14 @@ var stateValues = []string{stateRunning, stateStopped, stateFailed, stateFlappin
 //
 // @joestump-agent 09/22/2026 - A held harness mid graceful close (Closing,
 // arrived on rebase with #403) reads by its process state, not stopped.
+//
+// @joestump 10/04/2026 - Held is any hold reason now, not just hours
+// (stump.wtf/harness#468).
 func StateValue(s supervisor.Snapshot) string {
 	switch {
 	case s.State == core.StateFailed:
 		return stateFailed
-	case s.Held && !s.Closing:
+	case !s.Holds.Empty() && !s.Closing:
 		return stateStopped
 	case s.Flapping || s.State == core.StateDegraded:
 		return stateFlapping

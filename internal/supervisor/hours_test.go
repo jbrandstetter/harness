@@ -115,7 +115,7 @@ func TestHoldKeepsEnabledInStateJSONAndDoesNotRespawn(t *testing.T) {
 	before, _ := m.Snapshot("gated")
 
 	stop := watchEnabled(t, statePath, "gated")
-	m.Hold("gated", core.HoursShutdownImmediate, time.Time{})
+	m.Hold("gated", core.HoldHours, core.HoursShutdownImmediate, time.Time{})
 	ph := waitPersisted(t, statePath, "gated", core.StateStopped)
 	// Give a (wrong) respawn every chance to happen: many restart delays.
 	time.Sleep(100 * time.Millisecond)
@@ -134,8 +134,8 @@ func TestHoldKeepsEnabledInStateJSONAndDoesNotRespawn(t *testing.T) {
 		t.Errorf("persisted restart_count = %d, want %d (a hold is not a restart)", ph.RestartCount, before.RestartCount)
 	}
 	snap, _ := m.Snapshot("gated")
-	if snap.State != core.StateStopped || !snap.Held || !snap.Enabled {
-		t.Errorf("after hold: state=%s held=%v enabled=%v, want stopped/held/enabled", snap.State, snap.Held, snap.Enabled)
+	if snap.State != core.StateStopped || !snap.Holds.Has(core.HoldHours) || !snap.Enabled {
+		t.Errorf("after hold: state=%s held=%v enabled=%v, want stopped/held/enabled", snap.State, snap.Holds.Has(core.HoldHours), snap.Enabled)
 	}
 	if snap.RestartCount != before.RestartCount {
 		t.Errorf("restart count %d → %d across a hold", before.RestartCount, snap.RestartCount)
@@ -151,11 +151,11 @@ func TestReleaseStartsHeldHarness(t *testing.T) {
 	m, statePath := newStateManager(t, managerCfg(h), fastPolicy())
 	m.Start("gated")
 	waitFor(t, 3*time.Second, "running", func() bool { s, _ := m.Snapshot("gated"); return s.State == core.StateRunning })
-	m.Hold("gated", core.HoursShutdownImmediate, time.Time{})
-	m.Release("gated")
+	m.Hold("gated", core.HoldHours, core.HoursShutdownImmediate, time.Time{})
+	m.Release("gated", core.HoldHours)
 	snap, _ := m.Snapshot("gated")
-	if snap.State != core.StateRunning || snap.Held || !snap.Enabled {
-		t.Fatalf("after release: state=%s held=%v enabled=%v, want running/not held/enabled", snap.State, snap.Held, snap.Enabled)
+	if snap.State != core.StateRunning || snap.Holds.Has(core.HoldHours) || !snap.Enabled {
+		t.Fatalf("after release: state=%s held=%v enabled=%v, want running/not held/enabled", snap.State, snap.Holds.Has(core.HoldHours), snap.Enabled)
 	}
 	if ph := waitPersisted(t, statePath, "gated", core.StateRunning); !ph.Enabled {
 		t.Error("state.json enabled = false after release")
@@ -174,11 +174,11 @@ func TestHoldCancelsPendingRespawn(t *testing.T) {
 	waitState(t, s, core.StateRestarting)
 	before := s.Snapshot().RestartCount
 
-	s.Hold(core.HoursShutdownImmediate, time.Time{})
+	s.Hold(core.HoldHours, core.HoursShutdownImmediate, time.Time{})
 	time.Sleep(300 * time.Millisecond) // two restart delays
 	snap := s.Snapshot()
-	if snap.State != core.StateStopped || !snap.Held || !snap.Enabled {
-		t.Fatalf("state=%s held=%v enabled=%v, want stopped/held/enabled", snap.State, snap.Held, snap.Enabled)
+	if snap.State != core.StateStopped || !snap.Holds.Has(core.HoldHours) || !snap.Enabled {
+		t.Fatalf("state=%s held=%v enabled=%v, want stopped/held/enabled", snap.State, snap.Holds.Has(core.HoldHours), snap.Enabled)
 	}
 	if snap.RestartCount != before {
 		t.Errorf("restart count %d → %d: the cancelled respawn ran", before, snap.RestartCount)
@@ -201,10 +201,10 @@ func TestHoldDegradedResetsBackoff(t *testing.T) {
 	waitFor(t, 3*time.Second, "flapping", func() bool { return s.Snapshot().Flapping })
 	before := s.Snapshot().RestartCount
 
-	s.Hold(core.HoursShutdownImmediate, time.Time{})
+	s.Hold(core.HoldHours, core.HoursShutdownImmediate, time.Time{})
 	snap := s.Snapshot()
-	if snap.State != core.StateStopped || !snap.Held {
-		t.Fatalf("state=%s held=%v, want stopped/held", snap.State, snap.Held)
+	if snap.State != core.StateStopped || !snap.Holds.Has(core.HoldHours) {
+		t.Fatalf("state=%s held=%v, want stopped/held", snap.State, snap.Holds.Has(core.HoldHours))
 	}
 	if snap.Flapping || snap.NextRetryIn != 0 {
 		t.Errorf("flapping=%v next_retry_in=%v after hold, want reset", snap.Flapping, snap.NextRetryIn)
@@ -223,24 +223,24 @@ func TestHoldAndReleaseLeaveFailedAndDisabledAlone(t *testing.T) {
 	failed := newTestSupervisor(t, gated(shHarness("f", "exit 1", 0)), p)
 	failed.Start()
 	waitState(t, failed, core.StateFailed)
-	failed.Hold(core.HoursShutdownImmediate, time.Time{})
-	failed.Release()
-	if snap := failed.Snapshot(); snap.State != core.StateFailed || snap.Held {
-		t.Errorf("failed harness: state=%s held=%v, want failed/not held", snap.State, snap.Held)
+	failed.Hold(core.HoldHours, core.HoursShutdownImmediate, time.Time{})
+	failed.Release(core.HoldHours)
+	if snap := failed.Snapshot(); snap.State != core.StateFailed || snap.Holds.Has(core.HoldHours) {
+		t.Errorf("failed harness: state=%s held=%v, want failed/not held", snap.State, snap.Holds.Has(core.HoldHours))
 	}
 
 	stopped := newTestSupervisor(t, gated(shHarness("s", "while true; do sleep 0.02; done", 0)), fastPolicy())
 	stopped.Start()
 	waitState(t, stopped, core.StateRunning)
-	stopped.Hold(core.HoursShutdownImmediate, time.Time{})
+	stopped.Hold(core.HoldHours, core.HoursShutdownImmediate, time.Time{})
 	stopped.Stop() // operator stop while held: enabled=false, no longer held
-	if snap := stopped.Snapshot(); snap.Held || snap.Enabled {
-		t.Fatalf("after stop: held=%v enabled=%v, want neither", snap.Held, snap.Enabled)
+	if snap := stopped.Snapshot(); snap.Holds.Has(core.HoldHours) || snap.Enabled {
+		t.Fatalf("after stop: held=%v enabled=%v, want neither", snap.Holds.Has(core.HoldHours), snap.Enabled)
 	}
-	stopped.Release()
-	stopped.Hold(core.HoursShutdownImmediate, time.Time{})
-	if snap := stopped.Snapshot(); snap.State != core.StateStopped || snap.Held || snap.Enabled {
-		t.Errorf("operator-stopped harness: state=%s held=%v enabled=%v, want stopped, untouched", snap.State, snap.Held, snap.Enabled)
+	stopped.Release(core.HoldHours)
+	stopped.Hold(core.HoldHours, core.HoursShutdownImmediate, time.Time{})
+	if snap := stopped.Snapshot(); snap.State != core.StateStopped || snap.Holds.Has(core.HoldHours) || snap.Enabled {
+		t.Errorf("operator-stopped harness: state=%s held=%v enabled=%v, want stopped, untouched", snap.State, snap.Holds.Has(core.HoldHours), snap.Enabled)
 	}
 }
 
@@ -259,14 +259,14 @@ func TestAutostartHoldsGatedHarness(t *testing.T) {
 	m.Autostart()
 	waitFor(t, 3*time.Second, "plain running", func() bool { s, _ := m.Snapshot("plain"); return s.State == core.StateRunning })
 	snap, _ := m.Snapshot("gated")
-	if snap.State != core.StateStopped || !snap.Held || !snap.Enabled || !snap.LastStarted.IsZero() {
+	if snap.State != core.StateStopped || !snap.Holds.Has(core.HoldHours) || !snap.Enabled || !snap.LastStarted.IsZero() {
 		t.Fatalf("gated after autostart: state=%s held=%v enabled=%v started=%v, want never-started, held, enabled",
-			snap.State, snap.Held, snap.Enabled, snap.LastStarted)
+			snap.State, snap.Holds.Has(core.HoldHours), snap.Enabled, snap.LastStarted)
 	}
-	if up, held, closing, ok := m.GateStatus("gated"); !ok || up || !held || closing {
-		t.Errorf("GateStatus = up %v held %v closing %v ok %v, want down, held, not closing, known", up, held, closing, ok)
+	if up, holds, closing, ok := m.GateStatus("gated"); !ok || up || !holds.Has(core.HoldHours) || closing {
+		t.Errorf("GateStatus = up %v holds %s closing %v ok %v, want down, held for hours, not closing, known", up, holds, closing, ok)
 	}
-	m.Release("gated")
+	m.Release("gated", core.HoldHours)
 	waitFor(t, 3*time.Second, "released harness running", func() bool { s, _ := m.Snapshot("gated"); return s.State == core.StateRunning })
 	if ph := waitPersisted(t, statePath, "gated", core.StateRunning); !ph.Enabled {
 		t.Error("state.json enabled = false after autostart + release")
@@ -288,8 +288,8 @@ func TestReloadIntroducesGatedHarnessHeld(t *testing.T) {
 		gated(shHarness("newgated", "while true; do sleep 0.02; done", 0)),
 	))
 	snap, _ := m.Snapshot("newgated")
-	if snap.State != core.StateStopped || !snap.Held || !snap.Enabled {
-		t.Fatalf("new gated harness: state=%s held=%v enabled=%v, want stopped/held/enabled", snap.State, snap.Held, snap.Enabled)
+	if snap.State != core.StateStopped || !snap.Holds.Has(core.HoldHours) || !snap.Enabled {
+		t.Fatalf("new gated harness: state=%s held=%v enabled=%v, want stopped/held/enabled", snap.State, snap.Holds.Has(core.HoldHours), snap.Enabled)
 	}
 	if ph := waitPersisted(t, statePath, "newgated", core.StateStopped); !ph.Enabled {
 		t.Error("state.json does not record the new harness's intent as true")
@@ -307,7 +307,7 @@ func TestUseProfileRespectsTheGate(t *testing.T) {
 
 	// "held": operator-stopped, then made a member while out of hours.
 	m.Start("held")
-	m.Hold("held", core.HoursShutdownImmediate, time.Time{})
+	m.Hold("held", core.HoldHours, core.HoursShutdownImmediate, time.Time{})
 	m.Stop("held")
 	// "up": running in hours.
 	m.Start("up")
@@ -317,8 +317,8 @@ func TestUseProfileRespectsTheGate(t *testing.T) {
 	if !m.UseProfile("work") {
 		t.Fatal("UseProfile(work) = false")
 	}
-	if snap, _ := m.Snapshot("held"); snap.State != core.StateStopped || !snap.Held || !snap.Enabled {
-		t.Errorf("held member: state=%s held=%v enabled=%v, want stopped/held/enabled", snap.State, snap.Held, snap.Enabled)
+	if snap, _ := m.Snapshot("held"); snap.State != core.StateStopped || !snap.Holds.Has(core.HoldHours) || !snap.Enabled {
+		t.Errorf("held member: state=%s held=%v enabled=%v, want stopped/held/enabled", snap.State, snap.Holds.Has(core.HoldHours), snap.Enabled)
 	}
 	// Poll for the intent, not only the state: the Stop above already had
 	// "held" persisted stopped with enabled = false, so a state-only wait can
@@ -347,12 +347,12 @@ func TestHoldRacesNaturalExit(t *testing.T) {
 		s := newTestSupervisor(t, h, p)
 		s.Start()
 		time.Sleep(time.Duration(5+i%10) * time.Millisecond)
-		s.Hold(core.HoursShutdownImmediate, time.Time{})
+		s.Hold(core.HoldHours, core.HoursShutdownImmediate, time.Time{})
 		held := s.Snapshot()
 		time.Sleep(40 * time.Millisecond) // many restart delays
 		snap := s.Snapshot()
-		if snap.State != core.StateStopped || !snap.Held || !snap.Enabled {
-			t.Fatalf("iteration %d: state=%s held=%v enabled=%v, want stopped/held/enabled", i, snap.State, snap.Held, snap.Enabled)
+		if snap.State != core.StateStopped || !snap.Holds.Has(core.HoldHours) || !snap.Enabled {
+			t.Fatalf("iteration %d: state=%s held=%v enabled=%v, want stopped/held/enabled", i, snap.State, snap.Holds.Has(core.HoldHours), snap.Enabled)
 		}
 		if snap.RestartCount != held.RestartCount || snap.LastStarted != held.LastStarted {
 			t.Fatalf("iteration %d: respawned after the hold (restarts %d → %d)", i, held.RestartCount, snap.RestartCount)

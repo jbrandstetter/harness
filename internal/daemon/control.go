@@ -168,12 +168,15 @@ func (c *conn) infoFor(snap supervisor.Snapshot) protocol.HarnessInfo {
 			info.NextRun = next.Format(time.RFC3339)
 		}
 	}
+	// Hold reasons (ADR-0027, SPEC-0021 REQ-14, REQ-16): every reason the
+	// harness is held for, gated or not — a park or a spent budget holds an
+	// ungated harness too. Omitted when it is not held; there is no `held`.
+	info.HoldReasons = snap.Holds.Strings()
 	// Operating-hours projection (ADR-0019, SPEC-0012 REQ "Operating Hours
 	// Visibility"). Gated is the snapshot's own record of "has operating_hours"
-	// (set on the actor loop, so it can never disagree with Held/Closing below);
+	// (set on the actor loop, so it can never disagree with Holds/Closing);
 	// info.OperatingHours is the wire discriminator clients read against.
 	if snap.Gated {
-		info.Held = snap.Held
 		info.HoursShutdown = string(h.HoursShutdown)
 		if c.srv.sched != nil {
 			if in, next, hasNext, ok := c.srv.sched.HoursStatus(snap.Name); ok {

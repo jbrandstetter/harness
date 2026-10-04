@@ -1,23 +1,13 @@
 package supervisor
 
-// Operating Hours Hold, Close And Release
+// Operating Hours Close
 //
 // A gated harness (one with operating_hours) is held down outside its windows
 // and started again when one opens, without its `enabled` intent ever
 // changing. The scheduler's gate pass decides WHEN (internal/scheduler,
-// gate.go); this file is the HOW, and it runs on the actor loop so that
-// "still up? then hold" is atomic with the process's own exits: once a hold
-// is accepted, an exit that follows — from the close's own stop or the
-// process's own accord — is a hold exit and never reaches the restart
-// policy, so it is neither a crash nor a respawn and the restart count
-// cannot move.
-//
-// A hold never touches s.enabled, not even transiently. gracefulStopKeepEnabled
-// (the manual-restart path) clears it for the length of the stop, and every
-// transition inside that window publishes a snapshot the debounced persist
-// loop may write — which would leave `enabled = false` in state.json for a
-// hold that no start follows to heal it. The exit is already consumed by
-// killProcess, so that guard buys nothing here.
+// gate.go); the hold and the release themselves are the generic hold-reason
+// machinery in holds.go, of which hours is one reason. This file is what
+// stays hours-shaped: the graceful close and the hours-reading helpers.
 //
 // A graceful close (hours_shutdown = "graceful", the default) marks the
 // supervisor Closing and returns; the scheduler tick then drives
@@ -40,6 +30,9 @@ package supervisor
 // @joestump-agent 09/21/2026 - Graceful close for #384: Closing marks a close
 // in flight, closeStep advances it on the tick, and an exit while held is
 // consumed by the gate instead of the restart policy.
+//
+// @joestump 10/04/2026 - Hold and release moved to holds.go, generalized from
+// a held flag to a set of reasons (stump.wtf/harness#468).
 
 import (
 	"time"
@@ -56,36 +49,6 @@ const (
 	closeSettle = 10 * time.Second
 	closeQuiet  = 2 * time.Minute
 )
-
-// Hold stops the harness for its operating hours: it cancels any pending
-// respawn, resets crash-loop bookkeeping, and marks the harness held —
-// leaving `enabled` alone. Under HoursShutdownGraceful a running harness is
-// marked Closing instead of stopped; the scheduler's CloseStep finishes the
-// close from the turn-state watch. A harness that is disabled or failed is
-// not held. Blocks until the hold is decided, not until a graceful close is
-// done. closeAt is the instant the harness went out of hours (the window's
-// end or the lease's end), which anchors the close's deadline; zero means the
-// caller could not determine it and the close is capped from now.
-func (s *Supervisor) Hold(mode core.HoursShutdownMode, closeAt time.Time) {
-	s.send(command{kind: cmdHold, mode: mode, closeAt: closeAt})
-}
-
-// EnableHeld records enabled intent (persisted, as Start does) and holds the
-// harness instead of starting it. Autostart, reload and use-profile use it for
-// a gated harness that is down, so a harness whose hours are closed never
-// comes up just to be shut again by the next gate tick; the gate releases it
-// if it is in hours. Governing: ADR-0014 (a newly introduced harness records
-// its intent), SPEC-0012 REQ "Gate Enforcement" (boot out of hours begins
-// held), REQ "Operating Hours Reload".
-func (s *Supervisor) EnableHeld(trigger RunTrigger) {
-	s.send(command{kind: cmdHold, enable: true, mode: core.HoursShutdownImmediate, source: intentSourceFor(trigger)})
-}
-
-// Release clears a hold and starts the harness, without writing `enabled`. A
-// no-op unless the harness is held, enabled and stopped: hours opening never
-// start a failed harness or one the operator stopped (SPEC-0012 REQ "Gate
-// Enforcement"). A graceful close still in flight is cancelled.
-func (s *Supervisor) Release() { s.send(command{kind: cmdRelease}) }
 
 // CloseStep advances a graceful close by one observation: the manager samples
 // the turn-state watch and hands the answer to the loop, which stops the
@@ -136,81 +99,6 @@ func (s *Supervisor) hoursExpr() hours.Expr {
 	return s.harness.HoursExpr
 }
 
-// hold is cmdHold on the actor loop.
-func (s *Supervisor) hold(enable bool, mode core.HoursShutdownMode, closeAt time.Time, source string) {
-	if enable && s.setIntent(true, source, "") {
-		s.publishChangeUnchanged() // persist the recorded intent, as cmdStart does
-	}
-	// Held means "enabled, and down because of its hours". A disabled harness
-	// is down because the operator said so, and a failed one stays failed;
-	// neither is the gate's to hold. A scheduled one-shot is never gated (the
-	// config parser rejects the combination); guard it anyway.
-	if !s.enabled || s.state == core.StateFailed || s.harness.Schedule != "" {
-		return
-	}
-	wasHeld := s.held
-	// nextHoursTransition scans up to eight days of the expression
-	// (internal/hours) — cheap in absolute terms, but not free, and every
-	// call below that makes new state visible (publishSnapshot, gracefulStop)
-	// is also what lets the scheduler's gate pass re-decide this harness, as
-	// soon as dispatchGate's deferred cleanup clears s.gating for it.
-	// Computing it FIRST, before any of that visibility, keeps this
-	// function's actual work — and so a real close/hold's window against the
-	// next tick — exactly as short as it was before this line existed,
-	// rather than stretched by however long the scan takes.
-	var next string
-	if !wasHeld {
-		next = s.nextHoursTransition()
-	}
-	// (1) cancel any pending respawn; (5) crash-loop bookkeeping reset.
-	s.cancelRestartTimer()
-	s.dropQueued(OutcomeCancelled, ReasonHours)
-	s.resetCrashState()
-	s.consecFailures = 0
-	s.held = true
-	if graceful := mode == core.HoursShutdownGraceful && s.hasProcess() && s.state == core.StateRunning; graceful {
-		// SPEC-0012 REQ "Graceful Shutdown": mark the close, record the
-		// deadline's anchor, and let the tick finish the close. The
-		// process keeps running, still receiving what its agent receives;
-		// a new prompt in here does not move the deadline.
-		s.closing = true
-		if closeAt.IsZero() {
-			closeAt = time.Now()
-		}
-		s.closeAt = closeAt
-		if !wasHeld {
-			// "close start", not "held": the process is still up, and CLAUDE.md
-			// "A zero" cuts both ways — a line claiming the harness stopped
-			// while it is still running would be the wrong kind of silent
-			// wrong. SPEC-0012 REQ "Operating Hours Visibility" asks for the
-			// next transition too; "close ended" (already logged by
-			// closeStep) is the actual stop.
-			s.logEvent("close start", "reason", "operating_hours", "next", next)
-		}
-		s.publishSnapshot()
-		return
-	}
-	switch {
-	case s.hasProcess():
-		// (2)+(3): immediate, or graceful against a harness that is not
-		// plainly running (starting/restarting/degraded stop at once in
-		// any mode — SPEC-0012 REQ "Gate Enforcement"). gracefulStop
-		// consumes the exit itself, so the restart policy never sees it
-		// and the restart count is untouched (5); enabled is never
-		// written (4).
-		s.gracefulStop()
-		s.finishRunWith(OutcomeCancelled, &s.lastExitCode, ReasonHours)
-	case s.state != core.StateStopped:
-		// starting / restarting / degraded with no live process: stop at once.
-		s.gracefulStop()
-	default:
-		s.publishSnapshot()
-	}
-	if !wasHeld {
-		s.logEvent("held", "reason", "operating_hours", "next", next)
-	}
-}
-
 // closeStep is cmdCloseStep on the actor loop: one observation of the
 // turn-state watch, decided against the close's conditions. The stop is the
 // gate's own (hold steps 3–5 of SPEC-0012 REQ "Gate Enforcement"): no
@@ -256,27 +144,8 @@ func (s *Supervisor) closeStep(req *closeStepReq) {
 	s.closing = false
 	s.logEvent("close ended", "reason", reason, "deadline", deadline.Format(time.RFC3339))
 	s.gracefulStop()
-	s.finishRunWith(OutcomeCancelled, &s.lastExitCode, ReasonHours)
+	s.finishRunWith(OutcomeCancelled, &s.lastExitCode, holdRunReason(s.holds))
 	s.publishSnapshot()
-}
-
-// release is cmdRelease on the actor loop.
-func (s *Supervisor) release() {
-	if !s.held {
-		return
-	}
-	s.held = false
-	s.closing = false // hours reopening cancels a close in flight
-	if !s.enabled || s.hasProcess() || s.state != core.StateStopped {
-		s.publishSnapshot()
-		return
-	}
-	// "open": SPEC-0012 REQ "Operating Hours Visibility" names this line
-	// alongside close start/hold/lease start/lease end. next is the window's
-	// own close, since the harness is about to be running in hours again.
-	s.logEvent("open", "reason", "operating_hours", "next", s.nextHoursTransition())
-	s.startTrigger = TriggerRelease
-	s.startProcess(RunRequest{Trigger: TriggerManual})
 }
 
 // nextHoursTransition renders the next operating-hours flip for a durable-log

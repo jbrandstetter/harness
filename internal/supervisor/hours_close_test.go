@@ -158,11 +158,11 @@ func TestCloseStopsAfterTurnEndSettles(t *testing.T) {
 	m.Start("g")
 	waitFor(t, 3*time.Second, "running", func() bool { s, _ := m.Snapshot("g"); return s.State == core.StateRunning })
 
-	m.Hold("g", core.HoursShutdownGraceful, closeAt())
+	m.Hold("g", core.HoldHours, core.HoursShutdownGraceful, closeAt())
 	snap, _ := m.Snapshot("g")
-	if !snap.Closing || !snap.Held || snap.State != core.StateRunning || !snap.Enabled {
+	if !snap.Closing || !snap.Holds.Has(core.HoldHours) || snap.State != core.StateRunning || !snap.Enabled {
 		t.Fatalf("after hold: closing=%v held=%v state=%s enabled=%v, want closing, held, running, enabled",
-			snap.Closing, snap.Held, snap.State, snap.Enabled)
+			snap.Closing, snap.Holds.Has(core.HoldHours), snap.State, snap.Enabled)
 	}
 	if !snap.CloseAt.Equal(closeAt()) {
 		t.Errorf("CloseAt = %v, want %v", snap.CloseAt, closeAt())
@@ -197,7 +197,7 @@ func TestCloseForcedAtCap(t *testing.T) {
 	m.Start("g")
 	waitFor(t, 3*time.Second, "running", func() bool { s, _ := m.Snapshot("g"); return s.State == core.StateRunning })
 
-	m.Hold("g", core.HoursShutdownGraceful, closeAt())
+	m.Hold("g", core.HoldHours, core.HoursShutdownGraceful, closeAt())
 	w.set("g", runtrace.TurnState{LastEventAt: closeAt().Add(14 * time.Minute), TurnMarkers: true, TurnEnded: false}, true, "")
 	m.CloseStep("g", closeAt().Add(15*time.Minute).Add(-time.Second))
 	if s, _ := m.Snapshot("g"); s.State != core.StateRunning {
@@ -215,7 +215,7 @@ func TestCloseOnQuietWithoutMarkers(t *testing.T) {
 	m.Start("g")
 	waitFor(t, 3*time.Second, "running", func() bool { s, _ := m.Snapshot("g"); return s.State == core.StateRunning })
 
-	m.Hold("g", core.HoursShutdownGraceful, closeAt())
+	m.Hold("g", core.HoldHours, core.HoursShutdownGraceful, closeAt())
 	w.set("g", runtrace.TurnState{LastEventAt: closeAt().Add(time.Minute)}, true, "")
 	// Quiet is measured from the last event: 13:01 + 2m = 13:03.
 	m.CloseStep("g", closeAt().Add(3*time.Minute).Add(-time.Millisecond))
@@ -234,7 +234,7 @@ func TestCloseWithoutAttributableTraceStopsAtOnce(t *testing.T) {
 	m.Start("g")
 	waitFor(t, 3*time.Second, "running", func() bool { s, _ := m.Snapshot("g"); return s.State == core.StateRunning })
 
-	m.Hold("g", core.HoursShutdownGraceful, closeAt())
+	m.Hold("g", core.HoldHours, core.HoursShutdownGraceful, closeAt())
 	w.set("g", runtrace.TurnState{}, false, "no agent-trace session is attributable to this run")
 	m.CloseStep("g", closeAt().Add(time.Second))
 	waitStopped(t, m, "g")
@@ -254,12 +254,12 @@ func TestHoursReopeningCancelsTheClose(t *testing.T) {
 	m.Start("g")
 	waitFor(t, 3*time.Second, "running", func() bool { s, _ := m.Snapshot("g"); return s.State == core.StateRunning })
 
-	m.Hold("g", core.HoursShutdownGraceful, closeAt())
-	m.Release("g") // hours reopen at 12:05
+	m.Hold("g", core.HoldHours, core.HoursShutdownGraceful, closeAt())
+	m.Release("g", core.HoldHours) // hours reopen at 12:05
 	m.CloseStep("g", closeAt().Add(5*time.Minute))
 	snap, _ := m.Snapshot("g")
-	if snap.State != core.StateRunning || snap.Closing || snap.Held {
-		t.Fatalf("after reopen: state=%s closing=%v held=%v, want running, neither", snap.State, snap.Closing, snap.Held)
+	if snap.State != core.StateRunning || snap.Closing || snap.Holds.Has(core.HoldHours) {
+		t.Fatalf("after reopen: state=%s closing=%v held=%v, want running, neither", snap.State, snap.Closing, snap.Holds.Has(core.HoldHours))
 	}
 }
 
@@ -271,7 +271,7 @@ func TestNewPromptDuringCloseDoesNotExtendDeadline(t *testing.T) {
 	m.Start("g")
 	waitFor(t, 3*time.Second, "running", func() bool { s, _ := m.Snapshot("g"); return s.State == core.StateRunning })
 
-	m.Hold("g", core.HoursShutdownGraceful, closeAt())
+	m.Hold("g", core.HoldHours, core.HoursShutdownGraceful, closeAt())
 	// A doorbell starts a turn at 13:08; events keep arriving until 13:14:59.
 	for _, at := range []time.Duration{8 * time.Minute, 12 * time.Minute, 14 * time.Minute, 14*time.Minute + 59*time.Second} {
 		w.set("g", runtrace.TurnState{LastEventAt: closeAt().Add(at), TurnMarkers: true, TurnEnded: false}, true, "")
@@ -295,10 +295,10 @@ func TestSelfExitWhileClosingIsHeldWithoutRestart(t *testing.T) {
 	m.Start("g")
 	waitFor(t, 3*time.Second, "running", func() bool { s, _ := m.Snapshot("g"); return s.State == core.StateRunning })
 
-	m.Hold("g", core.HoursShutdownGraceful, closeAt().Add(-time.Second))
+	m.Hold("g", core.HoldHours, core.HoursShutdownGraceful, closeAt().Add(-time.Second))
 	stopped := waitStopped(t, m, "g")
-	if !stopped.Held || !stopped.Enabled {
-		t.Fatalf("after self-exit while closing: held=%v enabled=%v, want both", stopped.Held, stopped.Enabled)
+	if !stopped.Holds.Has(core.HoldHours) || !stopped.Enabled {
+		t.Fatalf("after self-exit while closing: held=%v enabled=%v, want both", stopped.Holds.Has(core.HoldHours), stopped.Enabled)
 	}
 	if stopped.RestartCount != 0 {
 		t.Errorf("restart count %d: the exit was counted against the restart policy", stopped.RestartCount)
@@ -319,7 +319,7 @@ func TestReloadAppliesToACloseInProgress(t *testing.T) {
 		m, _, _, _ := newCloseRig(t, gracefulH(shHarness("g", "while true; do sleep 0.02; done", 0), 15*time.Minute))
 		m.Start("g")
 		waitFor(t, 3*time.Second, "running", func() bool { s, _ := m.Snapshot("g"); return s.State == core.StateRunning })
-		m.Hold("g", core.HoursShutdownGraceful, closeAt())
+		m.Hold("g", core.HoldHours, core.HoursShutdownGraceful, closeAt())
 
 		h := m.Config().Harnesses["g"]
 		h.HoursShutdown = core.HoursShutdownImmediate
@@ -333,7 +333,7 @@ func TestReloadAppliesToACloseInProgress(t *testing.T) {
 		m, _, _, _ := newCloseRig(t, gracefulH(shHarness("g", "while true; do sleep 0.02; done", 0), 15*time.Minute))
 		m.Start("g")
 		waitFor(t, 3*time.Second, "running", func() bool { s, _ := m.Snapshot("g"); return s.State == core.StateRunning })
-		m.Hold("g", core.HoursShutdownGraceful, closeAt())
+		m.Hold("g", core.HoldHours, core.HoursShutdownGraceful, closeAt())
 
 		h := m.Config().Harnesses["g"]
 		h.HoursShutdownTimeout = time.Minute // new deadline 13:01, already past
@@ -347,7 +347,7 @@ func TestReloadAppliesToACloseInProgress(t *testing.T) {
 		m, _, _, _ := newCloseRig(t, gracefulH(shHarness("g", "while true; do sleep 0.02; done", 0), 15*time.Minute))
 		m.Start("g")
 		waitFor(t, 3*time.Second, "running", func() bool { s, _ := m.Snapshot("g"); return s.State == core.StateRunning })
-		m.Hold("g", core.HoursShutdownGraceful, closeAt())
+		m.Hold("g", core.HoldHours, core.HoursShutdownGraceful, closeAt())
 
 		h := m.Config().Harnesses["g"]
 		h.HoursShutdownTimeout = 30 * time.Minute
@@ -374,7 +374,7 @@ func TestCloseDeadlineIsOnTheRealTimeline(t *testing.T) {
 	waitFor(t, 3*time.Second, "running", func() bool { s, _ := m.Snapshot("g"); return s.State == core.StateRunning })
 
 	anchor := time.Date(2026, 11, 1, 5, 30, 0, 0, time.UTC) // 01:30 EDT, first pass
-	m.Hold("g", core.HoursShutdownGraceful, anchor)
+	m.Hold("g", core.HoldHours, core.HoursShutdownGraceful, anchor)
 	w.set("g", runtrace.TurnState{LastEventAt: anchor, TurnMarkers: true, TurnEnded: false}, true, "")
 
 	m.CloseStep("g", anchor.Add(14*time.Minute).Add(59*time.Second))
@@ -394,11 +394,11 @@ func TestStopAndLeaseDuringAClose(t *testing.T) {
 		m, _, _, _ := newCloseRig(t, gracefulH(shHarness("g", "while true; do sleep 0.02; done", 0), 15*time.Minute))
 		m.Start("g")
 		waitFor(t, 3*time.Second, "running", func() bool { s, _ := m.Snapshot("g"); return s.State == core.StateRunning })
-		m.Hold("g", core.HoursShutdownGraceful, closeAt())
+		m.Hold("g", core.HoldHours, core.HoursShutdownGraceful, closeAt())
 		m.Stop("g")
 		snap, _ := m.Snapshot("g")
-		if snap.State != core.StateStopped || snap.Closing || snap.Held || snap.Enabled {
-			t.Fatalf("after stop mid-close: state=%s closing=%v held=%v enabled=%v", snap.State, snap.Closing, snap.Held, snap.Enabled)
+		if snap.State != core.StateStopped || snap.Closing || snap.Holds.Has(core.HoldHours) || snap.Enabled {
+			t.Fatalf("after stop mid-close: state=%s closing=%v held=%v enabled=%v", snap.State, snap.Closing, snap.Holds.Has(core.HoldHours), snap.Enabled)
 		}
 	})
 
@@ -406,7 +406,7 @@ func TestStopAndLeaseDuringAClose(t *testing.T) {
 		m, w, _, _ := newCloseRig(t, gracefulH(shHarness("g", "while true; do sleep 0.02; done", 0), 15*time.Minute))
 		m.Start("g")
 		waitFor(t, 3*time.Second, "running", func() bool { s, _ := m.Snapshot("g"); return s.State == core.StateRunning })
-		m.Hold("g", core.HoursShutdownGraceful, closeAt())
+		m.Hold("g", core.HoldHours, core.HoursShutdownGraceful, closeAt())
 		if err := m.StartFor("g", time.Hour); err != nil {
 			t.Fatalf("StartFor: %v", err)
 		}
@@ -431,7 +431,7 @@ func TestRestartDuringACloseCancelsIt(t *testing.T) {
 	m, w, _, _ := newCloseRig(t, gracefulH(shHarness("g", "while true; do sleep 0.02; done", 0), 15*time.Minute))
 	m.Start("g")
 	waitFor(t, 3*time.Second, "running", func() bool { s, _ := m.Snapshot("g"); return s.State == core.StateRunning })
-	m.Hold("g", core.HoursShutdownGraceful, closeAt())
+	m.Hold("g", core.HoldHours, core.HoursShutdownGraceful, closeAt())
 	w.set("g", runtrace.TurnState{LastEventAt: closeAt().Add(14 * time.Minute), TurnMarkers: true}, true, "")
 
 	m.Restart("g")
@@ -443,16 +443,16 @@ func TestRestartDuringACloseCancelsIt(t *testing.T) {
 		if s, _ := m.Snapshot("g"); s.Closing {
 			m.CloseStep("g", now)
 		} else if snapUp(s.State) {
-			m.Hold("g", core.HoursShutdownGraceful, closeAt())
+			m.Hold("g", core.HoldHours, core.HoursShutdownGraceful, closeAt())
 		}
 	}
 	gateTick(closeAt().Add(time.Minute))
 	gateTick(closeAt().Add(15 * time.Minute)) // the cap
 	stopped := waitStopped(t, m, "g")
-	if !stopped.Held || !stopped.Enabled {
-		t.Fatalf("after the close that followed a restart: held=%v enabled=%v, want both", stopped.Held, stopped.Enabled)
+	if !stopped.Holds.Has(core.HoldHours) || !stopped.Enabled {
+		t.Fatalf("after the close that followed a restart: held=%v enabled=%v, want both", stopped.Holds.Has(core.HoldHours), stopped.Enabled)
 	}
-	m.Release("g") // the next window opens
+	m.Release("g", core.HoldHours) // the next window opens
 	waitFor(t, 3*time.Second, "running at the next open", func() bool { s, _ := m.Snapshot("g"); return s.State == core.StateRunning })
 }
 
@@ -466,7 +466,7 @@ func TestUnanchoredCloseArmsTheWatchWithItsRealAnchor(t *testing.T) {
 	m.Start("g")
 	waitFor(t, 3*time.Second, "running", func() bool { s, _ := m.Snapshot("g"); return s.State == core.StateRunning })
 
-	m.Hold("g", core.HoursShutdownGraceful, time.Time{})
+	m.Hold("g", core.HoldHours, core.HoursShutdownGraceful, time.Time{})
 	snap, _ := m.Snapshot("g")
 	if !snap.Closing || snap.CloseAt.IsZero() {
 		t.Fatalf("unanchored hold: closing=%v closeAt=%v, want a close anchored to now", snap.Closing, snap.CloseAt)

@@ -7,6 +7,10 @@ package protocol
 // internal/tui) reads.
 //
 // @joestump-agent 09/22/2026 - Added for stump.wtf/harness#385.
+//
+// @joestump 10/04/2026 - `held` replaced by hold_reasons (SPEC-0021 REQ-16;
+// stump.wtf/harness#468): the assertions on it now read hold_reasons, and the
+// JSON is checked for the absence of any `held` key.
 
 import (
 	"encoding/json"
@@ -16,8 +20,9 @@ import (
 )
 
 // TestHarnessInfoOperatingHoursRoundTrip pins the seven fields SPEC-0012
-// names for a gated harness: every one of them survives a marshal/unmarshal
-// round trip with its value intact.
+// names for a gated harness — `held` now carried as hold_reasons (SPEC-0021
+// REQ-16) — every one of them surviving a marshal/unmarshal round trip with
+// its value intact.
 func TestHarnessInfoOperatingHoursRoundTrip(t *testing.T) {
 	want := HarnessInfo{
 		Name:           "claude-src",
@@ -25,7 +30,7 @@ func TestHarnessInfoOperatingHoursRoundTrip(t *testing.T) {
 		OperatingHours: "TZ=America/Los_Angeles Mon-Fri 09:00-13:00",
 		InHours:        true,
 		HoursNext:      "2026-09-22T13:00:00-07:00",
-		Held:           false,
+		HoldReasons:    []string{"hours"},
 		ClosingUntil:   "2026-09-22T13:15:00-07:00",
 		HoursShutdown:  "graceful",
 		LeaseUntil:     "2026-09-22T21:00:00-07:00",
@@ -46,15 +51,17 @@ func TestHarnessInfoOperatingHoursRoundTrip(t *testing.T) {
 	// names — assert the JSON itself, not just the round trip, so a rename
 	// of the Go field alone (json tag left stale) cannot pass silently.
 	for _, field := range []string{
-		`"operating_hours":`, `"in_hours":`, `"hours_next":`, `"held":`,
-		// Held is false above (zero value) and carries no omitempty (see
-		// HarnessInfo's doc — it stays meaningful, unlike the timestamps
-		// below), so it MUST still be present on the wire.
+		`"operating_hours":`, `"in_hours":`, `"hours_next":`, `"hold_reasons":["hours"]`,
 		`"closing_until":`, `"hours_shutdown":`, `"lease_until":`,
 	} {
 		if !strings.Contains(string(raw), field) {
 			t.Errorf("marshaled JSON missing %s field: %s", field, raw)
 		}
+	}
+	// SPEC-0021 REQ-16: hold_reasons replaces held outright, with no derived
+	// field kept for older clients.
+	if strings.Contains(string(raw), `"held"`) {
+		t.Errorf("marshaled JSON still carries a held field: %s", raw)
 	}
 }
 
@@ -62,9 +69,10 @@ func TestHarnessInfoOperatingHoursRoundTrip(t *testing.T) {
 // requires to be absent when their condition does not hold: hours_next for a
 // whole-week expression (nothing resolved), closing_until outside a close,
 // and lease_until outside a lease. An ungated harness (OperatingHours empty)
-// omits operating_hours and hours_shutdown too; in_hours and held carry no
-// omitempty (like Enabled and Flapping) and stay present as their harmless
-// zero value (false), so a client can read them without a nil check.
+// omits operating_hours and hours_shutdown too; in_hours carries no omitempty
+// (like Enabled and Flapping) and stays present as its harmless zero value
+// (false), so a client can read it without a nil check. hold_reasons is
+// omitted for a harness that is not held, and `held` is never sent.
 func TestHarnessInfoOperatingHoursOmission(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -73,13 +81,13 @@ func TestHarnessInfoOperatingHoursOmission(t *testing.T) {
 		present []string
 	}{
 		{
-			name: "ungated harness omits every timestamp/mode field but keeps the always-present bools",
+			name: "ungated harness omits every timestamp/mode field but keeps the always-present bool",
 			info: HarnessInfo{Name: "always-on", State: "running"},
 			absent: []string{
 				`"operating_hours"`, `"hours_next"`, `"closing_until"`,
-				`"hours_shutdown"`, `"lease_until"`,
+				`"hours_shutdown"`, `"lease_until"`, `"hold_reasons"`, `"held"`,
 			},
-			present: []string{`"in_hours":false`, `"held":false`},
+			present: []string{`"in_hours":false`},
 		},
 		{
 			name: "gated, in hours, not leased, not closing: only the always-present fields show",
@@ -102,7 +110,7 @@ func TestHarnessInfoOperatingHoursOmission(t *testing.T) {
 		{
 			name: "closing carries closing_until, not lease_until",
 			info: HarnessInfo{
-				Name: "claude-src", State: "running", Held: true,
+				Name: "claude-src", State: "running", HoldReasons: []string{"hours"},
 				OperatingHours: "Mon-Fri 09:00-13:00", ClosingUntil: "2026-09-22T13:15:00-07:00",
 				HoursShutdown: "graceful",
 			},
@@ -154,7 +162,7 @@ func TestEventMsgHoursChangedRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) { // EventMsg carries a slice since hold_reasons
 		t.Errorf("round trip mismatch\n got %+v\nwant %+v", got, want)
 	}
 	if string(want.Kind) != "harness_hours_changed" {
