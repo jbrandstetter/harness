@@ -491,11 +491,12 @@ func (e *Editor) RemoveHarnessKey(table, key string) error {
 	if !ok {
 		return fmt.Errorf("%w: key %q in [harness.%s]", ErrKeyNotFound, key, table)
 	}
-	valueEnd := kv.valueEnd
-	// Take the line's trailing newline too, so removing the last key
-	// does not leave a stray blank line behind.
-	if valueEnd < len(e.data) && e.data[valueEnd] == '\n' {
-		valueEnd++
+	// Take the rest of the value's last line and its newline too: a
+	// trailing comment belongs to the key it annotates, and removing the
+	// last key must not leave a stray blank or comment line behind.
+	valueEnd := len(e.data)
+	if nl := bytes.IndexByte(e.data[kv.valueEnd:], '\n'); nl >= 0 {
+		valueEnd = kv.valueEnd + nl + 1
 	}
 	e.data = splice(e.data, kv.start, valueEnd, nil)
 	return nil

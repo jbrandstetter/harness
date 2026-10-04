@@ -584,6 +584,18 @@ x = 1
 		t.Error("model still present")
 	}
 
+	// A trailing comment goes with its key — on a one-line value and on a
+	// multi-line value's closing line — and the next key is untouched.
+	ed3 := New([]byte("[harness.r]\nmodel = \"x\"  # mine\nargs = [\n  \"a\", # first\n]  # list\nquiet = true\n"))
+	for _, k := range []string{"model", "args"} {
+		if err := ed3.RemoveHarnessKey("r", k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := string(ed3.Bytes()); got != "[harness.r]\nquiet = true\n" {
+		t.Fatalf("a removed key's trailing comment must go with it: %q", got)
+	}
+
 	// A missing key fails closed.
 	if err := ed.RemoveHarnessKey("reviewer", "nope"); !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("want ErrKeyNotFound, got %v", err)
