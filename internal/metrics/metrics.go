@@ -59,6 +59,7 @@ import (
 
 	"github.com/stump-wtf/harness/internal/adapter"
 	"github.com/stump-wtf/harness/internal/core"
+	"github.com/stump-wtf/harness/internal/modelerr"
 	"github.com/stump-wtf/harness/internal/observe"
 	"github.com/stump-wtf/harness/internal/supervisor"
 )
@@ -287,7 +288,7 @@ var renderFailureReasons = []string{supervisor.RenderFailureUnresolved, supervis
 // series is the counted state behind one harness label value.
 type series struct {
 	calls           [2]uint64 // success, error
-	errors          map[Class]uint64
+	errors          map[modelerr.Class]uint64
 	unclassified    uint64
 	lastSuccess     time.Time // zero until the first success: omitted, not 0
 	lastItem        time.Time // latest agent item of any kind
@@ -301,7 +302,7 @@ type series struct {
 }
 
 func newSeries() *series {
-	return &series{errors: make(map[Class]uint64), transitions: make(map[core.State]uint64), renderFailures: make(map[string]uint64)}
+	return &series{errors: make(map[modelerr.Class]uint64), transitions: make(map[core.State]uint64), renderFailures: make(map[string]uint64)}
 }
 
 // Metrics owns the registry and the counters behind it. Build it with New,
@@ -602,7 +603,7 @@ func (m *Metrics) item(ev observe.Event) {
 			return // turn-end included: see above
 		}
 		s.calls[1]++
-		class, known := Classify(ev.Adapter, ev.Mark.Note)
+		class, known := modelerr.Classify(ev.Adapter, ev.Mark.Note)
 		s.errors[class]++
 		if !known {
 			s.unclassified++

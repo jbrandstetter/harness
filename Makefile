@@ -85,8 +85,10 @@ race:
 # line a rule would mask (ADR-0033, ADR-0008).
 # internal/budget FuzzDay: the budget day bounds every instant across DST and
 # odd zones (SPEC-0021 REQ-3, stump.wtf/harness#470).
+# internal/modelerr FuzzResetAfter: an untrusted error note never yields a
+# reset outside (now, now+8d] (SPEC-0021 REQ-12, issue #473).
 FUZZTIME    ?= 30s
-FUZZ_TARGETS := ./internal/tmpl:FuzzParse ./internal/attach:FuzzRing ./internal/redact:FuzzMayMatchCoversString ./internal/budget:FuzzDay
+FUZZ_TARGETS := ./internal/tmpl:FuzzParse ./internal/attach:FuzzRing ./internal/redact:FuzzMayMatchCoversString ./internal/budget:FuzzDay ./internal/modelerr:FuzzResetAfter
 
 fuzz:
 	@set -e; for t in $(FUZZ_TARGETS); do \
