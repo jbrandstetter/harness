@@ -309,3 +309,91 @@ func TestLoadPackageUnknownPackage(t *testing.T) {
 		t.Fatalf("want ErrUnknownPackage, got %v", err)
 	}
 }
+
+// BundleSkillsDir: the package tier contributes only for a sourced harness
+// whose pinned manifest requested skill_paths (SPEC-0026 REQ-10).
+func TestBundleSkillsDir(t *testing.T) {
+	isoState(t)
+	manifestWith := `[package]
+name = "pr-reviewer"
+
+[harness]
+harness = "claude-code"
+
+[requests]
+skill_paths = true
+`
+	manifestWithout := `[package]
+name = "pr-reviewer"
+
+[harness]
+harness = "claude-code"
+`
+	// No source: contributes nothing.
+	if dir, ok := BundleSkillsDir(""); ok {
+		t.Fatalf("an empty source contributes nothing, got %q", dir)
+	}
+
+	// A sourced harness whose manifest requests skill_paths: the pin's
+	// bundled skills directory.
+	remote, _ := newStableRemote(t, map[string]string{
+		"packages/pr-reviewer/package.toml":             manifestWith,
+		"packages/pr-reviewer/skills/playbook/SKILL.md": "bundled",
+	})
+	if _, err := CloneStable("stump-wtf", remote); err != nil {
+		t.Fatal(err)
+	}
+	src, err := ResolvePin("stump-wtf", "pr-reviewer", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp, err := Materialize(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Place(src, tmp); err != nil {
+		t.Fatal(err)
+	}
+
+	dir, ok := BundleSkillsDir(src.String())
+	if !ok {
+		t.Fatal("a requested bundle must contribute its directory")
+	}
+	if want := filepath.Join(PinDir(src), "skills"); dir != want {
+		t.Fatalf("bundle dir = %q, want %q", dir, want)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "playbook", "SKILL.md")); err != nil {
+		t.Fatalf("the bundled skill must be in the pin: %v", err)
+	}
+
+	// A manifest that leaves the request unset contributes nothing, even
+	// with skills bundled.
+	remote2, _ := newStableRemote(t, map[string]string{
+		"packages/pr-reviewer/package.toml":             manifestWithout,
+		"packages/pr-reviewer/skills/playbook/SKILL.md": "bundled",
+	})
+	if _, err := CloneStable("stump-wtf", remote2); err != nil {
+		t.Fatal(err)
+	}
+	src2, err := ResolvePin("stump-wtf", "pr-reviewer", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp2, err := Materialize(src2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Place(src2, tmp2); err != nil {
+		t.Fatal(err)
+	}
+	man2, err := LoadManifest(ManifestPath(src2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if man2.Requests.SkillPaths != nil {
+		t.Fatal("fixture: the second pin must leave the request unset")
+	}
+	if _, ok := BundleSkillsDir(src2.String()); ok {
+		t.Fatal("an unset request contributes no roots")
+	}
+}

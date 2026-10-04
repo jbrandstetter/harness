@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/stump-wtf/harness/internal/adapter"
+	"github.com/stump-wtf/harness/internal/agentpkg"
 	"github.com/stump-wtf/harness/internal/config"
 	"github.com/stump-wtf/harness/internal/core"
 	"github.com/stump-wtf/harness/internal/protocol"
@@ -240,6 +241,11 @@ func (c *conn) skillAttributions(h core.Harness) []protocol.SkillAttribution {
 		return d
 	}
 	var roots []skillmerge.Root
+	// The package bundle tier, below the adapter defaults (SPEC-0026
+	// REQ-10), attributed and shadowed like every other root.
+	if dir, ok := agentpkg.BundleSkillsDir(h.PackageSource); ok {
+		roots = append(roots, skillmerge.Root{Dir: dir, Tier: 0, Source: "package bundle"})
+	}
 	if h.UseDefaultSkillPaths {
 		for _, d := range a.SkillRoots(supervisor.Workdir(h)) {
 			roots = append(roots, skillmerge.Root{Dir: expand(d), Tier: 1, Source: "adapter default"})
@@ -249,11 +255,13 @@ func (c *conn) skillAttributions(h core.Harness) []protocol.SkillAttribution {
 		roots = append(roots, skillmerge.Root{Dir: expand(d), Tier: 2, Source: "skill_paths"})
 	}
 	// The serving-clone store is out of bounds for roots, exactly as the
-	// spawn-time projection excludes it.
-	serving := supervisor.StateHome() + string(filepath.Separator)
+	// spawn-time projection excludes it — including a root equal to the
+	// store directory itself.
+	serving := filepath.Join(supervisor.StateHome(), "skills")
+	servingPrefix := serving + string(filepath.Separator)
 	kept := roots[:0]
 	for _, r := range roots {
-		if strings.HasPrefix(r.Dir, serving) {
+		if r.Dir == serving || strings.HasPrefix(r.Dir, servingPrefix) {
 			continue
 		}
 		kept = append(kept, r)

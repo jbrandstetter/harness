@@ -43,6 +43,11 @@ type HarnessValues struct {
 	SystemPromptFile string
 	MCPConfig        string
 	AllowedTools     []string
+	// SkillPaths is the package's additional skill roots (SPEC-0006 REQ
+	// "Skill Path Configuration"), resolved against the pin directory at
+	// config load. Values here point INTO the bundle — the merge tier they
+	// contribute at is #816's.
+	SkillPaths []string
 }
 
 // Requests is the itemized [requests] table (REQ-4 renders every entry).
@@ -72,6 +77,7 @@ var harnessAllowlist = map[string]bool{
 	"system_prompt_file": true,
 	"mcp_config":         true,
 	"allowed_tools":      true,
+	"skill_paths":        true,
 }
 
 // harnessForbidden is the explicit denylist SPEC-0026 REQ-3 names, so its
@@ -230,6 +236,9 @@ func decodeHarness(v any, path string, m *Manifest) error {
 	hv.SystemPromptFile = mustStr(t, "system_prompt_file")
 	hv.MCPConfig = mustStr(t, "mcp_config")
 	if hv.AllowedTools, err = optStrList(t, "allowed_tools", path); err != nil {
+		return err
+	}
+	if hv.SkillPaths, err = optStrList(t, "skill_paths", path); err != nil {
 		return err
 	}
 	if b, ok := t["auto_accept"].(bool); ok {
