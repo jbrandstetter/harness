@@ -113,7 +113,7 @@ func printHarnessTable(w io.Writer, hs []protocol.HarnessInfo) error {
 	for _, h := range hs {
 		// A stalled session (issue #347) reads healthy in every process
 		// signal; the marker is the one place the truth shows in `list`.
-		state := t.stateCell(h.State, harnessFiring(h), h.Held, h.ClosingUntil != "")
+		state := t.stateCell(h.State, harnessFiring(h), schedfmt.HoursHeld(h.HoldReasons), h.ClosingUntil != "")
 		if h.SessionStalled {
 			state += " ⚠ session stalled"
 		}
@@ -203,7 +203,7 @@ func cmdDescribe(c *client.Client, o verbOpts) error {
 	// Pass the schedule: without it describe renders "stopped" in pink for the
 	// same harness `harness list` shows as amber "armed" (#268, #331). schedfmt exists
 	// so the surfaces cannot phrase one harness two ways.
-	t.Row("state", t.stateCell(h.State, harnessFiring(h), h.Held, h.ClosingUntil != ""))
+	t.Row("state", t.stateCell(h.State, harnessFiring(h), schedfmt.HoursHeld(h.HoldReasons), h.ClosingUntil != ""))
 	// Stuck-at-prompt projection (issue #735; ADR-0040): a full-screen prompt
 	// never reaches the durable log, so this row is the only truthful answer
 	// to "why has this harness printed nothing for an hour?".
@@ -322,7 +322,7 @@ func cmdDescribe(c *client.Client, o verbOpts) error {
 		if h.HoursShutdown != "" {
 			t.Row("hours_shutdown", t.faintPlain(h.HoursShutdown))
 		}
-		if next := schedfmt.HoursNext(h.Held, h.ClosingUntil != "", h.LeaseUntil, h.ClosingUntil, h.HoursNext); next != "" {
+		if next := schedfmt.HoursNext(schedfmt.HoursHeld(h.HoldReasons), h.ClosingUntil != "", h.LeaseUntil, h.ClosingUntil, h.HoursNext); next != "" {
 			t.Row("next", t.faintPlain(next))
 		}
 		if h.LeaseUntil != "" {

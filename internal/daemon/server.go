@@ -448,6 +448,13 @@ func toEventMsg(ev supervisor.Event) protocol.EventMsg {
 		if !ev.HoursNext.IsZero() {
 			m.HoursNext = ev.HoursNext.Format(time.RFC3339)
 		}
+	case supervisor.EventHoldChanged:
+		// SPEC-0021 REQ-19: `harness_hold_changed { name, hold_reasons, next }`.
+		m.Kind = protocol.EvHoldChanged
+		m.HoldReasons = ev.Holds.Strings()
+		if !ev.HoldNext.IsZero() {
+			m.HoldNext = ev.HoldNext.Format(time.RFC3339)
+		}
 	}
 	return m
 }

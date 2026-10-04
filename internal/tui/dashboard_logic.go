@@ -80,7 +80,7 @@ func nextActionText(h protocol.HarnessInfo) string {
 	case h.NextRetryInMs > 0:
 		return "retry in " + humanizeMs(h.NextRetryInMs)
 	case h.OperatingHours != "":
-		return schedfmt.HoursNext(h.Held, h.ClosingUntil != "", h.LeaseUntil, h.ClosingUntil, h.HoursNext)
+		return schedfmt.HoursNext(schedfmt.HoursHeld(h.HoldReasons), h.ClosingUntil != "", h.LeaseUntil, h.ClosingUntil, h.HoursNext)
 	default:
 		return nextRunText(h.NextRun)
 	}

@@ -115,7 +115,18 @@ const (
 	// ADR-0044): additive only — an older daemon omits it, so describe
 	// shows the source without per-key attribution; an older client
 	// ignores the unknown field.
-	ProtoMinor = 23
+	// ProtoMinor 24 replaced Held on HarnessInfo with HoldReasons (ADR-0027,
+	// SPEC-0021 REQ-14, REQ-16; issue #468): a harness is held for a set of
+	// reasons (hours, quota, budget), and `held` is gone from the wire with
+	// no derived field kept — hold_reasons containing "hours" is what it
+	// meant. It also added the harness_hold_changed event, with HoldReasons
+	// and HoldNext on EventMsg (REQ-19). Not additive for `held`, and kept on
+	// a minor anyway (design.md § "Protocol changes"): a client older than 24
+	// reads the missing field as false and loses its off-hours label until
+	// it is upgraded, nothing worse; a major bump would refuse every older
+	// client to save that. A daemon older than 24 sends `held` and no
+	// hold_reasons, so a newer client shows a held harness as stopped.
+	ProtoMinor = 24
 )
 
 // ProtoVersion is the "major.minor" string carried in HELLO.
@@ -529,9 +540,9 @@ type HarnessInfo struct {
 	// Operating-hours projection (ADR-0019, SPEC-0012 REQ "Operating Hours
 	// Visibility"). OperatingHours is the raw expression as configured, empty
 	// for an ungated harness — the discriminator every other field here is
-	// read against. InHours and Held carry no omitempty (like Enabled and
-	// Flapping): they default false and stay meaningful for an ungated
-	// harness (always false), so a client can read them without first
+	// read against. InHours carries no omitempty (like Enabled and
+	// Flapping): it defaults false and stays meaningful for an ungated
+	// harness (always false), so a client can read it without first
 	// checking OperatingHours. The RFC 3339 timestamps below DO omit empty,
 	// each only while its condition holds.
 	OperatingHours string `json:"operating_hours,omitempty"`
@@ -542,9 +553,13 @@ type HarnessInfo struct {
 	// 3339. Omitted when OperatingHours covers the entire week — there is no
 	// next flip to report.
 	HoursNext string `json:"hours_next,omitempty"`
-	// Held reports whether the operating-hours gate has shut this harness
-	// down (or kept it down). Meaningful only when OperatingHours is set.
-	Held bool `json:"held"`
+	// HoldReasons is the set of reasons the daemon is holding this harness
+	// down for, in canonical order ("hours", "quota", "budget"), omitted
+	// when it is not held, gated or not (ADR-0027, SPEC-0021 REQ-14,
+	// REQ-16). It replaces SPEC-0012's `held` boolean outright: a harness
+	// held for its operating hours is one whose HoldReasons contains
+	// "hours", and no `held` is sent (ProtoMinor 24).
+	HoldReasons []string `json:"hold_reasons,omitempty"`
 	// ClosingUntil is the close deadline, RFC 3339, present only while a
 	// graceful close is in progress (SPEC-0012 REQ "Graceful Shutdown") — the
 	// close's own deadline (CloseAt + hours_shutdown_timeout), not the window
@@ -1154,6 +1169,12 @@ const (
 	// and HoursNext (empty when the expression covers the entire week).
 	EvHoursChanged EventKind = "harness_hours_changed"
 
+	// EvHoldChanged is emitted whenever a harness's set of hold reasons
+	// changes — a reason added or cleared, or every reason dropped by a
+	// start or stop (SPEC-0021 REQ-19). Carries HoldReasons (absent once the
+	// harness is no longer held) and HoldNext.
+	EvHoldChanged EventKind = "harness_hold_changed"
+
 	// EvTriggerSourceChanged is emitted on every trigger source state
 	// transition, in order per source (SPEC-0014 REQ "Trigger Visibility").
 	// Carries Source, SourceKind, State and, for error and backoff, Error.
@@ -1188,6 +1209,13 @@ type EventMsg struct {
 	// the next flip, empty when OperatingHours covers the entire week.
 	InHours   bool   `json:"in_hours,omitempty"`
 	HoursNext string `json:"hours_next,omitempty"`
+
+	// harness_hold_changed fields (SPEC-0021 REQ-19: `{ name, hold_reasons,
+	// next }`). HoldReasons is the new set in canonical order, absent when
+	// the harness is no longer held; HoldNext (RFC 3339) is when the hold is
+	// next expected to clear, absent when that is unknown.
+	HoldReasons []string `json:"hold_reasons,omitempty"`
+	HoldNext    string   `json:"next,omitempty"`
 
 	// Source is the trigger source reference: the source that changed on
 	// trigger_source_changed, and the source behind the run on job_run_*
