@@ -503,3 +503,60 @@ model = "inside"
 		})
 	}
 }
+
+// RemoveHarnessKey deletes exactly one key line — a multi-line value goes
+// whole — and everything else stays byte-identical.
+func TestRemoveHarnessKey(t *testing.T) {
+	src := `top = "kept"
+
+[harness.reviewer]
+model = "big"
+args = [
+  "a",
+  "b",
+]
+enabled = true
+
+[other]
+x = 1
+`
+	ed := New([]byte(src))
+	if err := ed.RemoveHarnessKey("reviewer", "args"); err != nil {
+		t.Fatal(err)
+	}
+	want := `top = "kept"
+
+[harness.reviewer]
+model = "big"
+enabled = true
+
+[other]
+x = 1
+`
+	if string(ed.Bytes()) != want {
+		t.Fatalf("removal must take the whole multi-line value and nothing else:\n%s", ed.Bytes())
+	}
+
+	// A missing key fails closed.
+	if err := ed.RemoveHarnessKey("reviewer", "nope"); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("want ErrKeyNotFound, got %v", err)
+	}
+
+	// A bare-spelled table resolves too.
+	bare := New([]byte("[reviewer]\nmodel = \"x\"\n"))
+	if err := bare.RemoveHarnessKey("reviewer", "model"); err != nil {
+		t.Fatal(err)
+	}
+	if len(bytes.TrimSpace(bare.Bytes())) == 0 {
+		// an empty table header remains, which is valid TOML
+		t.Log("empty table left")
+	}
+	if string(bare.Bytes()) != "[reviewer]\n" {
+		t.Fatalf("bare table removal shape: %q", bare.Bytes())
+	}
+
+	// The edited file still parses.
+	if _, err := toml.Decode(string(ed.Bytes()), &map[string]any{}); err != nil {
+		t.Fatalf("edited file no longer parses: %v", err)
+	}
+}
