@@ -1,5 +1,7 @@
-// Package modelerr is the one model-error classifier: metrics counts its
-// classes, and the budget park detector acts on them (SPEC-0021 REQ-11).
+// Package modelerr reads a model error's note: ClassifyRule names its class
+// and the rule that matched, and ResetAfter the reset time it carries. It is
+// the one classifier: metrics counts its classes, and the budget park
+// detector acts on them (SPEC-0021 REQ-11, REQ-12).
 package modelerr
 
 // Model Error Classifier
