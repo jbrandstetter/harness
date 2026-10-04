@@ -966,14 +966,14 @@ func (s *Supervisor) closeResident(outcome RunOutcome, code *int, reason RunReas
 // residentExit closes the resident record for a process that ended on its
 // own (SPEC-0022 REQ-5): success for exit 0, failed otherwise, and failed
 // with reason spawn and no exit code for a process that never started. A
-// harness its hours were closing is cancelled, reason hours: the gate asked
-// for this exit.
+// harness a hold was closing is cancelled, with the hold's reason (hours for
+// an operating-hours close): the hold asked for this exit.
 func (s *Supervisor) residentExit(code int, spawnFailed bool) {
 	switch {
 	case spawnFailed:
 		s.closeResident(OutcomeFailed, nil, ReasonSpawn)
-	case s.held:
-		s.closeResident(OutcomeCancelled, &code, ReasonHours)
+	case !s.holds.Empty():
+		s.closeResident(OutcomeCancelled, &code, holdRunReason(s.holds))
 	case code == 0:
 		s.closeResident(OutcomeSuccess, &code, "")
 	default:

@@ -119,7 +119,7 @@ func waitSnap(t *testing.T, m *supervisor.Manager, desc string, cond func(superv
 		time.Sleep(5 * time.Millisecond)
 	}
 	snap, _ := m.Snapshot("w")
-	t.Fatalf("timed out waiting for %s: state=%s held=%v closing=%v", desc, snap.State, snap.Held, snap.Closing)
+	t.Fatalf("timed out waiting for %s: state=%s held=%v closing=%v", desc, snap.State, snap.Holds.Has(core.HoldHours), snap.Closing)
 	return snap
 }
 
@@ -133,14 +133,14 @@ func TestGateDiscardsALeaseWhenItsHoursOpen(t *testing.T) {
 	r, m, _ := realGate(t, "TZ=UTC Mon 09:00-09:10", core.HoursShutdownImmediate, mon30(9, 30), &countingBridge{})
 
 	r.at(mon30(8, 59)) // out of hours, leased: left alone
-	if snap, _ := m.Snapshot("w"); snap.State != core.StateRunning || snap.Held {
-		t.Fatalf("08:59 under a lease: state=%s held=%v, want running", snap.State, snap.Held)
+	if snap, _ := m.Snapshot("w"); snap.State != core.StateRunning || snap.Holds.Has(core.HoldHours) {
+		t.Fatalf("08:59 under a lease: state=%s held=%v, want running", snap.State, snap.Holds.Has(core.HoldHours))
 	}
 	r.at(mon30(9, 0)) // hours open: the lease is discarded
 	r.at(mon30(9, 5))
 	r.at(mon30(9, 10)) // the window closes, and no lease covers it any more
 	waitSnap(t, m, "held at the window's close", func(s supervisor.Snapshot) bool {
-		return s.State == core.StateStopped && s.Held && s.Enabled
+		return s.State == core.StateStopped && s.Holds.Has(core.HoldHours) && s.Enabled
 	})
 	// Asked out of hours and before 09:30, a surviving lease would answer
 	// live here; the discard at 09:00 is why it does not.
@@ -160,8 +160,8 @@ func TestGateEndsALeaseOnTheTicksClock(t *testing.T) {
 	r, m, logDir := realGate(t, "TZ=UTC Mon 09:00-13:00", core.HoursShutdownGraceful, mon30(21, 0), &busyBridge{})
 
 	r.at(mon30(20, 30)) // booted mid-lease: running, not held
-	if snap, _ := m.Snapshot("w"); snap.State != core.StateRunning || snap.Held {
-		t.Fatalf("20:30 under a restored lease: state=%s held=%v, want running", snap.State, snap.Held)
+	if snap, _ := m.Snapshot("w"); snap.State != core.StateRunning || snap.Holds.Has(core.HoldHours) {
+		t.Fatalf("20:30 under a restored lease: state=%s held=%v, want running", snap.State, snap.Holds.Has(core.HoldHours))
 	}
 	r.at(mon30(21, 0)) // the lease ends at 21:00 exactly
 	snap := waitSnap(t, m, "closing at the lease's end", func(s supervisor.Snapshot) bool { return s.Closing })
@@ -177,7 +177,7 @@ func TestGateEndsALeaseOnTheTicksClock(t *testing.T) {
 	}
 	r.at(mon30(21, 15))
 	waitSnap(t, m, "stopped at the cap", func(s supervisor.Snapshot) bool {
-		return s.State == core.StateStopped && s.Held && s.Enabled
+		return s.State == core.StateStopped && s.Holds.Has(core.HoldHours) && s.Enabled
 	})
 	data, err := os.ReadFile(filepath.Join(logDir, "w.log"))
 	if err != nil {
@@ -198,7 +198,7 @@ func TestGateStopsOnTheFirstTickPastTheDeadline(t *testing.T) {
 	r.at(mon30(12, 50))
 	r.at(mon30(15, 0)) // one tick after the resume
 	waitSnap(t, m, "stopped on the first tick past the deadline", func(s supervisor.Snapshot) bool {
-		return s.State == core.StateStopped && s.Held && !s.Closing
+		return s.State == core.StateStopped && s.Holds.Has(core.HoldHours) && !s.Closing
 	})
 	data, err := os.ReadFile(filepath.Join(logDir, "w.log"))
 	if err != nil {

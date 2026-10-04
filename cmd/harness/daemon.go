@@ -791,7 +791,9 @@ func startDaemonScheduler(mgr *supervisor.Manager, cfg *core.Config, clock sched
 // Shutdown", REQ "Turn State Signal".
 type hoursGate struct{ mgr *supervisor.Manager }
 
-func (g hoursGate) Status(name string) (up, held, closing, ok bool) { return g.mgr.GateStatus(name) }
+func (g hoursGate) Status(name string) (up bool, holds core.HoldSet, closing, ok bool) {
+	return g.mgr.GateStatus(name)
+}
 
 func (g hoursGate) Lease(name string, now time.Time) (time.Time, bool) {
 	return g.mgr.LeaseAt(name, now)
@@ -802,14 +804,21 @@ func (g hoursGate) CloseAt(name string, now time.Time) (time.Time, bool) {
 }
 
 func (g hoursGate) Hold(name string, mode core.HoursShutdownMode, closeAt time.Time) {
-	g.mgr.Hold(name, mode, closeAt)
+	g.mgr.Hold(name, core.HoldHours, mode, closeAt)
 }
 
 func (g hoursGate) CloseStep(name string, now time.Time) { g.mgr.CloseStep(name, now) }
 
 func (g hoursGate) Arm(name string, closeAt time.Time) { g.mgr.Arm(name, closeAt) }
 
-func (g hoursGate) Release(name string) { g.mgr.Release(name) }
+func (g hoursGate) Release(name string, reason core.HoldReason) { g.mgr.Release(name, reason) }
+
+// HoldsCleared is the gate pass's clearing hook for every hold reason other
+// than hours (SPEC-0021 REQ-14): the Manager answers from the clearers the
+// park and budget stories register.
+func (g hoursGate) HoldsCleared(now time.Time) map[string]core.HoldSet {
+	return g.mgr.HoldsCleared(now)
+}
 
 // HoursSkipped and OpenFirings are the firing half of the gate, for a harness
 // with `triggers` (SPEC-0014 REQ "Operating Hours On Triggered Harnesses").

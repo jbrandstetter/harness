@@ -677,7 +677,7 @@ func (t *Table) nextRunCell(h protocol.HarnessInfo) string {
 	case h.Schedule != "":
 		s = schedfmt.NextIn(h.NextRun)
 	case h.OperatingHours != "":
-		s = schedfmt.HoursNext(h.Held, h.ClosingUntil != "", h.LeaseUntil, h.ClosingUntil, h.HoursNext)
+		s = schedfmt.HoursNext(schedfmt.HoursHeld(h.HoldReasons), h.ClosingUntil != "", h.LeaseUntil, h.ClosingUntil, h.HoursNext)
 	case len(h.Triggers) > 0:
 		// No window to count down to: it fires when its source hears
 		// something (SPEC-0014 REQ "Trigger Visibility").

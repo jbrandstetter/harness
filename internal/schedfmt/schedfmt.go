@@ -33,6 +33,7 @@ package schedfmt
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -444,9 +445,23 @@ const OffHoursLabel = "off-hours"
 // ends, it goes quiet, or the close's deadline passes, whichever lands first.
 const ClosingLabel = "closing"
 
+// HoursHeld reports whether a harness's hold_reasons (protocol.HarnessInfo
+// .HoldReasons) include its operating hours: what the projection's removed
+// `held` boolean meant, and what every `held` parameter in this file means.
+// A harness held only for a park or a budget is not off-hours (SPEC-0021
+// REQ-16 gives those their own labels). Governing: SPEC-0021 REQ-14, REQ-16;
+// SPEC-0012 REQ "Operating Hours Visibility".
+//
+// @joestump 10/04/2026 - Added for stump.wtf/harness#468: readers switched
+// from `held` to hold_reasons containing hours.
+func HoursHeld(holdReasons []string) bool {
+	return slices.Contains(holdReasons, core.HoldHours.String())
+}
+
 // IsOffHours reports whether state/held is the one combination StateLabel
 // renames to off-hours: a gated harness the operating-hours gate has shut
-// down, sitting in the same core.StateStopped a give-up latch would produce.
+// down (held for its hours, HoursHeld), sitting in the same
+// core.StateStopped a give-up latch would produce.
 // Closing is deliberately not part of this test — a close in flight is still
 // up, so its state is never StateStopped, but StateLabel checks closing
 // first anyway so a caller can never observe the two labels disagree.
@@ -463,6 +478,7 @@ func IsOffHours(state string, held bool) bool {
 // only once the process actually stops) but its true state is not yet
 // StateStopped, so IsOffHours never matches it anyway — the order here just
 // keeps that reasoning in one place instead of relying on it implicitly.
+// held means held for its hours (HoursHeld).
 func StateLabel(state, firing string, held, closing bool) string {
 	switch {
 	case closing:
@@ -526,8 +542,8 @@ func Glyph(state, firing string) string {
 //     read as already past.
 //   - leaseUntil set: "lease until 21:00" — running past the close on an
 //     after-hours lease.
-//   - held: "opens Mon 09:00" — waiting on hoursNext, the day is worth
-//     stating because the open can be days away.
+//   - held (for its hours, HoursHeld): "opens Mon 09:00" — waiting on
+//     hoursNext, the day is worth stating because the open can be days away.
 //   - otherwise (in hours, plain): "closes 13:00" — hoursNext is the window's
 //     own close for a running gated harness.
 //

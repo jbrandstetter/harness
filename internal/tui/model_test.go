@@ -1036,7 +1036,7 @@ func TestRenderRowOffHoursDistinctFromStoppedAndFailed(t *testing.T) {
 	m.w, m.h = 100, 40
 
 	offHours := m.renderRow(protocol.HarnessInfo{
-		Name: "claude-src", State: "stopped", Held: true,
+		Name: "claude-src", State: "stopped", HoldReasons: []string{"hours"},
 		OperatingHours: "Mon-Fri 09:00-13:00", HoursNext: "2026-09-28T09:00:00-07:00",
 	}, false)
 	if !strings.Contains(offHours, "off-hours") {
@@ -1047,7 +1047,7 @@ func TestRenderRowOffHoursDistinctFromStoppedAndFailed(t *testing.T) {
 	}
 
 	closing := m.renderRow(protocol.HarnessInfo{
-		Name: "claude-src", State: "running", Held: true,
+		Name: "claude-src", State: "running", HoldReasons: []string{"hours"},
 		OperatingHours: "Mon-Fri 09:00-13:00", ClosingUntil: "2026-09-22T13:15:00-07:00",
 	}, false)
 	if !strings.Contains(closing, "closing") {
@@ -1055,6 +1055,16 @@ func TestRenderRowOffHoursDistinctFromStoppedAndFailed(t *testing.T) {
 	}
 	if strings.Contains(closing, "off-hours") || strings.Contains(closing, "stopped") {
 		t.Errorf("closing gated row = %q, must not read off-hours or stopped", closing)
+	}
+
+	// Off-hours is read from hold_reasons containing "hours" (SPEC-0021
+	// REQ-16): a gated harness held only for a park is not off-hours.
+	parked := m.renderRow(protocol.HarnessInfo{
+		Name: "claude-src", State: "stopped", HoldReasons: []string{"quota"},
+		OperatingHours: "Mon-Fri 09:00-13:00", HoursNext: "2026-09-22T13:00:00-07:00",
+	}, false)
+	if strings.Contains(parked, "off-hours") {
+		t.Errorf("row held only for quota = %q, must not read off-hours", parked)
 	}
 
 	// An operator-stopped harness (never gated) still reads plain "stopped",

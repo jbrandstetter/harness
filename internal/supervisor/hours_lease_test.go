@@ -320,7 +320,7 @@ func TestRestartMidLeaseRoundTrip(t *testing.T) {
 		return snap.State == core.StateRunning
 	})
 	snap, _ := m2.Snapshot(h.Name)
-	if snap.Held {
+	if snap.Holds.Has(core.HoldHours) {
 		t.Fatal("boot held a harness under a live lease")
 	}
 }

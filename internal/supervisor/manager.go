@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -83,6 +84,14 @@ type ManagerOptions struct {
 	// Defaults to a real internal/runtrace watcher; tests inject stubs so
 	// the close machinery can be driven without trace stores.
 	Watch TurnBridge
+	// HoldClearers are the clearing hooks for hold reasons other than hours
+	// (SPEC-0021 REQ-14), keyed by reason: each answers whether a harness's
+	// hold for that reason has cleared at the gate tick's clock. The park
+	// story feeds quota's (a park's reset instant) and the budget story
+	// budget's (a rollover, or a cap a reload raised); until they land
+	// nothing holds a harness for either, and only tests set one
+	// (manager_holds.go).
+	HoldClearers map[core.HoldReason]HoldClearer
 }
 
 // Manager supervises every harness in a config.
@@ -143,6 +152,10 @@ type Manager struct {
 	// inside the minute before a close. Governing: manager_hours.go.
 	watch        TurnBridge
 	armedCloseAt map[string]time.Time
+
+	// holdClearers are ManagerOptions.HoldClearers, read-only after
+	// NewManager (manager_holds.go).
+	holdClearers map[core.HoldReason]HoldClearer
 
 	// runs is each harness's run id allocator, and jobsDir the root of the
 	// per-run logs (manager_runs.go; SPEC-0008 REQ "Run History"). The records
@@ -249,6 +262,7 @@ func NewManager(cfg *core.Config, opts ManagerOptions) *Manager {
 		expiredLease:  make(map[string]time.Time),
 		armedCloseAt:  make(map[string]time.Time),
 		watch:         opts.Watch,
+		holdClearers:  maps.Clone(opts.HoldClearers),
 		dirty:         make(chan struct{}, 1),
 		closed:        make(chan struct{}),
 	}
@@ -540,7 +554,7 @@ func (m *Manager) Autostart() {
 				s.StartWith(TriggerLease)
 				continue
 			}
-			s.Hold(core.HoursShutdownImmediate, time.Time{})
+			s.Hold(core.HoldHours, core.HoursShutdownImmediate, time.Time{})
 			continue
 		}
 		s.StartWith(TriggerAutostart)
@@ -571,19 +585,6 @@ func startOrHold(s *Supervisor, trigger RunTrigger) {
 func snapUp(st core.State) bool {
 	switch st {
 	case core.StateStarting, core.StateRunning, core.StateDegraded, core.StateRestarting:
-		return true
-	}
-	return false
-}
-
-// Release starts a held harness when its hours open, without touching its
-// enabled intent (Supervisor.Release). ok=false if unknown. A graceful close
-// still in flight is cancelled, and its turn-state watch is torn down:
-// hours reopening leaves the harness running as an ordinary in-hours one.
-func (m *Manager) Release(name string) bool {
-	if s := m.get(name); s != nil {
-		s.Release()
-		m.unfollowWatch(name)
 		return true
 	}
 	return false
@@ -1134,6 +1135,7 @@ func (m *Manager) addSupervisorLocked(h core.Harness) {
 		OnChange:    m.markDirty,
 		InitialSize: m.initialSizeFor(h.Name),
 		Runs:        m,
+		Admit:       m.admitRelease,
 	})
 	m.supervisors[h.Name] = s
 }
@@ -1150,6 +1152,7 @@ func (m *Manager) addEphemeralSupervisorLocked(h core.Harness) {
 		LogCfg:      m.logCfg,
 		ExtraOut:    m.extraOut(h),
 		InitialSize: m.initialSizeFor(h.Name),
+		Admit:       m.admitRelease,
 	})
 	m.supervisors[h.Name] = s
 }

@@ -5,8 +5,9 @@ package scheduler
 // Every scenario of SPEC-0012 REQ "Gate Evaluation" and the scheduler's half
 // of REQ "Gate Enforcement" / REQ "Operating Hours Reload", driven through the
 // fake clock: suspend/resume jumps and both DST transitions take microseconds.
-// fakeGate models just enough of a supervisor (up / held) for the pass to act
-// on, and records every Hold and Release it receives.
+// fakeGate models just enough of a supervisor (up / held, and any hold
+// reasons beside hours) for the pass to act on, and records every Hold and
+// Release it receives.
 //
 // Governing: ADR-0019, SPEC-0012 REQ "Gate Evaluation", REQ "Gate
 // Enforcement", REQ "Operating Hours Reload".
@@ -24,15 +25,19 @@ import (
 )
 
 type fakeGate struct {
-	mu      sync.Mutex
-	up      map[string]bool
+	mu sync.Mutex
+	up map[string]bool
+	// held is held for hours; other is every other hold reason, and cleared
+	// what HoldsCleared reports (SPEC-0021 REQ-14).
 	held    map[string]bool
+	other   map[string]core.HoldSet
+	cleared map[string]core.HoldSet
 	closing map[string]bool
 	lease   map[string]time.Time
 	// closeAt is what CloseAt answers per name; a name absent from the map
 	// is unanchored (ok=false).
 	closeAt map[string]time.Time
-	calls   []string // "hold name mode" / "clos name" / "arm name" / "release name" / "open name"
+	calls   []string // "hold name mode" / "clos name" / "arm name" / "release name [reason]" / "open name"
 	onHold  func()
 	// skipped is what HoursSkipped answers; OpenFirings clears it, as the
 	// real loop does.
@@ -42,15 +47,20 @@ type fakeGate struct {
 func newFakeGate() *fakeGate {
 	return &fakeGate{
 		up: map[string]bool{}, held: map[string]bool{}, closing: map[string]bool{},
+		other: map[string]core.HoldSet{}, cleared: map[string]core.HoldSet{},
 		lease: map[string]time.Time{}, closeAt: map[string]time.Time{},
 		skipped: map[string]bool{},
 	}
 }
 
-func (g *fakeGate) Status(name string) (bool, bool, bool, bool) {
+func (g *fakeGate) Status(name string) (bool, core.HoldSet, bool, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.up[name], g.held[name], g.closing[name], true
+	holds := g.other[name]
+	if g.held[name] {
+		holds = holds.With(core.HoldHours)
+	}
+	return g.up[name], holds, g.closing[name], true
 }
 
 func (g *fakeGate) Lease(name string, _ time.Time) (time.Time, bool) {
@@ -90,13 +100,39 @@ func (g *fakeGate) Arm(name string, closeAt time.Time) {
 	g.calls = append(g.calls, "arm "+name)
 }
 
-func (g *fakeGate) Release(name string) {
+// Release records "release name" for hours, the call the SPEC-0012 tests
+// were written against, and "release name reason" for any other reason. Like
+// the real loop, the harness comes up only when no reason is left.
+func (g *fakeGate) Release(name string, reason core.HoldReason) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.calls = append(g.calls, "release "+name)
-	if g.held[name] {
-		g.up[name], g.held[name] = true, false
+	call := "release " + name
+	if reason != core.HoldHours {
+		call += " " + reason.String()
 	}
+	g.calls = append(g.calls, call)
+	wasHeld := g.held[name] || !g.other[name].Empty()
+	if reason == core.HoldHours {
+		g.held[name] = false
+	} else {
+		g.other[name] = g.other[name].Without(reason)
+		g.cleared[name] = g.cleared[name].Without(reason)
+	}
+	if wasHeld && !g.held[name] && g.other[name].Empty() {
+		g.up[name] = true
+	}
+}
+
+func (g *fakeGate) HoldsCleared(time.Time) map[string]core.HoldSet {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make(map[string]core.HoldSet)
+	for name, rs := range g.cleared {
+		if !rs.Empty() {
+			out[name] = rs
+		}
+	}
+	return out
 }
 
 func (g *fakeGate) HoursSkipped(name string) bool {
