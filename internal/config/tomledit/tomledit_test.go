@@ -447,3 +447,59 @@ func TestEditedFileStillParses(t *testing.T) {
 		t.Error("deploy still present")
 	}
 }
+
+// TestSetKeySkipsValueContinuationLines: a multi-line value's continuation
+// lines are never key lines, even when one reads like one once its quotes
+// are stripped — `"model=opus",` inside an array, `model = "inside"` inside a
+// multi-line string. Matching one would splice the new value into the middle
+// of the array (key present further down) or of the string (key absent).
+func TestSetKeySkipsValueContinuationLines(t *testing.T) {
+	const values = `[harness.reviewer]
+args = [
+  "model=opus",
+  "--verbose",
+]
+prompt = """
+model = "inside"
+"""
+`
+	for _, tc := range []struct {
+		name, src, want string
+	}{
+		{
+			name: "key present after the values",
+			src:  values + "model = \"big\"\n",
+			want: values + "model = \"small\"\n",
+		},
+		{
+			name: "key absent",
+			src:  values,
+			want: values + "model = \"small\"\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := New([]byte(tc.src))
+			if err := e.SetHarnessKey("reviewer", "model", "small"); err != nil {
+				t.Fatal(err)
+			}
+			out := string(e.Bytes())
+			if out != tc.want {
+				t.Fatalf("set touched more than the real key:\n%s\nwant:\n%s", out, tc.want)
+			}
+			var cfg struct {
+				Harness map[string]struct {
+					Args   []string
+					Prompt string
+					Model  string
+				}
+			}
+			if _, err := toml.Decode(out, &cfg); err != nil {
+				t.Fatalf("edited file no longer parses: %v\n%s", err, out)
+			}
+			got := cfg.Harness["reviewer"]
+			if len(got.Args) != 2 || got.Args[0] != "model=opus" || got.Prompt != "model = \"inside\"\n" || got.Model != "small" {
+				t.Errorf("reviewer = %+v", got)
+			}
+		})
+	}
+}
