@@ -22,7 +22,9 @@ import (
 // payload's "event".
 const (
 	// NotifyFailed fires when a harness gives up into `failed` (SPEC-0003
-	// REQ "Backoff Give-Up").
+	// REQ "Backoff Give-Up"). Never for a triggered harness: its failed run
+	// lands it in `failed`, but its next firing retries it, so nothing gave
+	// up; run_failed reports that run.
 	NotifyFailed = "failed"
 	// NotifyFlapping fires when crash-loop backoff escalates.
 	NotifyFlapping = "flapping"
