@@ -186,6 +186,19 @@ type HarnessForm struct {
 	// Writers" requires a harness rewrite to leave them byte-identical, so
 	// the only safe thing to do with them here is nothing.
 	Triggers []string
+	// Budget is the harness's budget keys (SPEC-0021 REQ-1). The form has
+	// no widgets for them yet, but it must carry them: the save path
+	// rewrites the whole table, so a form that dropped them would lift an
+	// operator's run and spend caps the next time someone edited a
+	// description. Zero fields are absent keys, the parser's own encoding,
+	// so an untouched edit round-trips without growing keys. Validate
+	// mirrors the parser's one rule the form's other fields can break: the
+	// per-run caps need a prompt source.
+	//
+	// The [budget] table is NOT carried, for the reason the trigger source
+	// tables are not: it is a separate top-level table the table rewrite
+	// leaves byte-identical.
+	Budget core.Budget
 }
 
 // NewHarnessForm is a blank form for `n` with sane defaults (native backend).
@@ -391,6 +404,13 @@ func (f HarnessForm) Validate() error {
 		if d, err := time.ParseDuration(hst); err != nil || d <= 0 {
 			return fmt.Errorf("invalid hours_shutdown_timeout %q (want a positive duration such as 15m)", hst)
 		}
+	}
+	// The per-run caps need a one-shot (SPEC-0021 REQ-1). The budget rides
+	// the form unedited, so this is the one rule a save can break: clearing
+	// the prompt of a capped one-shot would write a table the parser
+	// refuses.
+	if (f.Budget.MaxTokens > 0 || f.Budget.MaxCostUSD > 0) && !promptSet {
+		return fmt.Errorf("max_tokens and max_cost_usd are per-run caps and need prompt or prompt_file; remove them from harness.toml before turning this harness resident")
 	}
 	return nil
 }
@@ -663,7 +683,38 @@ func (f HarnessForm) TOML() string {
 	if et := strings.TrimSpace(f.ExportTelemetry); et == "true" || et == "false" {
 		fmt.Fprintf(&b, "export_telemetry = %s\n", et)
 	}
+	writeBudgetTOML(&b, f.Budget)
 	return b.String()
+}
+
+// writeBudgetTOML emits the SPEC-0021 REQ-1 budget keys that are set, each in
+// the type the parser reads it back as: integers bare, dollars as TOML numbers
+// (an integral amount is written as an integer, which the parser accepts as a
+// decimal), durations as quoted strings in the operator's spelling ("15m",
+// not "15m0s"). Zero is an absent key, so nothing unset is ever written.
+// Governing: SPEC-0021 REQ-1; SPEC-0001 REQ "Lossless Edit Round-Trip".
+func writeBudgetTOML(b *strings.Builder, bud core.Budget) {
+	if bud.MaxRunsPerDay > 0 {
+		fmt.Fprintf(b, "max_runs_per_day = %d\n", bud.MaxRunsPerDay)
+	}
+	if bud.MaxTokens > 0 {
+		fmt.Fprintf(b, "max_tokens = %d\n", bud.MaxTokens)
+	}
+	if bud.MaxCostUSD > 0 {
+		fmt.Fprintf(b, "max_cost_usd = %s\n", strconv.FormatFloat(bud.MaxCostUSD, 'g', -1, 64))
+	}
+	if bud.DailyCostUSD > 0 {
+		fmt.Fprintf(b, "daily_cost_usd = %s\n", strconv.FormatFloat(bud.DailyCostUSD, 'g', -1, 64))
+	}
+	if bud.QuotaGroup != "" {
+		fmt.Fprintf(b, "quota_group = %s\n", strconv.Quote(bud.QuotaGroup))
+	}
+	if bud.QuotaBackoff > 0 {
+		fmt.Fprintf(b, "quota_backoff = %s\n", strconv.Quote(formatRunTimeout(bud.QuotaBackoff)))
+	}
+	if bud.QuotaBackoffMax > 0 {
+		fmt.Fprintf(b, "quota_backoff_max = %s\n", strconv.Quote(formatRunTimeout(bud.QuotaBackoffMax)))
+	}
 }
 
 // normalizeTriggers trims and drops blank entries from a triggers list, so
@@ -805,6 +856,9 @@ func editInputsFor(path string, sel protocol.HarnessInfo) formInputs {
 	if !h.UseDefaultSkillPaths {
 		fi.useDefaultSkillPaths = "false"
 	}
+	// Typed, not string-bound: no widget edits it yet, so there is no input
+	// encoding to round-trip through (SPEC-0021 REQ-1).
+	fi.budget = h.Budget
 	fi.operatingHours = h.OperatingHours
 	if h.OperatingHours != "" {
 		// Same "blank means the parser default" convention as the schedule
@@ -864,6 +918,7 @@ func (fi formInputs) toForm() HarnessForm {
 		HoursShutdown:        strings.TrimSpace(fi.hoursShutdown),
 		HoursShutdownTimeout: strings.TrimSpace(fi.hoursShutdownTimeout),
 		ExportTelemetry:      strings.TrimSpace(fi.exportTelemetry),
+		Budget:               fi.budget,
 	}
 	if args, err := shlex.Split(fi.args, true); err == nil && len(args) > 0 {
 		f.Args = args

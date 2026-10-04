@@ -177,6 +177,56 @@ enabled = false
 # show a leased harness's NEXT column as "lease until <time>", distinct from
 # both "off-hours" (held) and "closing" (a graceful close in flight).
 
+# Run budgets (ADR-0027 / SPEC-0021). NOT ENFORCED YET: these keys are parsed
+# and validated at load (a bad value fails with its line) and survive a TUI
+# edit, but nothing counts runs, meters cost or parks a harness until the
+# enforcement releases land. Global config only: a project harness.toml or a
+# harness_d drop-in that sets any of them, or contains [budget], is refused.
+#
+# Per harness:
+#   max_runs_per_day   admissions per budget day (a resident counts every
+#                      process start, restarts included); whole number >= 1
+#   max_tokens         per run: input + output + cache writes; whole number >= 1
+#   max_cost_usd       per run, in dollars; > 0
+#                      (both per-run caps need `prompt` or `prompt_file`: a
+#                      resident's "run" is a process that can live for days)
+#   daily_cost_usd     this harness, per budget day, in dollars; > 0
+#   quota_group        harnesses on one provider allowance park together;
+#                      1-64 of a-z, 0-9, ".", "_", "-"
+#   quota_backoff      first park when a quota refusal gives no reset time;
+#                      >= 1m, default "15m"
+#   quota_backoff_max  longest backoff park; >= quota_backoff, <= 24h,
+#                      default "6h"
+#
+# [harness.pr-sweep]
+# harness = "claude-code"
+# prompt = "review the open pull requests"
+# schedule = "*/15 * * * *"
+# max_runs_per_day = 40
+# max_tokens = 400000
+# max_cost_usd = 2.00
+# daily_cost_usd = 20.00
+# quota_group = "claude-max"
+#
+# Daemon-wide, in one [budget] table. day_starts takes schedule's TZ=/CRON_TZ=
+# prefix then one HH:MM (default 00:00 in the daemon's zone). Prices are per
+# million tokens by served model name, used for agents that record tokens but
+# no cost: input and output are required, the cache prices default to 0.
+#
+# [budget]
+# day_starts = "TZ=America/Los_Angeles 00:00"
+# max_concurrent = 4                  # triggered one-shot runs in flight at once
+# daily_cost_usd = 50.00              # every harness together, per budget day
+#
+# [budget.prices."claude-sonnet-4-6"]
+# input_per_mtok = 3.00
+# output_per_mtok = 15.00
+# cache_write_per_mtok = 3.75
+# cache_read_per_mtok = 0.30
+#
+# [budget.group.claude-max]           # harnesses with quota_group = "claude-max"
+# max_concurrent = 2
+
 # Harness kinds (ADR-0011, SPEC-0006): the `harness` key is an enum selecting
 # the adapter, which owns the executable a long-running harness runs (args are
 # appended after it) and the CLI-specific argv synthesized for a prompt

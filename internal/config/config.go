@@ -113,6 +113,24 @@ type rawHarness struct {
 	// other kind.
 	Transcripts string `toml:"transcripts"`
 
+	// The SPEC-0021 REQ-1 budget keys, validated by buildHarnessBudget
+	// (budget.go). Untyped, so a wrong type is reported at the key's own
+	// line rather than as a decoder error on the table header; nil means
+	// absent. Global config only: project files and harness_d drop-ins
+	// refuse every one of them.
+	MaxRunsPerDay   any `toml:"max_runs_per_day"`
+	MaxTokens       any `toml:"max_tokens"`
+	MaxCostUSD      any `toml:"max_cost_usd"`
+	DailyCostUSD    any `toml:"daily_cost_usd"`
+	QuotaGroup      any `toml:"quota_group"`
+	QuotaBackoff    any `toml:"quota_backoff"`
+	QuotaBackoffMax any `toml:"quota_backoff_max"`
+	// keyLine finds a key's line inside this harness's own table, for the
+	// errors that name a key rather than the table. Set by the caller that
+	// holds the file's bytes (keyLineIn); nil falls back to the header line,
+	// like every older check in registerHarness.
+	keyLine func(key string) int
+
 	// Removed keys, still decoded so their presence can be REJECTED with a
 	// migration error. TOML decoding here ignores unknown keys, so deleting
 	// these fields outright would make a pre-enum config load clean and then
@@ -480,6 +498,15 @@ func Parse(data []byte, filename string) (*core.Config, error) {
 			}
 			cfg.Notify = nc
 
+		case h.parts[0] == "budget":
+			// [budget] and its [budget.prices.*]/[budget.group.*] sub-tables
+			// are one table, decoded together after this loop: a file may
+			// write only the sub-tables, or carry prices as dotted keys with
+			// no header at all. This case sits BEFORE the bare-[name]
+			// fallback, or `[budget]` would register a harness of that name.
+			// Governing: SPEC-0021 REQ-2.
+			continue
+
 		case len(h.parts) == 2 && h.parts[0] == "skill_repo":
 			// A declared skill repo (SPEC-0007 REQ "Skill Repos").
 			name := h.parts[1]
@@ -544,6 +571,7 @@ func Parse(data []byte, filename string) (*core.Config, error) {
 			if err := md.PrimitiveDecode(top[name], &rh); err != nil {
 				return nil, newError(filename, h.line, "[%s]: %v", name, err)
 			}
+			rh.keyLine = keyLineIn(data, name)
 			if err := addHarness(cfg, st, filename, name, h.line, rh); err != nil {
 				return nil, err
 			}
@@ -554,6 +582,7 @@ func Parse(data []byte, filename string) (*core.Config, error) {
 			if err := md.PrimitiveDecode(harnessNS[name], &rh); err != nil {
 				return nil, newError(filename, h.line, "[harness.%s]: %v", name, err)
 			}
+			rh.keyLine = keyLineIn(data, "harness."+name)
 			if err := addHarness(cfg, st, filename, name, h.line, rh); err != nil {
 				return nil, err
 			}
@@ -582,6 +611,22 @@ func Parse(data []byte, filename string) (*core.Config, error) {
 			// the ADR-0006 schema.
 			return nil, newError(filename, h.line, "unrecognized table [%s]", strings.Join(h.parts, "."))
 		}
+	}
+
+	// The [budget] table, however it was spelled (see the header case
+	// above). Decoded before checkUndecoded, so its keys count as known.
+	// Governing: SPEC-0021 REQ-2.
+	if p, ok := top["budget"]; ok {
+		line := budgetTableLine(headers)
+		var rb rawBudget
+		if err := md.PrimitiveDecode(p, &rb); err != nil {
+			return nil, newError(filename, line, "[budget]: %v", err)
+		}
+		db, err := buildDaemonBudget(filename, data, line, rb)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Budget = db
 	}
 
 	// Fail loudly on any key the schema does not know (issue #2): a typo in
@@ -1278,6 +1323,17 @@ func registerHarness(cfg *core.Config, filename, name string, line int, rh rawHa
 		}
 	}
 
+	// The budget keys (SPEC-0021 REQ-1): run and cost caps and the quota
+	// park's shape. Parsed and validated only; nothing enforces them until
+	// the admission and parking stories land. The per-run caps need a
+	// one-shot, which is why this runs after isAgent is known. A project
+	// file or drop-in never gets here with one set: both refuse the keys
+	// before registering.
+	budget, err := buildHarnessBudget(filename, name, line, rh, isAgent)
+	if err != nil {
+		return err
+	}
+
 	// `env_file` is rejected as an explicit empty list (SPEC-0018 REQ-12
 	// scenario "An empty list"): unlike an absent key or even a blank string,
 	// which mean "no extra environment", `env_file = []` can only be a
@@ -1345,6 +1401,7 @@ func registerHarness(cfg *core.Config, filename, name string, line int, rh rawHa
 		HoursShutdown:        shutdownMode,
 		HoursShutdownTimeout: shutdownTimeout,
 		Triggers:             triggers,
+		Budget:               budget,
 	}
 	if isAgent {
 		// Args stay EMPTY for a prompt harness (spawn-time synthesis,
@@ -1577,6 +1634,14 @@ func parseHarnessDFile(cfg *core.Config, st *loadState, data []byte, filename st
 			var rh rawHarness
 			if err := md.PrimitiveDecode(p, &rh); err != nil {
 				return newError(filename, h.line, "[harness.%s]: %v", name, err)
+			}
+			rh.keyLine = keyLineIn(data, "harness."+name)
+			// A drop-in registers with global semantics, so the budget keys
+			// registerHarness accepts must be refused here: a unit dropped in
+			// beside the config does not get to set the operator's spend.
+			// Governing: SPEC-0021 REQ-1.
+			if keys := rh.budgetKeys(); len(keys) > 0 {
+				return budgetOnlyGlobalErr(filename, rh.lineOfKey(keys[0], h.line), name, keys[0], "a harness_d drop-in")
 			}
 			if err := addHarness(cfg, st, filename, name, h.line, rh); err != nil {
 				return err

@@ -100,33 +100,9 @@ func Parse(s string) (Expr, error) {
 		return Expr{}, fmt.Errorf("must not be blank")
 	}
 
-	rest := trimmed
-	var zoneText string
-	var loc *time.Location
-	if strings.HasPrefix(rest, "TZ=") || strings.HasPrefix(rest, "CRON_TZ=") {
-		token := rest
-		if sp := strings.IndexAny(rest, " \t"); sp >= 0 {
-			token = rest[:sp]
-			rest = strings.TrimSpace(rest[sp+1:])
-		} else {
-			rest = ""
-		}
-		eq := strings.IndexByte(token, '=')
-		zoneText = token[eq+1:]
-		if zoneText == "" {
-			return Expr{}, fmt.Errorf("zone prefix %q: missing zone name", token)
-		}
-		l, err := time.LoadLocation(zoneText)
-		if err != nil {
-			// Governing: same zone resolution as SPEC-0008 REQ "Schedule Time
-			// Zone" — time.LoadLocation, which the embedded tzdata import in
-			// cmd/harness/tzdata.go covers for every caller in the binary
-			// (robfig/cron's CRON_TZ= parsing included), so a harness.toml
-			// that loads on a laptop loads the same way in a minimal
-			// container with no /usr/share/zoneinfo.
-			return Expr{}, fmt.Errorf("unknown time zone %q: %w", zoneText, err)
-		}
-		loc = l
+	zoneText, loc, rest, err := ParseZonePrefix(trimmed)
+	if err != nil {
+		return Expr{}, err
 	}
 	if rest == "" {
 		return Expr{}, fmt.Errorf("must specify at least one window")
@@ -153,6 +129,51 @@ func Parse(s string) (Expr, error) {
 	})
 
 	return Expr{zoneText: zoneText, loc: loc, windows: windows}, nil
+}
+
+// ParseZonePrefix splits an optional leading `TZ=<zone>` or `CRON_TZ=<zone>`
+// token off s and resolves the zone. It is the one zone-prefix parser every
+// time-of-day key shares — operating_hours here, and SPEC-0021's [budget]
+// day_starts (ParseDailyInstant) — so a zone that loads in one loads in the
+// other, with the same errors.
+//
+// s must already be trimmed. With no prefix, zone is "", loc is nil (the
+// caller's zone) and rest is s unchanged. With one, rest is what follows the
+// token, trimmed, and may be empty: whether anything must follow is the
+// caller's grammar, not this function's.
+//
+// Governing: SPEC-0008 REQ "Schedule Time Zone" (resolution and errors),
+// SPEC-0012 REQ "Operating Hours Key", SPEC-0021 REQ-2 ("The zone prefix SHALL
+// use the same parsing, embedded IANA database and errors"); run-budgets
+// design.md § "The budget day reuses the gate's clock".
+//
+// @joestump 10/04/2026 - Exported out of Parse for #465, so day_starts cannot
+// grow a second zone parser that disagrees with operating_hours.
+func ParseZonePrefix(s string) (zone string, loc *time.Location, rest string, err error) {
+	if !strings.HasPrefix(s, "TZ=") && !strings.HasPrefix(s, "CRON_TZ=") {
+		return "", nil, s, nil
+	}
+	token := s
+	if sp := strings.IndexAny(s, " \t"); sp >= 0 {
+		token = s[:sp]
+		rest = strings.TrimSpace(s[sp+1:])
+	}
+	eq := strings.IndexByte(token, '=')
+	zone = token[eq+1:]
+	if zone == "" {
+		return "", nil, "", fmt.Errorf("zone prefix %q: missing zone name", token)
+	}
+	loc, err = time.LoadLocation(zone)
+	if err != nil {
+		// Governing: same zone resolution as SPEC-0008 REQ "Schedule Time
+		// Zone" — time.LoadLocation, which the embedded tzdata import in
+		// cmd/harness/tzdata.go covers for every caller in the binary
+		// (robfig/cron's CRON_TZ= parsing included), so a harness.toml
+		// that loads on a laptop loads the same way in a minimal
+		// container with no /usr/share/zoneinfo.
+		return "", nil, "", fmt.Errorf("unknown time zone %q: %w", zone, err)
+	}
+	return zone, loc, rest, nil
 }
 
 // parseWindow parses one ";"-separated window segment into its expanded
