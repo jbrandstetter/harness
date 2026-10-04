@@ -19,11 +19,13 @@ import (
 	"syscall"
 	"time"
 
+	clog "github.com/charmbracelet/log"
 	"github.com/charmbracelet/x/xpty"
 	"github.com/robfig/cron/v3"
 
 	"github.com/stump-wtf/harness/internal/adapter"
 	"github.com/stump-wtf/harness/internal/core"
+	"github.com/stump-wtf/harness/internal/skillmerge"
 	"github.com/stump-wtf/harness/internal/tmpl"
 )
 
@@ -581,6 +583,13 @@ func spawn(h core.Harness, cols, rows int, run RunEnv) (*process, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Project the merged skill set before exec (SPEC-0006 REQ "Spawn-Time
+	// Projection"): on every start and restart, never by symlink, skipped
+	// for an adapter with no target. Runs here — the single exec path every
+	// start, restart, crash-restart and triggered firing reaches.
+	if err := projectSkills(h, workdir); err != nil {
+		return nil, err
+	}
 	// A structured one-shot runs on pipes, with no PTY to allocate or size
 	// (pipes.go; ADR-0033 "Structured one-shots run on pipes").
 	if RunsOnPipes(h) {
@@ -643,4 +652,66 @@ func (p *process) signalGroup(sig syscall.Signal) {
 	if err := syscall.Kill(-p.pid, sig); err != nil {
 		_ = p.cmd.Process.Signal(sig)
 	}
+}
+
+// projectSkills materializes the harness's merged skill set into the
+// adapter's target directory immediately before exec (SPEC-0006 REQ
+// "Spawn-Time Projection"). The merge tiers, lowest first: the adapter's
+// default roots (unless use_default_skill_paths is false), then the
+// harness's skill_paths. A root that cannot be read warns and the rest
+// still merge; only a target that cannot be written fails the start, and
+// its error names the adapter, the target and the cause. Every SPEC-0007
+// skill repo is excluded unconditionally: their skills are served by
+// search (#794), never projected, so the whole serving-clone root is out
+// of bounds for roots.
+//
+// Governing: SPEC-0006 REQ "Spawn-Time Projection", "Ordered Merge and
+// Shadowing", "Error Handling Standards"; ADR-0011.
+func projectSkills(h core.Harness, workdir string) error {
+	reg := adapter.NewRegistryWithDefaults()
+	a := reg.Resolve(h)
+	target := a.SkillTarget()
+	if target == "" {
+		return nil // no target, no projection, normal start
+	}
+
+	var roots []skillmerge.Root
+	if h.UseDefaultSkillPaths {
+		for _, d := range a.SkillRoots(workdir) {
+			roots = append(roots, skillmerge.Root{Dir: expandHome(d), Tier: 1, Source: "adapter default"})
+		}
+	}
+	for _, d := range h.SkillPaths {
+		roots = append(roots, skillmerge.Root{Dir: expandHome(d), Tier: 2, Source: "skill_paths"})
+	}
+	roots = excludeServingRoot(roots)
+
+	set, warns := skillmerge.Resolve(roots)
+	for _, w := range warns {
+		clog.Warn("skill root unreadable; merging the remaining roots",
+			"harness", h.Name, "path", w.Dir, "err", w.Err)
+	}
+	if err := skillmerge.Project(target, set); err != nil {
+		return fmt.Errorf("supervisor: adapter %s: project skills: %w", a.Name(), err)
+	}
+	clog.Info("skills projected", "harness", h.Name, "target", target, "skills", len(set), "roots", len(roots))
+	return nil
+}
+
+// excludeServingRoot drops every root under the SPEC-0007 serving-clone
+// store ($XDG_STATE_HOME/harness/skills): a skill repo's skills are served
+// by search and excluded from projection unconditionally, whether or not
+// an operator pointed skill_paths at the clone.
+func excludeServingRoot(roots []skillmerge.Root) []skillmerge.Root {
+	serving := StateHome() + string(filepath.Separator)
+	kept := roots[:0]
+	for _, r := range roots {
+		if strings.HasPrefix(r.Dir, serving) {
+			clog.Warn("skill root inside the skill-repo serving store is excluded from projection",
+				"path", r.Dir)
+			continue
+		}
+		kept = append(kept, r)
+	}
+	return kept
 }
