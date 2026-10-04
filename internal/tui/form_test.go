@@ -1007,6 +1007,8 @@ var harnessFormFields = []string{
 	"OperatingHours", "HoursShutdown", "HoursShutdownTimeout",
 	"ExportTelemetry", "Triggers", "PackageSource",
 	"SkillPaths", "UseDefaultSkillPaths",
+	// Budget is the SPEC-0021 REQ-1 key set, carried whole (#465).
+	"Budget",
 	// HoursExpr is OperatingHours parsed (internal/hours), not a config key of
 	// its own — config.Parse derives it fresh from OperatingHours on every
 	// load, so there is nothing for the form's save path to carry or drop; it
@@ -1144,6 +1146,15 @@ func TestEditPreservesEveryConfigKey(t *testing.T) {
 				`description = "scheduled blog sweep"`,
 				"harvest_trajectory = true",
 				`mcp_allow = ["read", "write"]`,
+				// Every SPEC-0021 REQ-1 key; the per-run caps need a
+				// one-shot, so they live in this fixture.
+				"max_runs_per_day = 40",
+				"max_tokens = 400000",
+				"max_cost_usd = 2.5",
+				"daily_cost_usd = 20",
+				`quota_group = "claude-max"`,
+				`quota_backoff = "10m"`,
+				`quota_backoff_max = "1h30m"`,
 			},
 			promptFileBody: "Draft the studio blog post and open a PR.\n",
 		},
@@ -1163,6 +1174,12 @@ func TestEditPreservesEveryConfigKey(t *testing.T) {
 				`hours_shutdown_timeout = "30m"`,
 				`description = "gated agent"`,
 				"export_telemetry = true",
+				// The budget keys a resident may carry (SPEC-0021 REQ-1).
+				"max_runs_per_day = 30",
+				"daily_cost_usd = 15.25",
+				`quota_group = "litellm"`,
+				`quota_backoff = "15m"`,
+				`quota_backoff_max = "24h"`,
 			},
 		},
 		{

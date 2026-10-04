@@ -452,6 +452,93 @@ state, lease and close in flight show on every listing surface (`off-hours`,
 `closing`, `lease until …`) — no extra column, the existing STATE/SCHEDULE/NEXT
 columns carry it.
 
+## Run budgets
+
+:::note Validated, not yet enforced
+
+The keys below load, are checked, and survive a TUI edit, but nothing acts on
+them yet: no run is counted or refused, no cost is metered, and no harness is
+parked. Admission, quota parking, concurrency and the cost caps land in later
+releases ([SPEC-0021](/specs/run-budgets/spec), ADR-0027). Setting them now is
+safe, and a bad value fails today with the same located error it will fail
+with then.
+
+:::
+
+Budgets bound what an unattended agent may spend: runs per day, tokens and
+dollars per run, dollars per day, and how long a harness waits when its
+provider says the quota is exhausted. Each harness may carry these keys:
+
+```toml
+[harness.pr-review]
+harness = "claude-code"
+prompt_file = "~/.config/harness/prompts/pr-review.md"
+schedule = "*/15 * * * *"
+max_runs_per_day = 40          # admissions per budget day
+max_tokens = 400000            # per run: input + output + cache writes
+max_cost_usd = 2.00            # per run
+daily_cost_usd = 20.00         # this harness, per budget day
+quota_group = "claude-max"     # harnesses on one allowance park together
+quota_backoff = "15m"          # default; first park when no reset time is given
+quota_backoff_max = "6h"       # default; the longest backoff park
+```
+
+| Key | Value | On |
+| --- | --- | --- |
+| `max_runs_per_day` | whole number, at least 1 | any harness; on a resident, every process start counts, restarts included |
+| `max_tokens` | whole number, at least 1 | one-shots only (`prompt` or `prompt_file` set) |
+| `max_cost_usd` | dollars, above 0 | one-shots only |
+| `daily_cost_usd` | dollars, above 0 | any harness |
+| `quota_group` | 1–64 of `a-z`, `0-9`, `.`, `_`, `-` | any harness |
+| `quota_backoff` | duration, at least `1m` (default `15m`) | any harness |
+| `quota_backoff_max` | duration, at least `quota_backoff`, at most `24h` (default `6h`) | any harness |
+
+A `[budget]` table sets the daemon-wide limits and the prices used to cost a
+run whose agent records tokens but no dollars:
+
+```toml
+[budget]
+day_starts = "TZ=America/Los_Angeles 00:00"  # default 00:00 in the daemon's zone
+max_concurrent = 4                           # triggered one-shot runs in flight at once
+daily_cost_usd = 50.00                       # every harness together, per budget day
+
+[budget.prices."claude-sonnet-4-6"]          # per million tokens, by served model name
+input_per_mtok = 3.00                        # required
+output_per_mtok = 15.00                      # required
+cache_write_per_mtok = 3.75                  # optional, default 0
+cache_read_per_mtok = 0.30                   # optional, default 0
+
+[budget.group.claude-max]                    # harnesses with quota_group = "claude-max"
+max_concurrent = 2
+```
+
+- **Global only.** A project `harness.toml` or a `harness_d` drop-in that sets
+  any of these keys, or contains `[budget]`, is refused with the key and the
+  line: a cloned repository, or a unit dropped in beside the config, does not
+  get to set what your agents spend.
+- **Per-run caps need a one-shot.** A resident harness's "run" is a process
+  that can live for days, so `max_tokens` and `max_cost_usd` there are refused;
+  bound it with `max_runs_per_day` and `daily_cost_usd`.
+- **`day_starts`** takes the same `TZ=`/`CRON_TZ=` prefix as `schedule` and
+  `operating_hours`, then one `HH:MM` (`00:00`–`23:59`).
+- **Dollars** may be written as integers (`daily_cost_usd = 20`); `inf` and
+  `nan` are refused.
+- A `[budget.group.<name>]` that no harness's `quota_group` names still loads.
+
+A bad value fails the load (or a reload, which keeps the previous config) with
+the file, line, harness and key:
+
+| Mistake | Error |
+| --- | --- |
+| `max_tokens` on a resident harness | `"max_tokens" is a per-run cap, and per-run caps apply only to one-shot harnesses (…)` |
+| `max_runs_per_day = 0` | `"max_runs_per_day" must be a whole number of at least 1 (got 0)` |
+| `max_cost_usd = -1` | `"max_cost_usd" must be a number of dollars greater than 0 (got -1)` |
+| `quota_backoff_max = "48h"` | `"quota_backoff_max" must be a duration no longer than 24h, such as "6h" (got "48h")` |
+| `quota_backoff = "8h"` alone | `"quota_backoff" must not exceed quota_backoff_max, which defaults to 6h; set quota_backoff_max too (got "8h")` |
+| a budget key in a project file | `"max_runs_per_day" is not accepted in a project file (budgets are only accepted in the global config: …)` |
+| `day_starts = "TZ=Mars/Olympus 00:00"` | `[budget] "day_starts": invalid "TZ=Mars/Olympus 00:00": unknown time zone "Mars/Olympus"` |
+| a price without `input_per_mtok` | `[budget.prices."gpt-5"]: missing required "input_per_mtok" (…)` |
+
 ## Agent adapters
 
 The `harness` key is a **required** enum selecting the adapter (ADR-0011,

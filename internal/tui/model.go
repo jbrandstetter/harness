@@ -27,6 +27,7 @@ import (
 
 	"github.com/stump-wtf/agent-trace/tail"
 	"github.com/stump-wtf/harness/internal/adapter"
+	"github.com/stump-wtf/harness/internal/core"
 	"github.com/stump-wtf/harness/internal/protocol"
 	"github.com/stump-wtf/harness/internal/runtrace"
 	"github.com/stump-wtf/harness/internal/tui/chatroom"
@@ -154,6 +155,12 @@ type formInputs struct {
 	// is the tri-state switch that drops the adapter's defaults ("false")
 	// — both carried for the same round-trip reason as triggers.
 	skillPaths, useDefaultSkillPaths string
+	// budget is the harness's SPEC-0021 REQ-1 budget keys, carried typed
+	// from the file to the save with no widget yet: #465 lands parse,
+	// validate and round-trip, and the form fields come later. Carried for
+	// the round-trip reason triggers is: a dropped key silently lifts a
+	// spend cap.
+	budget core.Budget
 }
 
 // Model is the root Bubble Tea model.

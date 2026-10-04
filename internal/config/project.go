@@ -210,6 +210,13 @@ func ParseProject(data []byte, filename string) (*Project, error) {
 		if len(h.parts) >= 1 && (h.parts[0] == "skills" || h.parts[0] == "skill_repo") {
 			return nil, forbiddenTableErr(filename, full, h.line)
 		}
+		// The run budget is the operator's spend; a cloned repository does
+		// not get to set it, here or in a harness's own keys (below).
+		// Governing: SPEC-0021 REQ-2.
+		if len(h.parts) >= 1 && h.parts[0] == "budget" {
+			return nil, newError(filename, h.line,
+				"project file must not contain [%s] (budgets are only accepted in the global config: the daemon's harness.toml itself)", full)
+		}
 		// A stable is a git remote this machine is told to trust: a cloned
 		// repository must not be able to expand what is trusted on the
 		// machine that clones it. Governing: SPEC-0026 REQ-1.
@@ -256,6 +263,7 @@ func ParseProject(data []byte, filename string) (*Project, error) {
 			if err := md.PrimitiveDecode(harnessNS[name], &rh); err != nil {
 				return nil, newError(filename, h.line, "[harness.%s]: %v", name, err)
 			}
+			rh.keyLine = keyLineIn(data, "harness."+name)
 			if err := addProjectHarness(cfg, filename, name, h.line, rh, root); err != nil {
 				return nil, err
 			}
@@ -272,6 +280,7 @@ func ParseProject(data []byte, filename string) (*Project, error) {
 			if err := md.PrimitiveDecode(top[name], &rh); err != nil {
 				return nil, newError(filename, h.line, "[%s]: %v", name, err)
 			}
+			rh.keyLine = keyLineIn(data, name)
 			if err := addProjectHarness(cfg, filename, name, h.line, rh, root); err != nil {
 				return nil, err
 			}
@@ -355,6 +364,13 @@ func addProjectHarness(cfg *core.Config, filename, name string, line int, rh raw
 	if rh.Triggers != nil {
 		return newError(filename, line,
 			"harness %q: \"triggers\" is not supported in project files (trigger sources are daemon-owned; define triggered harnesses in the daemon's harness.toml)", name)
+	}
+	// The budget keys are global-only (SPEC-0021 REQ-1 scenario "Budget keys
+	// in a project file"): a cloned repository does not get to set, or
+	// raise, what the operator's agents may spend. Located at the key, since
+	// that is the line to delete.
+	if keys := rh.budgetKeys(); len(keys) > 0 {
+		return budgetOnlyGlobalErr(filename, rh.lineOfKey(keys[0], line), name, keys[0], "a project file")
 	}
 	// mcp_allow is a global-only concern (SPEC-0005 REQ "Capability Scoping"):
 	// a cloned repository granting its own harnesses write authority over the

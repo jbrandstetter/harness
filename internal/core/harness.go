@@ -434,6 +434,13 @@ type Harness struct {
 	// Governing: ADR-0021; SPEC-0014 REQ "Triggers Key", REQ "Triggered
 	// Harness Exclusions".
 	Triggers []string
+	// Budget is the harness's budget keys (budget.go): run and cost caps,
+	// and how a quota park behaves. Global config only; the zero value is a
+	// harness with no budget. Like HoursShutdown these are supervision keys,
+	// read at admission and on detection and never at spawn, so a change
+	// never restarts the harness (runAffecting does not list it).
+	// Governing: ADR-0027; SPEC-0021 REQ-1 "Per-harness budget keys".
+	Budget Budget
 }
 
 // Triggered reports whether h has any firing source at all — a clock, an
@@ -720,6 +727,10 @@ type Config struct {
 	// Notify is the optional global [notify] table (SPEC-0003 REQ "Operator
 	// Notification"); the zero value is off.
 	Notify NotifyConfig
+	// Budget is the optional global [budget] table (SPEC-0021 REQ-2); the
+	// zero value has no daemon-wide caps and a budget day that starts at
+	// 00:00 in the daemon's zone.
+	Budget DaemonBudget
 	// Channels is every [channel.*] trigger source keyed by name, nil when
 	// none are declared. Governing: ADR-0021; SPEC-0014 REQ "Channel Source
 	// Table".
