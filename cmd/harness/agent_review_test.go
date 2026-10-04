@@ -19,14 +19,19 @@ package main
 //
 // @joestump-agent 10/04/2026 - A local override is a row only when the
 // package moves its key, unit and end to end.
+//
+// @joestump-agent 10/04/2026 - A kept package path survives prune: an
+// interactive upgrade driven through a pty, then prune, then config load.
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/xpty"
 	"github.com/spf13/cobra"
 
 	"github.com/stump-wtf/harness/internal/agentpkg"
@@ -571,5 +576,195 @@ model = "sonnet"`, 1)
 	}
 	if src := installedSource(t, e.cfgPath, "pr-reviewer"); src.SHA != midSrc.SHA {
 		t.Fatalf("a refused upgrade must not move the source: %v -> %v", midSrc.SHA, src.SHA)
+	}
+}
+
+// ttyStdin points os.Stdin at a pty slave and types lines into its master,
+// so the upgrade's review and confirmation read them exactly as they would
+// from a terminal. Canonical mode hands each read one line, so answers
+// typed up front cannot run together.
+func ttyStdin(t *testing.T, lines ...string) {
+	t.Helper()
+	ptmx, err := xpty.NewPty(80, 24)
+	if err != nil {
+		t.Skipf("no pty available: %v", err)
+	}
+	t.Cleanup(func() { _ = ptmx.Close() })
+	// Slave(), not Name(): see TestRunIsInteractiveRequiresBothEnds.
+	sl, ok := ptmx.(interface{ Slave() *os.File })
+	if !ok {
+		t.Skip("pty implementation exposes no slave handle")
+	}
+	orig := os.Stdin
+	os.Stdin = sl.Slave()
+	t.Cleanup(func() { os.Stdin = orig })
+	for _, l := range lines {
+		if _, err := ptmx.Write([]byte(l)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Keeping a moved package path pins the OLD pin's absolute path onto the
+// table, so that pin is still in use though no source names it any more.
+// Prune must keep it and say why, or the next config load fails on the
+// missing prompt or MCP file. End to end: install, an interactive upgrade
+// that keeps every current value, prune, load.
+func TestAgentPruneKeepsAPinAKeptPathPointsInto(t *testing.T) {
+	cases := []struct{ key, file, body string }{
+		{"system_prompt_file", "system.md", "Review carefully.\n"},
+		{"mcp_config", "mcp.json", "{\"mcpServers\": {}}\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			e := newAgentEnv(t)
+			v1 := strings.Replace(agentPkg, `harness = "claude-code"`, `harness = "claude-code"
+`+tc.key+` = "`+tc.file+`"`, 1)
+			remote, work := agentRemote(t, map[string]string{
+				"packages/pr-reviewer/package.toml": v1,
+				"packages/pr-reviewer/" + tc.file:   tc.body,
+			})
+			if _, _, err := e.run("agent", "stable", "add", "stump-wtf", remote); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := e.run("agent", "install", "stump-wtf/pr-reviewer", "--yes"); err != nil {
+				t.Fatal(err)
+			}
+			// The persona keys need a one-shot: the prompt is the operator's.
+			data, err := os.ReadFile(e.cfgPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.writeFile("harness.toml", strings.Replace(string(data), "source = ", "prompt = \"go\"\nsource = ", 1))
+			oldSrc := installedSource(t, e.cfgPath, "pr-reviewer")
+
+			// The new pin moves the path.
+			v2 := strings.Replace(v1, `"`+tc.file+`"`, `"v2/`+tc.file+`"`, 1)
+			if err := os.WriteFile(filepath.Join(work, "packages/pr-reviewer/package.toml"), []byte(v2), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(work, "packages/pr-reviewer/v2"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(work, "packages/pr-reviewer/v2", tc.file), []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			agentGit(t, work, "add", "-A")
+			agentGit(t, work, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "move path")
+			agentGit(t, work, "push", "-q", remote, "main")
+			if _, _, err := e.run("agent", "stable", "update", "stump-wtf"); err != nil {
+				t.Fatal(err)
+			}
+
+			// Enter keeps every current value; y confirms the upgrade.
+			ttyStdin(t, "\n", "y\n")
+			out, _, err := e.run("agent", "upgrade", "stump-wtf/pr-reviewer")
+			if err != nil {
+				t.Fatalf("interactive upgrade: %v\n%s", err, out)
+			}
+			newSrc := installedSource(t, e.cfgPath, "pr-reviewer")
+			if newSrc.SHA == oldSrc.SHA {
+				t.Fatalf("the upgrade did not move the source:\n%s", out)
+			}
+			kept := filepath.Join(agentpkg.PinDir(oldSrc), tc.file)
+			after, err := os.ReadFile(e.cfgPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(after), fmt.Sprintf("%s = %q", tc.key, kept)) {
+				t.Fatalf("keeping must pin the old pin's path onto the table:\n%s", after)
+			}
+			if !strings.Contains(out, "prune keeps @"+oldSrc.SHA) {
+				t.Fatalf("keeping a pin path must say it holds the old pin:\n%s", out)
+			}
+
+			out, _, err = e.run("agent", "prune")
+			if err != nil {
+				t.Fatalf("prune: %v", err)
+			}
+			if strings.Contains(out, "pruned "+oldSrc.String()) {
+				t.Fatalf("prune removed a pin a kept %s points into:\n%s", tc.key, out)
+			}
+			if !strings.Contains(out, "kept "+oldSrc.String()) || !strings.Contains(out, "[harness.pr-reviewer] "+tc.key) {
+				t.Fatalf("prune must say which key holds the pin:\n%s", out)
+			}
+
+			cfg, err := loadGlobalConfig(e.cfgPath)
+			if err != nil {
+				t.Fatalf("config load after prune: %v", err)
+			}
+			h := cfg.Harnesses["pr-reviewer"]
+			got := map[string]string{"system_prompt_file": h.SystemPromptFile, "mcp_config": h.MCPConfig}[tc.key]
+			if got != kept {
+				t.Fatalf("%s = %q, want the kept %q", tc.key, got, kept)
+			}
+		})
+	}
+}
+
+// The same property without a terminal, on the exact shape the review's
+// keep writes: source on the new pin, the old pin's absolute path on a
+// file key. Prune keeps the old pin and names the key; once the key stops
+// pointing there, the next prune removes it.
+func TestAgentPruneHonorsPathsIntoPins(t *testing.T) {
+	e := newAgentEnv(t)
+	remote, work := agentRemote(t, map[string]string{
+		"packages/pr-reviewer/package.toml": agentPkg,
+		"packages/pr-reviewer/system.md":    "Review carefully.\n",
+	})
+	if _, _, err := e.run("agent", "stable", "add", "stump-wtf", remote); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.run("agent", "install", "stump-wtf/pr-reviewer", "--yes"); err != nil {
+		t.Fatal(err)
+	}
+	oldSrc := installedSource(t, e.cfgPath, "pr-reviewer")
+
+	if err := os.WriteFile(filepath.Join(work, "packages/pr-reviewer/package.toml"), []byte(strings.Replace(agentPkg, "1.0.0", "1.1.0", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	agentGit(t, work, "add", "-A")
+	agentGit(t, work, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "bump")
+	agentGit(t, work, "push", "-q", remote, "main")
+	if _, _, err := e.run("agent", "stable", "update", "stump-wtf"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.run("agent", "install", "stump-wtf/pr-reviewer", "--replace", "--yes"); err != nil {
+		t.Fatal(err)
+	}
+	newSrc := installedSource(t, e.cfgPath, "pr-reviewer")
+	if newSrc.SHA == oldSrc.SHA {
+		t.Fatal("the reinstall did not move the source")
+	}
+
+	kept := filepath.Join(agentpkg.PinDir(oldSrc), "system.md")
+	table := fmt.Sprintf("[harness.pr-reviewer]\nsource = %q\nprompt = \"go\"\nsystem_prompt_file = %q\n", newSrc.String(), kept)
+	e.writeFile("harness.toml", table)
+
+	out, _, err := e.run("agent", "prune")
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if strings.Contains(out, "pruned "+oldSrc.String()) {
+		t.Fatalf("prune removed a pin a table path points into:\n%s", out)
+	}
+	if !strings.Contains(out, "kept "+oldSrc.String()) || !strings.Contains(out, "[harness.pr-reviewer] system_prompt_file") {
+		t.Fatalf("prune must say which key holds the pin:\n%s", out)
+	}
+	if _, err := loadGlobalConfig(e.cfgPath); err != nil {
+		t.Fatalf("config load after prune: %v", err)
+	}
+
+	// With the key gone, nothing holds the old pin.
+	e.writeFile("harness.toml", fmt.Sprintf("[harness.pr-reviewer]\nsource = %q\n", newSrc.String()))
+	out, _, err = e.run("agent", "prune")
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if !strings.Contains(out, "pruned "+oldSrc.String()) {
+		t.Fatalf("an unheld pin must be pruned:\n%s", out)
+	}
+	if strings.Contains(out, "pruned "+newSrc.String()) {
+		t.Fatalf("the sourced pin must stay:\n%s", out)
 	}
 }
