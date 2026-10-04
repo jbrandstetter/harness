@@ -1,4 +1,4 @@
-package metrics
+package modelerr
 
 // Classifier Tests
 //
@@ -9,10 +9,13 @@ package metrics
 // Anthropic/OpenAI/litellm bodies any of them can relay.
 //
 // @joestump-agent 09/21/2026 - Added for harness#356.
+//
+// @joestump 10/04/2026 - Moved from internal/metrics with the classifier
+// (harness#473). The unclassified control's end-to-end test drives the
+// metrics pipeline, so it stayed there (internal/metrics/unclassified_test.go).
 
 import (
 	"testing"
-	"time"
 )
 
 type classCase struct {
@@ -133,47 +136,5 @@ func TestClassifyAdapterTablesAreScoped(t *testing.T) {
 	}
 	if c, known := Classify("crush", "stream disconnected before completion"); c != ClassOther || known {
 		t.Errorf("codex phrasing under crush = (%s, %v), want unclassified other", c, known)
-	}
-}
-
-// The control, end to end: an unrecognised error increments both class=other
-// and the unclassified counter; a recognised context-window error increments
-// class=other only. Without the second half, every wedged session would read
-// as a provider changing its wording.
-func TestUnclassifiedErrorIncrementsControl(t *testing.T) {
-	src := newFakeSource()
-	src.add(crushHarness("worker"), runningSnap())
-	feed := newFakeFeed()
-	m := newTestMetrics(t, src, Options{Observer: feed})
-
-	feed.ch <- errorEvent("worker", "s1", "Bad Request: something no provider has said before", t0)
-	eventually(t, "the error counted", func() bool {
-		v, _ := scrape(t, m).get("harness_model_calls_total", lbls("harness", "worker", "outcome", "error"))
-		return v == 1
-	})
-	fams := scrape(t, m)
-	if v := fams.must(t, "harness_model_call_errors_total", lbls("harness", "worker", "class", "other")); v != 1 {
-		t.Errorf("class=other = %v, want 1", v)
-	}
-	if v := fams.must(t, "harness_model_call_errors_unclassified_total", lbls("harness", "worker")); v != 1 {
-		t.Errorf("unclassified = %v, want 1", v)
-	}
-
-	feed.ch <- errorEvent("worker", "s1", "Bad Request: litellm.ContextWindowExceededError: prompt contains at least 196609 input tokens", t0.Add(time.Second))
-	eventually(t, "the context error counted", func() bool {
-		v, _ := scrape(t, m).get("harness_model_calls_total", lbls("harness", "worker", "outcome", "error"))
-		return v == 2
-	})
-	fams = scrape(t, m)
-	if v := fams.must(t, "harness_model_call_errors_total", lbls("harness", "worker", "class", "other")); v != 2 {
-		t.Errorf("class=other = %v, want 2", v)
-	}
-	if v := fams.must(t, "harness_model_call_errors_unclassified_total", lbls("harness", "worker")); v != 1 {
-		t.Errorf("unclassified = %v after a context-window error, want still 1", v)
-	}
-	for _, c := range []Class{ClassQuota, ClassAuth, ClassTimeout, ClassTransport} {
-		if v := fams.must(t, "harness_model_call_errors_total", lbls("harness", "worker", "class", string(c))); v != 0 {
-			t.Errorf("class=%s = %v, want 0", c, v)
-		}
 	}
 }

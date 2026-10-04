@@ -83,8 +83,10 @@ race:
 # model (ADR-0007), https://github.com/stump-wtf/harness/issues/18.
 # internal/redact FuzzMayMatchCoversString: the rule prefilter never passes a
 # line a rule would mask (ADR-0033, ADR-0008).
+# internal/modelerr FuzzResetAfter: an untrusted error note never yields a
+# reset outside (now, now+8d] (SPEC-0021 REQ-12, issue #473).
 FUZZTIME    ?= 30s
-FUZZ_TARGETS := ./internal/tmpl:FuzzParse ./internal/attach:FuzzRing ./internal/redact:FuzzMayMatchCoversString
+FUZZ_TARGETS := ./internal/tmpl:FuzzParse ./internal/attach:FuzzRing ./internal/redact:FuzzMayMatchCoversString ./internal/modelerr:FuzzResetAfter
 
 fuzz:
 	@set -e; for t in $(FUZZ_TARGETS); do \

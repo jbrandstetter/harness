@@ -31,6 +31,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/stump-wtf/harness/internal/core"
+	"github.com/stump-wtf/harness/internal/modelerr"
 	"github.com/stump-wtf/harness/internal/supervisor"
 )
 
@@ -231,7 +232,7 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		runsCounted[lbl] = m.per[lbl].runsSnapshot()
 		if s, ok := m.per[lbl]; ok {
 			cp := *s
-			cp.errors = make(map[Class]uint64, len(s.errors))
+			cp.errors = make(map[modelerr.Class]uint64, len(s.errors))
 			for k, v := range s.errors {
 				cp.errors[k] = v
 			}
@@ -297,7 +298,7 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 			// the observer (ErrorsObservable, REQ-6).
 			if a.errorsObservable {
 				counter(descCalls, float64(s.calls[1]), lbl, outcomeError)
-				for _, cl := range Classes {
+				for _, cl := range modelerr.Classes {
 					counter(descErrors, float64(s.errors[cl]), lbl, string(cl))
 				}
 				counter(descUnclassified, float64(s.unclassified), lbl)
