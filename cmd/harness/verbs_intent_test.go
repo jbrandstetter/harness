@@ -44,19 +44,6 @@ func bootIntentDaemon(t *testing.T) string {
 		StatePath:   filepath.Join(tmp, "state.json"),
 		LogDir:      filepath.Join(tmp, "logs"),
 		ExtraOutFor: reg.WriterFor,
-		// DefaultPolicy's flapping backoff (1s→30s) can eat this test's whole
-		// wait budget on a loaded runner: CI run 16364 burned 2 minutes in
-		// twenty 1→8s backoff gaps while fork/exec failed under load, and the
-		// train went red on a PR whose own CI was green. A test policy with
-		// millisecond backoff and no give-up turns a retry storm back into
-		// what the wait is meant to measure — spawn latency.
-		Policy: supervisor.Policy{
-			CrashWindow:    30 * time.Second,
-			CrashThreshold: 1000,
-			BackoffBase:    time.Millisecond,
-			BackoffCap:     10 * time.Millisecond,
-			MaxRestarts:    0,
-		},
 	})
 	reg.SetController(mgr)
 
@@ -106,10 +93,12 @@ func TestDescribeShowsLastIntentChange(t *testing.T) {
 	if h.LastIntentSource != "verb:start" || h.LastIntentAt == "" {
 		t.Fatalf("after start, last intent = %q @ %q, want verb:start with a time", h.LastIntentSource, h.LastIntentAt)
 	}
-	// The verb came over the unix socket, so the platform (linux and darwin,
-	// both release targets) reports the peer and the daemon must carry it.
-	if h.LastIntentPeer == "" {
-		t.Fatal("socket verb did not record the peer credentials")
+	// The verb came over the unix socket, so where the platform reports the
+	// peer the daemon must carry it — and where it does not, there is none to
+	// carry. Keyed on the daemon's own flag, not GOOS, so this tracks
+	// whichever platforms have an implementation.
+	if (h.LastIntentPeer != "") != daemon.ReportsPeerCredentials {
+		t.Fatalf("socket verb peer = %q, want one iff the platform reports peers (%v)", h.LastIntentPeer, daemon.ReportsPeerCredentials)
 	}
 
 	if _, err := callLifecycle(c, "stop", "demo", ""); err != nil {
@@ -120,8 +109,8 @@ func TestDescribeShowsLastIntentChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h.LastIntentSource != "verb:stop" || h.LastIntentPeer == "" {
-		t.Fatalf("after stop, last intent = %q @ %q peer %q, want verb:stop with the peer", h.LastIntentSource, h.LastIntentAt, h.LastIntentPeer)
+	if h.LastIntentSource != "verb:stop" || (h.LastIntentPeer != "") != daemon.ReportsPeerCredentials {
+		t.Fatalf("after stop, last intent = %q @ %q peer %q, want verb:stop with a peer iff the platform reports peers (%v)", h.LastIntentSource, h.LastIntentAt, h.LastIntentPeer, daemon.ReportsPeerCredentials)
 	}
 
 	// The rendered describe shows the row, not just the wire fields.
