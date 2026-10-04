@@ -231,7 +231,10 @@ When a harness needs a person, the daemon SHALL tell one: if the global
 `failed` (give-up), on crash-loop escalation (`flapping`), when the runaway
 tool-loop guard stops a harness (`loop_stopped`), when the session guard rotates
 a wedged session or fails to (`session_rotated`), on a failed or timed-out
-scheduled or triggered run (`run_failed`, opt-in), and when a harness it
+scheduled or triggered run (`run_failed`, opt-in), once per park when a
+harness is parked on an exhausted provider quota (`parked`, SPEC-0021 REQ-13:
+its message SHALL name the reset and the classifier rule, never the error
+text), and when a harness it
 reported `failed` or `loop_stopped` is running again (`recovered`). The program
 is a daemon-side hook, not a supervised harness (ADR-0033 governs what the
 daemon supervises, and is untouched): it SHALL be exec'd without a shell from an
@@ -262,6 +265,13 @@ run it once with a `test` event.
   `failed`
 - **THEN** the daemon runs the notify hook with `HARNESS_NOTIFY_EVENT=failed`,
   and the message and `cause` quote that line
+
+#### Scenario: A park is heard once
+
+- **GIVEN** a scheduled one-shot whose provider refuses it with a 402
+- **WHEN** its run parks it until 00:20 and the 00:15 firing is skipped by the park
+- **THEN** the hook receives one `parked` naming 00:20 and the rule, and no
+  `failed` or `run_failed`
 
 #### Scenario: A loop-guard stop is not silent
 
