@@ -254,6 +254,15 @@ mcp_allow = ["read", "write"]`, 1)
 	if !strings.Contains(err.Error(), "may want to review") {
 		t.Fatalf("the refusal must say why it refuses: %v", err)
 	}
+
+	// With write already granted on the table the review has nothing to
+	// say, and the gate still demands the retype — the REQ-8 property this
+	// test exists for.
+	e.writeFile("harness.toml", fmt.Sprintf("[stable.stump-wtf]\nremote = %q\n\n[harness.pr-reviewer]\nsource = %q\nmcp_allow = [\"read\", \"write\"]\n", remote, src.String()))
+	_, _, err = e.run("agent", "upgrade", "stump-wtf/pr-reviewer", "--yes")
+	if err == nil || !strings.Contains(err.Error(), `mcp_allow includes "write"`) {
+		t.Fatalf("an already-granted write request must still demand the retype, got %v", err)
+	}
 }
 
 // Only the SHA changes: on a table carrying keys and comments, upgrade
