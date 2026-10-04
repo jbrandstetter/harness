@@ -244,9 +244,9 @@ directory, projection SHALL be skipped and the harness SHALL start normally.
   directory
 - **THEN** the corresponding file in the configured source root is unchanged
 
-#### Scenario: Generic adapter skips projection
+#### Scenario: An adapter without a target skips projection
 
-- **WHEN** a harness resolving to `generic` starts
+- **WHEN** a harness whose adapter declares no target directory starts
 - **THEN** no projection occurs and the harness runs normally
 
 ### Requirement: Trajectory Discovery
