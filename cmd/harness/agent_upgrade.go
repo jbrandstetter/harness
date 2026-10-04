@@ -22,6 +22,9 @@ package main
 // @joestump-agent 10/04/2026 - The #882 review: a taken row removes the
 // local override and writes nothing else, so the new pin supplies the value
 // (a manifest path only resolves under its own pin directory).
+//
+// @joestump-agent 10/04/2026 - A kept package path says it holds the old
+// pin: prune now counts it as a reference.
 
 import (
 	"errors"
@@ -431,7 +434,15 @@ func applyReviewChoices(cmd *cobra.Command, ed *tomledit.Editor, name string, ch
 				if err := ed.SetHarnessKey(name, c.Key, c.Old); err != nil {
 					return fmt.Errorf("agent: pin %q on [harness.%s]: %w", c.Key, name, err)
 				}
-				fmt.Fprintf(out, "agent: %s: kept %s = %s (pinned onto the table)\n", name, c.Key, c.Render(c.Old))
+				// A kept package path is the old pin's absolute path: it
+				// now holds that pin, and prune keeps it while it does.
+				held := ""
+				if p, ok := c.Old.(string); ok {
+					if src, ok := agentpkg.PinOf(p); ok {
+						held = fmt.Sprintf("; prune keeps @%s while this path points into it", src.SHA)
+					}
+				}
+				fmt.Fprintf(out, "agent: %s: kept %s = %s (pinned onto the table%s)\n", name, c.Key, c.Render(c.Old), held)
 			default:
 				// Kept a row with no old value: only the Added shape reaches
 				// here, and Added rows are always taken.

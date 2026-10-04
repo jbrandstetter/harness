@@ -8,7 +8,8 @@ package main
 // #812 scan and confirmation gate, places the pin immutably, and writes
 // source onto one [harness.<name>] table through the #810 editor. uninstall
 // removes a whole table from whichever file declares it. prune drops store
-// entries no global source references, and says so.
+// entries the global file does not reference — by source, or by a prompt or
+// MCP file path pointing inside the pin — and says so.
 //
 // No command here writes any table but [harness.*]: [mcp.*], [job.*],
 // [server], [profile.*], [adapter.*] and [skill_repo.*] are never touched
@@ -18,6 +19,10 @@ package main
 // REQ-11, Error Handling Standards.
 //
 // @joestump-agent 10/02/2026 - Added for harness#813.
+//
+// @joestump-agent 10/04/2026 - prune keeps a pin a global file path points
+// into: a package path kept through the #882 review is the old pin's
+// absolute path, and pruning that pin broke the next config load.
 
 import (
 	"errors"
@@ -90,7 +95,7 @@ func newAgentPruneCmd(g *globalOpts) *cobra.Command {
 
 	prune := &cobra.Command{
 		Use:           "prune",
-		Short:         "remove store pins no source in the global harness.toml references",
+		Short:         "remove store pins the global harness.toml no longer references (by source or file path)",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -355,14 +360,17 @@ func removeHarnessTable(cmd *cobra.Command, o verbOpts, path, name string, globa
 	return nil
 }
 
-// runAgentPrune removes every store entry no source in the GLOBAL
-// harness.toml references, and states that limit (REQ-9): project files are
-// never read, so a pin only a project references is removed.
+// runAgentPrune removes every store entry the GLOBAL harness.toml does not
+// reference, and states that limit (REQ-9): project files are never read,
+// so a pin only a project references is removed. A reference is a source,
+// or a file path config load reads that points inside a pin; prune names
+// each pin only such a path holds.
 func runAgentPrune(cmd *cobra.Command, o verbOpts) error {
 	cfg, err := loadGlobalConfig(o.configPath)
 	if err != nil {
 		return fmt.Errorf("agent: load config: %w", err)
 	}
+	out := cmd.OutOrStdout()
 	referenced := map[agentpkg.Source]bool{}
 	for _, name := range cfg.HarnessOrder {
 		srcStr := cfg.Harnesses[name].PackageSource
@@ -374,17 +382,43 @@ func runAgentPrune(cmd *cobra.Command, o verbOpts) error {
 		}
 	}
 
+	// A package path kept through the upgrade review is the OLD pin's
+	// absolute path, and config load fails without the file it names.
+	// Collected after every source, so only a pin no source names is
+	// reported as held by a path.
+	type pathRef struct {
+		src       agentpkg.Source
+		name, key string
+	}
+	var held []pathRef
+	for _, name := range cfg.HarnessOrder {
+		h := cfg.Harnesses[name]
+		for _, f := range []struct{ key, path string }{
+			{"prompt_file", h.PromptFile},
+			{"system_prompt_file", h.SystemPromptFile},
+			{"mcp_config", h.MCPConfig},
+		} {
+			if src, ok := agentpkg.PinOf(f.path); ok && !referenced[src] {
+				held = append(held, pathRef{src, name, f.key})
+			}
+		}
+	}
+	for _, r := range held {
+		referenced[r.src] = true
+		fmt.Fprintf(out, "agent: kept %s: no source names it, but [harness.%s] %s points inside it\n", r.src, r.name, r.key)
+	}
+
 	removed, err := agentpkg.Prune(referenced)
 	if err != nil {
 		return err
 	}
 	for _, r := range removed {
-		fmt.Fprintf(cmd.OutOrStdout(), "agent: pruned %s\n", r)
+		fmt.Fprintf(out, "agent: pruned %s\n", r)
 	}
 	if len(removed) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "agent: nothing to prune")
+		fmt.Fprintln(out, "agent: nothing to prune")
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), "agent: prune considered only the global harness.toml — pins referenced solely by project files are not protected")
+	fmt.Fprintln(out, "agent: prune considered only the global harness.toml — pins referenced solely by project files are not protected")
 	return nil
 }
 
