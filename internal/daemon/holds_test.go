@@ -137,9 +137,14 @@ func TestHoldChangedReachesSubscribers(t *testing.T) {
 	waitFor(t, "running", func() bool { s, _ := td.mgr.Snapshot("gated"); return s.State == core.StateRunning })
 	sub := td.dial(t, []string{"events"})
 	pc := sub.Conn()
-	_ = sub.SetReadDeadline(time.Now().Add(5 * time.Second))
+	// The read deadline starts when the read does, not before the action
+	// that triggers it: Hold blocks through the harness's stop, and where
+	// the process ignores SIGTERM (main's CI runner) that is the whole
+	// 10s default stop grace, which would expire a deadline set earlier
+	// before the already-delivered event is read.
 	next := func() (protocol.EventMsg, string) {
 		t.Helper()
+		_ = sub.SetReadDeadline(time.Now().Add(5 * time.Second))
 		for {
 			f, err := pc.ReadFrame()
 			if err != nil {
