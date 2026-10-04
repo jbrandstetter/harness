@@ -487,24 +487,18 @@ func (e *Editor) RemoveHarnessKey(table, key string) error {
 		return err
 	}
 	end := e.tableEnd(h)
-	body := e.data[h.bodyStart:end]
-	for _, ln := range splitLines(body) {
-		if keyLineKey(ln.content) != key {
-			continue
-		}
-		abs := ln.start + h.bodyStart
-		eqInLine := strings.Index(ln.content, "=")
-		eq := abs + eqInLine
-		valueEnd := valueSpanEnd(e.data, eq+1)
-		// Take the line's trailing newline too, so removing the last key
-		// does not leave a stray blank line behind.
-		if valueEnd < len(e.data) && e.data[valueEnd] == '\n' {
-			valueEnd++
-		}
-		e.data = splice(e.data, abs, valueEnd, nil)
-		return nil
+	kv, ok := e.findKey(h.bodyStart, end, key)
+	if !ok {
+		return fmt.Errorf("%w: key %q in [harness.%s]", ErrKeyNotFound, key, table)
 	}
-	return fmt.Errorf("%w: key %q in [harness.%s]", ErrKeyNotFound, key, table)
+	valueEnd := kv.valueEnd
+	// Take the line's trailing newline too, so removing the last key
+	// does not leave a stray blank line behind.
+	if valueEnd < len(e.data) && e.data[valueEnd] == '\n' {
+		valueEnd++
+	}
+	e.data = splice(e.data, kv.start, valueEnd, nil)
+	return nil
 }
 
 // SetStableKey sets one key inside [stable.<name>], in place: the value line

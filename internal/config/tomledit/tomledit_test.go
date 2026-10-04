@@ -537,6 +537,53 @@ x = 1
 		t.Fatalf("removal must take the whole multi-line value and nothing else:\n%s", ed.Bytes())
 	}
 
+	// A continuation line that reads like the key — `  "model=opus",` inside
+	// the array — is not the key: the removal takes the real `model` line
+	// below it, and the array survives whole.
+	src2 := `top = "kept"
+
+[harness.reviewer]
+args = [
+  "model=opus",
+  "--verbose",
+]
+enabled = true
+model = "big"
+
+[other]
+x = 1
+`
+	ed2 := New([]byte(src2))
+	if err := ed2.RemoveHarnessKey("reviewer", "model"); err != nil {
+		t.Fatal(err)
+	}
+	want2 := `top = "kept"
+
+[harness.reviewer]
+args = [
+  "model=opus",
+  "--verbose",
+]
+enabled = true
+
+[other]
+x = 1
+`
+	if string(ed2.Bytes()) != want2 {
+		t.Fatalf("a value continuation line that reads like the key must not be removed; the real model line goes:\n%s", ed2.Bytes())
+	}
+	var doc2 map[string]any
+	if _, err := toml.Decode(string(ed2.Bytes()), &doc2); err != nil {
+		t.Fatalf("edited file no longer parses: %v\n%s", err, ed2.Bytes())
+	}
+	r2 := doc2["harness"].(map[string]any)["reviewer"].(map[string]any)
+	if got, ok := r2["args"].([]any); !ok || len(got) != 2 {
+		t.Errorf("args = %v", r2["args"])
+	}
+	if _, exists := r2["model"]; exists {
+		t.Error("model still present")
+	}
+
 	// A missing key fails closed.
 	if err := ed.RemoveHarnessKey("reviewer", "nope"); !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("want ErrKeyNotFound, got %v", err)
