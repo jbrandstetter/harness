@@ -10,10 +10,14 @@
 // subscription, which the accumulator turns into usage_complete: false,
 // never as an observer stall (SPEC-0022 REQ-8).
 //
-// Governing: SPEC-0022 REQ-8, REQ-9; SPEC-0013 REQ-3 (the error classes are
-// the metrics collector's own classifier, so the two can never disagree).
+// Governing: SPEC-0022 REQ-8, REQ-9; SPEC-0013 REQ-3, SPEC-0021 REQ-11 (the
+// error classes come from internal/modelerr, the classifier the metrics
+// collector uses too, so the two can never disagree).
 //
 // @joestump 09/24/2026 - Added for harness#459.
+//
+// @joestump 10/04/2026 - Classify moved from internal/metrics to
+// internal/modelerr (harness#473).
 package runusage
 
 import (
@@ -25,7 +29,7 @@ import (
 	"github.com/stump-wtf/agent-trace/tail"
 
 	"github.com/stump-wtf/harness/internal/ledger"
-	"github.com/stump-wtf/harness/internal/metrics"
+	"github.com/stump-wtf/harness/internal/modelerr"
 	"github.com/stump-wtf/harness/internal/observe"
 )
 
@@ -115,7 +119,7 @@ func ItemOf(ev observe.Event) ledger.Item {
 		it.Tool = true
 	case observe.KindMark:
 		if ev.Mark.Type == "error" {
-			class, _ := metrics.Classify(ev.Adapter, ev.Mark.Note)
+			class, _ := modelerr.Classify(ev.Adapter, ev.Mark.Note)
 			it.ErrorClass = string(class)
 		}
 	}

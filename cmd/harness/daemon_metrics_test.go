@@ -40,6 +40,7 @@ import (
 	"github.com/stump-wtf/harness/internal/attach"
 	"github.com/stump-wtf/harness/internal/core"
 	"github.com/stump-wtf/harness/internal/metrics"
+	"github.com/stump-wtf/harness/internal/modelerr"
 	rt "github.com/stump-wtf/harness/internal/runtrace/runtracetest"
 	"github.com/stump-wtf/harness/internal/supervisor"
 	"github.com/stump-wtf/harness/internal/testwait"
@@ -503,7 +504,7 @@ url = "http://127.0.0.1:9/mcp"
 				t.Errorf("%s: no harness_model_calls_total{outcome=%q}", h, o)
 			}
 		}
-		for _, c := range metrics.Classes {
+		for _, c := range modelerr.Classes {
 			if _, ok := sample(fams, "harness_model_call_errors_total", "harness", h, "class", string(c)); !ok {
 				t.Errorf("%s: no harness_model_call_errors_total{class=%q}", h, c)
 			}

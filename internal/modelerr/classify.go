@@ -1,4 +1,6 @@
-package metrics
+// Package modelerr is the one model-error classifier: metrics counts its
+// classes, and the budget park detector acts on them (SPEC-0021 REQ-11).
+package modelerr
 
 // Model Error Classifier
 //
@@ -41,8 +43,13 @@ package metrics
 // series.
 //
 // Governing: ADR-0020, SPEC-0013 REQ-3; design.md "Classifying a model error".
+// ADR-0027, SPEC-0021 REQ-11 (one classifier for metrics and budgets).
 //
 // @joestump-agent 09/21/2026 - Added for harness#356.
+//
+// @joestump 10/04/2026 - Moved from internal/metrics for harness#473, so
+// metrics and quota parking share one table (SPEC-0021 design.md "One
+// classifier, moved to internal/modelerr"). The design.md above is SPEC-0013's.
 
 import (
 	"regexp"
