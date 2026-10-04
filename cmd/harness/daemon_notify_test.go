@@ -328,6 +328,72 @@ func TestDaemonNotifyFiresOnGiveUpAndRecovery(t *testing.T) {
 	}
 }
 
+// The tars review-lane incident (2026-10-04), end to end through the daemon's
+// construction: a scheduled one-shot whose every run exits 1 lands in
+// `failed` after each, and its next firing retries it. The hook hears each
+// run fail with the ledger's streak, and never a give-up or a recovery: the
+// harness never gave up, and starting the next firing recovers nothing.
+func TestDaemonNotifyTriggeredRunFailureIsNotAGiveUp(t *testing.T) {
+	tmp := t.TempDir()
+	nc, out := newNotifyHook(t)
+	nc.Events = slices.Clone(core.NotifyEvents) // run_failed is opt-in
+	nc.Cooldown = time.Millisecond              // see each run's delivery
+
+	reg := attach.NewRegistry(100)
+	opts := daemonManagerOptions(reg)
+	opts.StatePath = filepath.Join(tmp, "state.json")
+	opts.LogDir = filepath.Join(tmp, "logs")
+
+	h := core.Harness{
+		Name: "review", Adapter: "generic",
+		Args:    []string{"-c", `echo "ERROR Payment Required: You're out of credits."; exit 1`},
+		Backend: core.BackendNative, Restart: core.RestartNo,
+		Schedule: "CRON_TZ=UTC 5-59/10 * * * *",
+	}
+	cfg := &core.Config{
+		Harnesses: map[string]core.Harness{h.Name: h}, HarnessOrder: []string{h.Name},
+		Profiles: map[string]core.Profile{}, Notify: nc,
+	}
+	mgr := supervisor.NewManager(cfg, opts)
+	reg.SetController(mgr)
+	t.Cleanup(mgr.Close)
+	n := startTestNotify(t, mgr)
+
+	// Two firings, the second only once the first has been reported, so the
+	// ledger holds both by the time the second is.
+	if !mgr.StartTransient(h.Name) {
+		t.Fatal("StartTransient returned false for a configured harness")
+	}
+	waitHookEvent(t, n, out, core.NotifyRunFailed)
+	if !mgr.StartTransient(h.Name) {
+		t.Fatal("StartTransient returned false on the second firing")
+	}
+	deadline := time.Now().Add(testwait.Budget(t, 90*time.Second))
+	for n.finished(t)[core.NotifyRunFailed][notify.ResultOK] < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the second run_failed never finished (finished: %v)\n%s", n.finished(t), n.log.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// The give-up would have been queued ahead of each run_failed; give a
+	// stray one time to land before declaring it absent.
+	time.Sleep(200 * time.Millisecond)
+	finished := n.finished(t)
+	n.requireHookSucceeded(t, finished)
+	if len(finished[core.NotifyFailed]) > 0 || len(finished[core.NotifyRecovered]) > 0 {
+		t.Fatalf("a one-shot's failed run sent a give-up or a recovery: %v", finished)
+	}
+	var streak bool
+	for _, d := range readHookDeliveries(t, out) {
+		if d.payload.Event == core.NotifyRunFailed && strings.Contains(d.payload.Message, "failed (exit 1), 2 in a row") {
+			streak = true
+		}
+	}
+	if !streak {
+		t.Fatalf("no run_failed named the 2-run streak: %+v", readHookDeliveries(t, out))
+	}
+}
+
 // The crush-qwen incident: the loop guard the daemon builds stops a looping
 // harness, and — through the daemon's wiring, not a hand-built callback — the
 // hook hears which tool, how many times, and that it stays down.

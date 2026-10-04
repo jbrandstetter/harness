@@ -23,6 +23,7 @@ type fakeSource struct {
 	ch   chan supervisor.Event
 	snap supervisor.Snapshot
 	dir  string
+	runs []supervisor.RunRecord
 }
 
 func (f *fakeSource) Events() (<-chan supervisor.Event, func()) {
@@ -36,6 +37,7 @@ func (f *fakeSource) LogDir() string                              { return f.dir
 func (f *fakeSource) RunLogPath(name string, id int) string {
 	return filepath.Join(f.dir, name, "run.log")
 }
+func (f *fakeSource) Runs(string) []supervisor.RunRecord { return f.runs }
 
 func newWatcherRig(t *testing.T, events []string) (*fakeSource, *Watcher, string) {
 	t.Helper()
@@ -72,6 +74,70 @@ func TestWatcherRunFailedQuotesTheRunLog(t *testing.T) {
 	p := r[0].Payload
 	if p.Event != core.NotifyRunFailed || p.RunID != 42 || p.Cause != "fatal: repository not found" ||
 		p.Hint != "harness logs nightly --run 42" || !strings.Contains(p.Message, "run #42 failed (exit 128)") {
+		t.Fatalf("payload = %+v", p)
+	}
+}
+
+// run_failed names the streak `harness jobs` shows, read off the ledger: the
+// closed run is already in it, and records with no verdict (a skip) neither
+// count nor break it.
+func TestWatcherRunFailedCountsTheStreak(t *testing.T) {
+	src, w, out := newWatcherRig(t, core.NotifyEvents)
+	src.runs = []supervisor.RunRecord{
+		{RunID: 1, Outcome: supervisor.OutcomeSuccess},
+		{RunID: 2, Outcome: supervisor.OutcomeFailed},
+		{RunID: 3, Outcome: supervisor.OutcomeSkipped},
+		{RunID: 4, Outcome: supervisor.OutcomeTimedOut},
+		{RunID: 5, Outcome: supervisor.OutcomeFailed},
+	}
+	code := 1
+	src.ch <- supervisor.Event{Kind: supervisor.EventRunFinished, Name: "review", Run: supervisor.RunRecord{RunID: 5, Outcome: supervisor.OutcomeFailed, ExitCode: &code}}
+	p := WaitReceived(t, w.d, out, 1)[0].Payload
+	if !strings.HasPrefix(p.Message, "review run #5 failed (exit 1), 3 in a row — see") {
+		t.Fatalf("message = %q", p.Message)
+	}
+}
+
+// The first failure of a streak is just "failed": "1 in a row" says nothing.
+func TestWatcherRunFailedAloneHasNoStreak(t *testing.T) {
+	src, w, out := newWatcherRig(t, core.NotifyEvents)
+	src.runs = []supervisor.RunRecord{{RunID: 7, Outcome: supervisor.OutcomeSuccess}, {RunID: 8, Outcome: supervisor.OutcomeFailed}}
+	code := 2
+	src.ch <- supervisor.Event{Kind: supervisor.EventRunFinished, Name: "nightly", Run: supervisor.RunRecord{RunID: 8, Outcome: supervisor.OutcomeFailed, ExitCode: &code}}
+	if p := WaitReceived(t, w.d, out, 1)[0].Payload; strings.Contains(p.Message, "in a row") {
+		t.Fatalf("message = %q", p.Message)
+	}
+}
+
+// A triggered harness's run that fails lands it in `failed`, and its next
+// firing is the retry. That is not a give-up: no `failed` alert, and so no
+// `recovered` when the next firing starts. Before this, the tars review lane
+// sent "gave up after 0 consecutive failures" and "running again" every ten
+// minutes for ten hours while each run died on the same 402.
+func TestWatcherTriggeredFailedIsNotAGiveUp(t *testing.T) {
+	src, w, out := newWatcherRig(t, core.NotifyEvents)
+	src.snap = supervisor.Snapshot{Name: "review", State: core.StateFailed, Triggered: true, LastExitCode: 1}
+	src.ch <- supervisor.Event{Kind: supervisor.EventStateChanged, Name: "review", From: core.StateDegraded, To: core.StateFailed}
+	src.ch <- supervisor.Event{Kind: supervisor.EventStateChanged, Name: "review", From: core.StateStarting, To: core.StateRunning}
+	// A wanted event after them, so the silence is not just "too soon".
+	src.ch <- supervisor.Event{Kind: supervisor.EventFlapping, Name: "sentinel", Restarts: 2}
+	WaitReceived(t, w.d, out, 1)
+	time.Sleep(100 * time.Millisecond)
+	if got := ReadReceived(t, out); len(got) != 1 || got[0].Payload.Event != core.NotifyFlapping {
+		t.Fatalf("deliveries = %+v, want the sentinel only", got)
+	}
+}
+
+// A resident that lands in `failed` with no streak — a command that never
+// came up, under a restart policy that will not retry it — did not give up
+// after anything, so the message does not count zero failures.
+func TestWatcherFailedWithoutAStreak(t *testing.T) {
+	src, w, out := newWatcherRig(t, nil)
+	src.snap = supervisor.Snapshot{Name: "rc", State: core.StateFailed, LastExitCode: 127}
+	src.ch <- supervisor.Event{Kind: supervisor.EventStateChanged, Name: "rc", From: core.StateStarting, To: core.StateFailed}
+	p := WaitReceived(t, w.d, out, 1)[0].Payload
+	if p.Event != core.NotifyFailed || !strings.HasPrefix(p.Message, "rc failed and will not restart on its own (last exit 127)") ||
+		strings.Contains(p.Message, "gave up") {
 		t.Fatalf("payload = %+v", p)
 	}
 }
