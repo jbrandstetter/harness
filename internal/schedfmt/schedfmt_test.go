@@ -294,6 +294,25 @@ func TestStateLabelHours(t *testing.T) {
 	}
 }
 
+// HoursHeld is the projection's removed `held`, read off hold_reasons
+// (SPEC-0021 REQ-16): only "hours" in the set counts.
+func TestHoursHeld(t *testing.T) {
+	for _, tc := range []struct {
+		reasons []string
+		want    bool
+	}{
+		{nil, false},
+		{[]string{"hours"}, true},
+		{[]string{"hours", "quota"}, true},
+		{[]string{"quota"}, false},
+		{[]string{"quota", "budget"}, false},
+	} {
+		if got := HoursHeld(tc.reasons); got != tc.want {
+			t.Errorf("HoursHeld(%q) = %v, want %v", tc.reasons, got, tc.want)
+		}
+	}
+}
+
 func TestIsOffHours(t *testing.T) {
 	if !IsOffHours("stopped", true) {
 		t.Error("IsOffHours(stopped, true) = false, want true")

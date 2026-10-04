@@ -256,6 +256,11 @@ type Scheduler struct {
 	lastIn    map[string]bool
 	// wasLeased is lastIn's twin for lease-end tracking (gate.go's leaseEnd).
 	wasLeased map[string]bool
+	// hoursAsked remembers, per harness out of hours, the hold set it had
+	// when the pass last asked to add the hours reason to it, so a hold the
+	// supervisor declines (a disabled harness is not the gate's to hold) is
+	// asked once per set rather than once per tick (gate.go).
+	hoursAsked map[string]core.HoldSet
 
 	runMu   sync.Mutex
 	stop    chan struct{}

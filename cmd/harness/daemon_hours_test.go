@@ -121,7 +121,7 @@ func TestDaemonSchedulerEnforcesOperatingHours(t *testing.T) {
 
 	waitUntil(t, "held by the daemon's gate pass", func() bool {
 		s, _ := mgr.Snapshot(h.Name)
-		return s.State == core.StateStopped && s.Held
+		return s.State == core.StateStopped && s.Holds.Has(core.HoldHours)
 	})
 	snap, _ := mgr.Snapshot(h.Name)
 	if !snap.Enabled || snap.RestartCount != before.RestartCount {
@@ -142,7 +142,7 @@ func TestDaemonSchedulerEnforcesOperatingHours(t *testing.T) {
 	clock.ticks <- clock.Now()
 	waitUntil(t, "released after hours were removed", func() bool {
 		s, _ := mgr.Snapshot(h.Name)
-		return s.State == core.StateRunning && !s.Held
+		return s.State == core.StateRunning && !s.Holds.Has(core.HoldHours)
 	})
 }
 
@@ -198,7 +198,7 @@ func TestDaemonSchedulerClosesGracefully(t *testing.T) {
 
 	waitUntil(t, "stopped by the close's first step", func() bool {
 		s, _ := mgr.Snapshot(h.Name)
-		return s.State == core.StateStopped && !s.Closing && s.Held
+		return s.State == core.StateStopped && !s.Closing && s.Holds.Has(core.HoldHours)
 	})
 	snap, _ := mgr.Snapshot(h.Name)
 	if !snap.Enabled {

@@ -40,6 +40,7 @@ func newTestMetrics(t *testing.T, src *fakeSource, opts Options) *Metrics {
 // under the documented seven-to-four mapping.
 func TestEveryDeclaredHarnessReportsAllFourStates(t *testing.T) {
 	src := newFakeSource()
+	hours := core.HoldSetOf(core.HoldHours)
 	cases := []struct {
 		name string
 		snap supervisor.Snapshot
@@ -56,16 +57,21 @@ func TestEveryDeclaredHarnessReportsAllFourStates(t *testing.T) {
 		{"is-failed", supervisor.Snapshot{State: core.StateFailed, Flapping: true}, stateFailed},
 		// Held by operating hours (SPEC-0012): shut down by the gate, not by
 		// a fault, so stopped — even with crash-loop history caught mid-hold.
-		{"held", supervisor.Snapshot{State: core.StateStopped, Gated: true, Held: true}, stateStopped},
-		{"held-stopping", supervisor.Snapshot{State: core.StateStopping, Gated: true, Held: true, PID: 1}, stateStopped},
-		{"held-was-flapping", supervisor.Snapshot{State: core.StateRestarting, Gated: true, Held: true, Flapping: true}, stateStopped},
-		{"held-was-degraded", supervisor.Snapshot{State: core.StateDegraded, Gated: true, Held: true}, stateStopped},
+		{"held", supervisor.Snapshot{State: core.StateStopped, Gated: true, Holds: hours}, stateStopped},
+		{"held-stopping", supervisor.Snapshot{State: core.StateStopping, Gated: true, Holds: hours, PID: 1}, stateStopped},
+		{"held-was-flapping", supervisor.Snapshot{State: core.StateRestarting, Gated: true, Holds: hours, Flapping: true}, stateStopped},
+		{"held-was-degraded", supervisor.Snapshot{State: core.StateDegraded, Gated: true, Holds: hours}, stateStopped},
 		// A graceful close in flight (SPEC-0012 REQ "Graceful Shutdown"): held,
 		// but the process is still up finishing its turn, so it is running
 		// until the close lands.
-		{"held-closing", supervisor.Snapshot{State: core.StateRunning, Gated: true, Held: true, Closing: true, PID: 1}, stateRunning},
+		{"held-closing", supervisor.Snapshot{State: core.StateRunning, Gated: true, Holds: hours, Closing: true, PID: 1}, stateRunning},
 		// Gated but in hours is an ordinary running harness.
 		{"gated-running", supervisor.Snapshot{State: core.StateRunning, Gated: true, PID: 1}, stateRunning},
+		// Held for a quota park (SPEC-0021 REQ-18): stopped, never failed —
+		// gated or not, with crash-loop history caught mid-park.
+		{"parked", supervisor.Snapshot{State: core.StateStopped, Holds: core.HoldSetOf(core.HoldQuota)}, stateStopped},
+		{"parked-was-flapping", supervisor.Snapshot{State: core.StateRestarting, Holds: core.HoldSetOf(core.HoldQuota), Flapping: true}, stateStopped},
+		{"over-budget", supervisor.Snapshot{State: core.StateStopped, Holds: core.HoldSetOf(core.HoldBudget)}, stateStopped},
 	}
 	for _, c := range cases {
 		src.add(core.Harness{Name: c.name, Adapter: "generic"}, c.snap)

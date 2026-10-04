@@ -50,6 +50,14 @@ const (
 	// SPEC-0012 REQ "Operating Hours Visibility".
 	EventHoursChanged EventKind = "harness_hours_changed"
 
+	// EventHoldChanged is emitted whenever a harness's set of hold reasons
+	// changes (`harness_hold_changed { name, hold_reasons, next }`): a reason
+	// added, a reason cleared, or every reason dropped by a start or stop.
+	// The supervisor publishes it from the actor loop, at the moment the new
+	// set becomes visible in its snapshot. Governing: ADR-0027, SPEC-0021
+	// REQ-19 "Events and the durable log", REQ-14.
+	EventHoldChanged EventKind = "harness_hold_changed"
+
 	// EventTemplateRenderFailed is emitted when a spawn's argv template
 	// could not be rendered, so nothing was exec'd; RenderFailure says why.
 	// It feeds harness_template_render_failures_total and is NOT relayed to
@@ -97,6 +105,13 @@ type Event struct {
 	// week). Governing: SPEC-0012 REQ "Operating Hours Visibility".
 	InHours   bool
 	HoursNext time.Time
+
+	// Holds and HoldNext are set for EventHoldChanged: the harness's new set
+	// of hold reasons (empty once it is no longer held), and when that hold
+	// is next expected to clear (zero when unknown or not held). Governing:
+	// SPEC-0021 REQ-19.
+	Holds    core.HoldSet
+	HoldNext time.Time
 
 	// Code is the process exit code, set for EventExited (-1 if signalled).
 	Code int

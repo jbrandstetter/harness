@@ -37,8 +37,17 @@ package scheduler
 // after an outside_hours skip it asks the Gate to settle them, which starts
 // one catch_up run under catch_up = true. SPEC-0014 REQ "Operating Hours On
 // Triggered Harnesses"; stump.wtf/harness#484.
+//
+// @joestump 10/04/2026 - Held became a set of hold reasons (hours, quota,
+// budget). The pass still judges hours exactly as before, and now also adds
+// the hours reason to a harness out of hours that is already held for another
+// reason, so a park that expires out of hours leaves it held; and it releases
+// the other reasons through a clearing hook (Gate.HoldsCleared) that the park
+// and budget stories feed. ADR-0027, SPEC-0021 REQ-14;
+// stump.wtf/harness#468.
 
 import (
+	"slices"
 	"time"
 
 	"charm.land/log/v2"
@@ -51,9 +60,9 @@ import (
 // adapter over the supervisor Manager.
 type Gate interface {
 	// Status reports whether name is up (starting, running, degraded or
-	// restarting), whether it is held, and whether a graceful close is in
-	// flight. ok is false for an unknown harness.
-	Status(name string) (up, held, closing, ok bool)
+	// restarting), the reasons it is held for (empty: not held), and whether
+	// a graceful close is in flight. ok is false for an unknown harness.
+	Status(name string) (up bool, holds core.HoldSet, closing, ok bool)
 	// Lease reports name's after-hours lease end at now — the tick's own
 	// clock, never a wall-clock read of the Gate's — ok=false when it has
 	// none. A harness covered by a lease that has not ended is never held.
@@ -65,17 +74,25 @@ type Gate interface {
 	// graceful close's deadline is measured from. ok is false when the
 	// boundary cannot be determined and the close anchors to now instead.
 	CloseAt(name string, now time.Time) (time.Time, bool)
-	// Hold shuts name down for its hours without touching enabled intent.
-	// Under a graceful mode it marks the close and returns; closeAt is the
-	// instant the harness went out of hours.
+	// Hold shuts name down for its hours without touching enabled intent
+	// (adds the hours reason to its hold). Under a graceful mode it marks
+	// the close and returns; closeAt is the instant the harness went out of
+	// hours.
 	Hold(name string, mode core.HoursShutdownMode, closeAt time.Time)
 	// CloseStep advances a graceful close by one observation of the
 	// turn-state watch.
 	CloseStep(name string, now time.Time)
 	// Arm warms the turn-state watch for a close within armLead.
 	Arm(name string, closeAt time.Time)
-	// Release starts a held harness without touching enabled intent.
-	Release(name string)
+	// Release clears one reason from name's hold without touching enabled
+	// intent; the harness starts only once no reason is left (and admission
+	// passes).
+	Release(name string, reason core.HoldReason)
+	// HoldsCleared is the clearing hook for every hold reason other than
+	// hours (SPEC-0021 REQ-14): the harnesses whose quota park or budget
+	// hold has cleared at now, the tick's clock, with the reasons that did.
+	// The pass releases each. Asked once per tick, so it must be cheap.
+	HoldsCleared(now time.Time) map[string]core.HoldSet
 	// HoursSkipped reports whether name — a harness whose operating_hours
 	// gate its firings, not its process — has had a firing skipped as
 	// outside_hours since its hours last opened. Read every in-hours tick,
@@ -109,8 +126,12 @@ const armLead = time.Minute
 
 // gateAction is one decision the pass made, carried out after the lock drops.
 type gateAction struct {
-	name      string
-	hold      bool // false: release
+	name string
+	hold bool // add the hours reason
+	// heldDown marks a hold of a harness already down for another reason:
+	// it only adds the hours reason, so no close is stepped.
+	heldDown  bool
+	release   core.HoldSet // reasons to clear: hours when they open, others when their hook says
 	mode      core.HoursShutdownMode
 	closeAt   time.Time // the instant the harness went out of hours
 	anchored  bool      // closeAt came from a real boundary, not a fallback
@@ -218,9 +239,16 @@ func (s *Scheduler) gatePass(now time.Time) (acts []gateAction, hoursChanges []h
 			continue // the last decision is still being carried out
 		}
 		in, next, hasNext := g.expr.In(now)
-		up, held, closing, ok := s.gate.Status(name)
+		up, holds, closing, ok := s.gate.Status(name)
 		if !ok {
 			continue
+		}
+		// held is SPEC-0012's held: held for its hours. The pass judges
+		// only that reason; a park or a budget hold is the clearing hook's
+		// below (SPEC-0021 REQ-14).
+		held := holds.Has(core.HoldHours)
+		if in {
+			delete(s.hoursAsked, name) // the next close asks afresh
 		}
 		// harness_hours_changed fires exactly on a real flip, never on an
 		// unchanged tick. lastIn seeds silently on a harness's first pass
@@ -298,8 +326,22 @@ func (s *Scheduler) gatePass(now time.Time) (acts []gateAction, hoursChanges []h
 			closeAt, anchored := s.gate.CloseAt(name, now)
 			delete(s.armed, name) // the close takes over from the warm-up
 			acts = append(acts, gateAction{name: name, hold: true, mode: g.mode, closeAt: closeAt, anchored: anchored, stepAt: now})
+		case !in && !held && !holds.Empty():
+			// Already down for another reason (a park, a budget): out of
+			// hours it is held for its hours too, so that reason clearing
+			// out of hours leaves it held until the window opens rather
+			// than starting it only to be shut on the next tick (SPEC-0021
+			// REQ-14 Scenario "A park expires out of hours"; REQ-4 "Hours
+			// decide before budgets"). Asked once per hold set: a disabled
+			// harness declines the hours reason (SPEC-0012: it is not the
+			// gate's to hold), and the answer cannot change until its set
+			// does.
+			if s.askHours(name, holds) {
+				delete(s.armed, name)
+				acts = append(acts, gateAction{name: name, hold: true, heldDown: true, mode: g.mode, stepAt: now})
+			}
 		case in && held:
-			acts = append(acts, gateAction{name: name})
+			acts = append(acts, gateAction{name: name, release: core.HoldSetOf(core.HoldHours)})
 		case in && next.Sub(now) <= armLead:
 			// The window ends within the minute: warm the watch a graceful
 			// close will need, so its first step already has a sample.
@@ -310,13 +352,15 @@ func (s *Scheduler) gatePass(now time.Time) (acts []gateAction, hoursChanges []h
 	}
 	for name := range s.ungated {
 		delete(s.ungated, name)
-		delete(s.lastIn, name)    // regated later starts a fresh flip history
-		delete(s.wasLeased, name) // same, for the lease tracking above
-		if _, held, _, ok := s.gate.Status(name); ok && held {
+		delete(s.lastIn, name)     // regated later starts a fresh flip history
+		delete(s.wasLeased, name)  // same, for the lease tracking above
+		delete(s.hoursAsked, name) // and for the hours-on-a-held-harness ask
+		if _, holds, _, ok := s.gate.Status(name); ok && holds.Has(core.HoldHours) {
 			delete(s.armed, name)
-			acts = append(acts, gateAction{name: name, ungated: true})
+			acts = append(acts, gateAction{name: name, ungated: true, release: core.HoldSetOf(core.HoldHours)})
 		}
 	}
+	acts = s.clearHolds(now, acts)
 	for _, a := range acts {
 		if s.gating == nil {
 			s.gating = make(map[string]bool)
@@ -324,6 +368,51 @@ func (s *Scheduler) gatePass(now time.Time) (acts []gateAction, hoursChanges []h
 		s.gating[a.name] = true
 	}
 	return acts, hoursChanges, leaseEnds
+}
+
+// clearHolds appends a release for every hold reason other than hours that
+// the Gate's clearing hook reports cleared at now (SPEC-0021 REQ-14: quota at
+// the park's reset instant, budget at the rollover or a raised cap). A
+// harness the pass already decided something for this tick, or whose last
+// decision is still being carried out, is left to the next tick: the hook is
+// level-triggered (a cleared reason stays cleared until it is released), and
+// one action per harness per tick keeps the order this pass chose — an hours
+// reason added on this tick lands before a park clears on the next, so the
+// harness never starts in between. Caller holds s.mu.
+func (s *Scheduler) clearHolds(now time.Time, acts []gateAction) []gateAction {
+	cleared := s.gate.HoldsCleared(now)
+	if len(cleared) == 0 {
+		return acts
+	}
+	names := make([]string, 0, len(cleared))
+	for name := range cleared {
+		names = append(names, name)
+	}
+	slices.Sort(names) // a stable dispatch order, tick to tick
+	for _, name := range names {
+		rs := cleared[name].Without(core.HoldHours) // hours are the pass's own
+		if rs.Empty() || s.gating[name] || slices.ContainsFunc(acts, func(a gateAction) bool { return a.name == name }) {
+			continue
+		}
+		acts = append(acts, gateAction{name: name, release: rs})
+	}
+	return acts
+}
+
+// askHours reports whether the pass should ask to add the hours reason to
+// name, down and held for other reasons out of hours: once per distinct set.
+// A set the supervisor took the reason into changes (it then holds hours, and
+// the pass stops asking); one it declined stays as it was, and asking again
+// every tick would only repeat the refusal. Caller holds s.mu.
+func (s *Scheduler) askHours(name string, holds core.HoldSet) bool {
+	if asked, ok := s.hoursAsked[name]; ok && asked == holds {
+		return false
+	}
+	if s.hoursAsked == nil {
+		s.hoursAsked = make(map[string]core.HoldSet)
+	}
+	s.hoursAsked[name] = holds
+	return true
 }
 
 // armOnce reports whether name's watch still needs warming for closeAt: the
@@ -365,6 +454,11 @@ func (s *Scheduler) dispatchGate(a gateAction) {
 			s.safely("operating-hours close arm", a.name, func() {
 				s.gate.Arm(a.name, a.closeAt)
 			})
+		case a.hold && a.heldDown:
+			s.safely("operating-hours hold", a.name, func() {
+				log.Info("operating hours closed on a harness already held; holding it for its hours too", "harness", a.name)
+				s.gate.Hold(a.name, a.mode, a.closeAt)
+			})
 		case a.hold:
 			s.safely("operating-hours hold", a.name, func() {
 				if a.mode == core.HoursShutdownGraceful {
@@ -393,13 +487,18 @@ func (s *Scheduler) dispatchGate(a gateAction) {
 				}
 			})
 		default:
-			s.safely("operating-hours release", a.name, func() {
-				if a.ungated {
-					log.Info("operating hours removed from a held harness; starting", "harness", a.name)
-				} else {
-					log.Info("operating hours opened; starting", "harness", a.name)
+			s.safely("hold release", a.name, func() {
+				for _, r := range a.release.Reasons() {
+					switch {
+					case r != core.HoldHours:
+						log.Info("hold cleared; releasing", "harness", a.name, "reason", r.String())
+					case a.ungated:
+						log.Info("operating hours removed from a held harness; starting", "harness", a.name)
+					default:
+						log.Info("operating hours opened; starting", "harness", a.name)
+					}
+					s.gate.Release(a.name, r)
 				}
-				s.gate.Release(a.name)
 			})
 		}
 	}()

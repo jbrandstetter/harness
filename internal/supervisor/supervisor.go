@@ -47,8 +47,8 @@ const (
 	cmdResize
 	cmdWriteInput
 	cmdSignal
-	cmdHold      // operating hours closed: stop without touching enabled (hours.go)
-	cmdRelease   // operating hours opened: start a held harness (hours.go)
+	cmdHold      // add a hold reason: stop without touching enabled (holds.go)
+	cmdRelease   // clear a hold reason: start once none is left (holds.go)
 	cmdCloseStep // operating hours graceful close: advance one step (hours.go)
 	cmdLogEvent  // a durable-log line decided outside the loop (Manager.LogLifecycle)
 	// Operating hours on a triggered harness gate FIRINGS, not the process
@@ -113,6 +113,9 @@ type command struct {
 	source string
 	peer   string
 	enable bool // cmdHold: also record enabled intent (a held autostart)
+	// holdReason is the reason cmdHold adds or cmdRelease clears (SPEC-0021
+	// REQ-14).
+	holdReason core.HoldReason
 	// cmdHold: the close the gate decided. mode selects graceful vs
 	// immediate; closeAt is the instant the harness went out of hours, from
 	// which the graceful deadline is measured (SPEC-0012 REQ "Graceful
@@ -173,7 +176,7 @@ type Snapshot struct {
 	// OperatorStopped marks an operator stop that suppresses automatic
 	// firings (stump.wtf/harness#786). Carried on the snapshot so callers
 	// outside the actor goroutine — Manager.StartRun — can consult it; like
-	// Enabled it is intent, and unlike Held it is persisted.
+	// Enabled it is intent, and unlike Holds it is persisted.
 	OperatorStopped bool
 	// SessionStalled reports the session guard's finding: every recent
 	// assistant turn failed with a context-limit error, so the harness is
@@ -181,17 +184,19 @@ type Snapshot struct {
 	// (issue #347). SessionRotations counts rotations the guard performed.
 	SessionStalled   bool
 	SessionRotations int
-	// Gated marks a harness with operating_hours set, and Held one that the
-	// operating-hours gate has shut down (or kept down) while leaving
-	// `enabled` alone. Held is derived runtime state and is never written to
-	// state.json: boot recomputes it (Manager.Autostart). Closing marks a
-	// graceful close in flight: held, still up, and being stopped as soon as
-	// its agent's turn ends, it goes quiet, or CloseAt plus the configured
-	// shutdown timeout passes — whichever lands first. Both are derived;
-	// neither is persisted. Governing: ADR-0019; SPEC-0012 REQ "Gate
-	// Enforcement", REQ "Graceful Shutdown".
+	// Gated marks a harness with operating_hours set. Holds is the set of
+	// reasons the daemon is keeping the harness down for (or closing it
+	// for) while leaving `enabled` alone: its hours, a quota park, a spent
+	// budget. Empty means not held. Holds is derived runtime state and is
+	// never written to state.json: boot recomputes the hours reason
+	// (Manager.Autostart). Closing marks a graceful close in flight: held,
+	// still up, and being stopped as soon as its agent's turn ends, it goes
+	// quiet, or CloseAt plus the configured shutdown timeout passes —
+	// whichever lands first. Both are derived; neither is persisted.
+	// Governing: ADR-0019; SPEC-0012 REQ "Gate Enforcement", REQ "Graceful
+	// Shutdown"; ADR-0027, SPEC-0021 REQ-14 (Held became a reason set).
 	Gated bool
-	Held  bool
+	Holds core.HoldSet
 	// Closing and CloseAt describe a graceful close in progress (SPEC-0012
 	// REQ "Graceful Shutdown"); CloseAt is zero unless Closing.
 	Closing bool
@@ -270,9 +275,13 @@ type Supervisor struct {
 	evlog         *clog.Logger // structured lifecycle events into log (#279)
 	configChanged bool         // staged config awaiting restart (SPEC-0003)
 
-	// held is set by an operating-hours hold and cleared by any start, stop or
-	// release (hours.go). Derived, never persisted (SPEC-0012).
-	held bool
+	// holds is the set of reasons the harness is held for: a hold adds one,
+	// a release clears one, and any start or stop clears them all
+	// (holds.go). Derived, never persisted (SPEC-0012, SPEC-0021 REQ-14).
+	holds core.HoldSet
+	// admit is the Manager's admission seam, asked on the loop when the last
+	// hold reason clears (holds.go). Nil admits.
+	admit AdmitFunc
 	// closing marks a graceful close in flight: held and still up, waiting on
 	// the agent's turn state or the deadline (hours.go). closeAt is the
 	// instant the harness went out of hours, which anchors the deadline.
@@ -337,6 +346,10 @@ type Options struct {
 	// Runs, if set, records the run history of a scheduled harness (SPEC-0008
 	// REQ "Run History"). The Manager passes itself.
 	Runs RunJournal
+	// Admit, if set, is asked before a harness whose last hold reason cleared
+	// is started again (SPEC-0021 REQ-14: it "SHALL go back through
+	// admission"). The Manager passes its admission seam; nil admits.
+	Admit AdmitFunc
 }
 
 // New creates a Supervisor for h and starts its actor loop. The harness begins
@@ -356,6 +369,7 @@ func New(h core.Harness, opts Options) *Supervisor {
 		surviveCh:    make(chan uint64, 1),
 		timeoutCh:    make(chan uint64),
 		journal:      opts.Runs,
+		admit:        opts.Admit,
 		done:         make(chan struct{}),
 		harness:      h,
 		state:        core.StateStopped,
@@ -554,7 +568,7 @@ func (s *Supervisor) handleCommand(c command) (shutdown bool) {
 	case cmdStart:
 		s.setIntent(true, c.source, c.peer)
 		s.stoppedByOperator = false // an explicit start re-arms the schedule (#786)
-		s.held = false              // an operator start overrides the hours hold
+		s.holds = 0                 // an operator start overrides every hold reason
 		s.closing = false           // and cancels a graceful close in flight
 		s.publishChangeUnchanged()  // persist intent even if already up
 		if !s.hasProcess() && s.state != core.StateStopping {
@@ -595,7 +609,7 @@ func (s *Supervisor) handleCommand(c command) (shutdown bool) {
 		// schedule is (#159, #266) — so the suppression gets its own flag,
 		// cleared by the next explicit start or restart.
 		s.stoppedByOperator = true
-		s.held = false    // stopped by the operator now, not by its hours (SPEC-0012)
+		s.holds = 0       // stopped by the operator now, for no hold reason (SPEC-0012, SPEC-0021 REQ-15)
 		s.closing = false // a stop never waits on turn state (SPEC-0012)
 		s.cancelRestartTimer()
 		s.dropQueued(OutcomeCancelled, ReasonOperator)
@@ -611,11 +625,11 @@ func (s *Supervisor) handleCommand(c command) (shutdown bool) {
 	case cmdRestart:
 		s.setIntent(true, c.source, c.peer)
 		s.stoppedByOperator = false // a restart is an explicit start
-		s.held = false
+		s.holds = 0
 		// A restart cancels a graceful close in flight, as a start does.
 		// Left set, the gate would keep stepping a close on a harness
 		// that is no longer held, and the stop that ended it would leave
-		// the harness down with held=false, which no window opening
+		// the harness down with no hold reason, which no window opening
 		// ever releases (SPEC-0012 REQ "Gate Enforcement": only a held
 		// harness is started when hours open).
 		s.closing = false
@@ -659,9 +673,9 @@ func (s *Supervisor) handleCommand(c command) (shutdown bool) {
 			s.proc.writeInput(c.input)
 		}
 	case cmdHold:
-		s.hold(c.enable, c.mode, c.closeAt, c.source)
+		s.hold(c.holdReason, c.enable, c.mode, c.closeAt, c.source)
 	case cmdRelease:
-		s.release()
+		s.release(c.holdReason)
 	case cmdCloseStep:
 		s.closeStep(c.step)
 	case cmdLogEvent:
@@ -763,9 +777,9 @@ func (s *Supervisor) beginStart() {
 		s.pending = nil
 		s.configChanged = false
 	}
-	// Any process start ends a hold: the harness is no longer down because of
-	// its hours (SPEC-0012 "Held").
-	s.held = false
+	// Any process start ends a hold: the harness is no longer down for any
+	// reason (SPEC-0012 "Held", SPEC-0021 REQ-14).
+	s.holds = 0
 	s.transition(core.StateStarting)
 	// A resident's process lifetime is a run: open its record before the
 	// spawn (SPEC-0022 REQ-3, REQ-6). A one-shot's was opened by beginRun.
@@ -1029,18 +1043,19 @@ func (s *Supervisor) onProcessGone(code int, spawnFailed bool) {
 		s.finishRun(outcome, exit)
 	}
 
-	// Exit while held: the gate owns this exit — an operating-hours close
-	// was waiting on the agent's turn state when the process ended on its
-	// own — so it is held without a restart (SPEC-0012 REQ "Graceful
-	// Shutdown") and the restart policy and crash bookkeeping never see
-	// it. Everything below this branch assumes the restart policy is in
-	// charge; a held harness's is not.
-	if s.held {
+	// Exit while held: the hold owns this exit — a graceful close was
+	// waiting on the agent's turn state when the process ended on its own
+	// — so it is held without a restart (SPEC-0012 REQ "Graceful
+	// Shutdown"; SPEC-0021 REQ-14 extends it to every hold reason) and the
+	// restart policy and crash bookkeeping never see it. Everything below
+	// this branch assumes the restart policy is in charge; a held
+	// harness's is not.
+	if !s.holds.Empty() {
 		s.closing = false
 		s.resetCrashState()
 		s.consecFailures = 0
 		s.transition(core.StateStopped)
-		s.finishRunWith(OutcomeCancelled, &s.lastExitCode, ReasonHours)
+		s.finishRunWith(OutcomeCancelled, &s.lastExitCode, holdRunReason(s.holds))
 		return
 	}
 
@@ -1431,6 +1446,18 @@ func (s *Supervisor) publishSnapshot() {
 	if s.proc != nil {
 		pid = s.proc.pid
 	}
+	// harness_hold_changed rides the snapshot: every mutation of s.holds
+	// becomes visible here and nowhere else, so comparing against the last
+	// published set catches each change without a hook at every site that
+	// adds or clears a reason (SPEC-0021 REQ-19). s.snap is written only on
+	// this goroutine, so reading it here needs no lock. The next-clear
+	// instant is worked out before the snapshot is published, as hold()
+	// does for its log line, so the scan never widens the visible window.
+	holdsChanged := s.snap.Holds != s.holds
+	var holdNext time.Time
+	if holdsChanged {
+		holdNext = s.holdNext()
+	}
 	s.mu.Lock()
 	s.snap = Snapshot{
 		Name:            s.harness.Name,
@@ -1450,7 +1477,7 @@ func (s *Supervisor) publishSnapshot() {
 		Triggered:       s.harness.Triggered(),
 		PID:             pid,
 		Gated:           s.gated(),
-		Held:            s.held,
+		Holds:           s.holds,
 		Closing:         s.closing,
 		CloseAt:         s.closeAt,
 
@@ -1458,6 +1485,9 @@ func (s *Supervisor) publishSnapshot() {
 		HoursSkipped:        s.hoursSkipped,
 	}
 	s.mu.Unlock()
+	if holdsChanged && s.bus != nil {
+		s.bus.Publish(Event{Kind: EventHoldChanged, Name: s.harness.Name, Time: time.Now(), Holds: s.holds, HoldNext: holdNext})
+	}
 	if s.onChange != nil && !s.suppressPersist {
 		s.onChange()
 	}

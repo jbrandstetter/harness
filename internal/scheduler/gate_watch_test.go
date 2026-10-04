@@ -57,14 +57,19 @@ func (b *countingBridge) counts() (armed, down int) {
 }
 
 // gateManager adapts the Manager to the scheduler's Gate seam exactly as the
-// daemon's hoursGate does, hiding Release's bool.
+// daemon's hoursGate does, hiding Release's bool and naming the hours reason
+// on Hold.
 type gateManager struct{ *supervisor.Manager }
 
-func (g gateManager) Status(name string) (up, held, closing, ok bool) {
+func (g gateManager) Status(name string) (up bool, holds core.HoldSet, closing, ok bool) {
 	return g.GateStatus(name)
 }
 
-func (g gateManager) Release(name string) { g.Manager.Release(name) }
+func (g gateManager) Hold(name string, mode core.HoursShutdownMode, closeAt time.Time) {
+	g.Manager.Hold(name, core.HoldHours, mode, closeAt)
+}
+
+func (g gateManager) Release(name string, reason core.HoldReason) { g.Manager.Release(name, reason) }
 
 func (g gateManager) OpenFirings(name string) { g.Manager.OpenFirings(name) }
 

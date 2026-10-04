@@ -307,8 +307,8 @@ func TestDaemonGatesFiringsOnOperatingHours(t *testing.T) {
 	// Watched for a while rather than read once: a hold the pass dispatched
 	// runs on its own goroutine and would land within the stop grace.
 	for deadline := time.Now().Add(400 * time.Millisecond); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-		if s, _ := mgr.Snapshot(long.Name); s.State != core.StateRunning || s.Held {
-			t.Fatalf("after the close the long run is %s (held=%v); the gate must leave a run in flight alone", s.State, s.Held)
+		if s, _ := mgr.Snapshot(long.Name); s.State != core.StateRunning || s.Holds.Has(core.HoldHours) {
+			t.Fatalf("after the close the long run is %s (held=%v); the gate must leave a run in flight alone", s.State, s.Holds.Has(core.HoldHours))
 		}
 	}
 	waitUntil(t, "the long run ends at its timeout", func() bool {
