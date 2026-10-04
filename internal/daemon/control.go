@@ -255,11 +255,13 @@ func (c *conn) skillAttributions(h core.Harness) []protocol.SkillAttribution {
 		roots = append(roots, skillmerge.Root{Dir: expand(d), Tier: 2, Source: "skill_paths"})
 	}
 	// The serving-clone store is out of bounds for roots, exactly as the
-	// spawn-time projection excludes it.
-	serving := filepath.Join(supervisor.StateHome(), "skills") + string(filepath.Separator)
+	// spawn-time projection excludes it — including a root equal to the
+	// store directory itself.
+	serving := filepath.Join(supervisor.StateHome(), "skills")
+	servingPrefix := serving + string(filepath.Separator)
 	kept := roots[:0]
 	for _, r := range roots {
-		if strings.HasPrefix(r.Dir, serving) {
+		if r.Dir == serving || strings.HasPrefix(r.Dir, servingPrefix) {
 			continue
 		}
 		kept = append(kept, r)

@@ -143,6 +143,22 @@ skill_paths = true
 	if bo, ok := byName["bundled-only"]; !ok || !strings.Contains(bo.Winner, "installed") {
 		t.Fatalf("the bundled-only skill must attribute to the bundle: %+v", out)
 	}
+
+	// The serving store itself stays out of bounds for attribution,
+	// exactly as the spawn-time projection excludes it: a skill_paths
+	// entry equal to the store root must not attribute.
+	//
+	// @joestump-agent 10/04/2026 - Added with the store-root exclusion for
+	// harness#893.
+	storeRoot := filepath.Join(state, "harness", "skills")
+	writeSkillDirT(t, storeRoot, "store-root-only", "from the store root")
+	hStore := h
+	hStore.SkillPaths = append(append([]string{}, h.SkillPaths...), storeRoot)
+	for _, sa := range c.skillAttributions(hStore) {
+		if sa.Name == "store-root-only" {
+			t.Fatalf("the serving store root must not attribute: %+v", sa)
+		}
+	}
 }
 
 func writeSkillDirT(t *testing.T, root, slug, body string) {

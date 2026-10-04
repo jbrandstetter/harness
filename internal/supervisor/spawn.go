@@ -708,12 +708,17 @@ func projectSkills(h core.Harness, workdir string) error {
 // excludeServingRoot drops every root under the SPEC-0007 serving-clone
 // store ($XDG_STATE_HOME/harness/skills): a skill repo's skills are served
 // by search and excluded from projection unconditionally, whether or not
-// an operator pointed skill_paths at the clone.
+// an operator pointed skill_paths at the clone. The store directory
+// itself is equally out of bounds.
+//
+// @joestump-agent 10/04/2026 - Also drop a root equal to the store itself,
+// which the store-scoped prefix alone would otherwise project (#893).
 func excludeServingRoot(roots []skillmerge.Root) []skillmerge.Root {
-	serving := filepath.Join(StateHome(), "skills") + string(filepath.Separator)
+	serving := filepath.Join(StateHome(), "skills")
+	servingPrefix := serving + string(filepath.Separator)
 	kept := roots[:0]
 	for _, r := range roots {
-		if strings.HasPrefix(r.Dir, serving) {
+		if r.Dir == serving || strings.HasPrefix(r.Dir, servingPrefix) {
 			clog.Warn("skill root inside the skill-repo serving store is excluded from projection",
 				"path", r.Dir)
 			continue

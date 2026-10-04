@@ -225,6 +225,21 @@ func TestProjectSkillsExcludesServingStore(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, ".claude", "skills", "workdir-skill")); err != nil {
 		t.Fatalf("the other roots must still project: %v", err)
 	}
+
+	// The store directory itself is equally out of bounds: a skill_paths
+	// entry equal to the store root must not project it.
+	//
+	// @joestump-agent 10/04/2026 - Added with the store-root exclusion for
+	// harness#893.
+	storeRoot := filepath.Join(state, "harness", "skills")
+	writeSkillDir(t, storeRoot, "store-root-skill", "from the store root")
+	hStore := skillHarness(t, workdir, storeRoot)
+	if err := projectSkills(hStore, workdir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude", "skills", "store-root-skill")); !os.IsNotExist(err) {
+		t.Fatal("the serving store root itself must never project")
+	}
 }
 
 // The package bundle tier (SPEC-0026 REQ-10): a sourced harness whose
