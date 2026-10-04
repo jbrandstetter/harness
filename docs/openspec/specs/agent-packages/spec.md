@@ -421,7 +421,10 @@ present the diff for an explicit per-change choice — keep the current value
 (pinning it onto the table where it was not already the operator's own) or
 take the new one (removing any local override it replaces, so the new pin
 supplies it). A package-supplied key SHALL be compared manifest to manifest,
-so a pin-relative path the new pin leaves unchanged is not a change. Package
+so a pin-relative path the new pin leaves unchanged is not a change. Keeping
+a package-supplied path (`system_prompt_file`, `mcp_config`) pins the old
+pin's absolute path onto the table; the review SHALL say that this path now
+holds the old pin, which REQ-9's prune keeps while it does. Package
 metadata (version, description) SHALL NOT trigger the review: it changes
 nothing the harness runs.
 
@@ -477,8 +480,13 @@ refuse, naming the harness, when the table has no `source` (uninstall
 never touches a hand-written harness).
 
 `harness agent prune` SHALL remove every entry under
-`$XDG_STATE_HOME/harness/agents/installed/` that no `source` in the
-**global** `harness.toml` references. It SHALL NOT scan project files (they
+`$XDG_STATE_HOME/harness/agents/installed/` that the **global**
+`harness.toml` does not reference. A pin is referenced by a `source` naming
+it, or by a file path config load reads — `prompt_file`,
+`system_prompt_file`, `mcp_config` — whose resolved value lies inside the
+pin's directory, as a package path kept through REQ-8's review does; for
+each pin that only such a path references, prune SHALL say so in its
+output, naming the harness and the key. It SHALL NOT scan project files (they
 are ephemeral and not always present) and SHALL state this scope
 limitation in its own output. A pin that a project file references but that
 `prune` removed SHALL surface only as REQ-7's ordinary missing-pin load
@@ -507,6 +515,17 @@ recommending reinstall — the same behavior as any other missing pin.
 - **THEN** `harness agent prune` removes it, and the next `harness up` for
   that project fails naming the missing pin rather than silently refetching
   it
+
+#### Scenario: Prune keeps a pin a kept path points into
+
+- **WHEN** a harness was upgraded from `@sha1` to `@sha2` and the operator
+  kept the package's `system_prompt_file`, so the table carries
+  `source = "<stable>/<package>@sha2"` and a `system_prompt_file` under
+  `sha1`'s directory
+- **THEN** `harness agent prune` keeps `sha1`, its output names
+  `[harness.<name>] system_prompt_file` as what holds it, and the global
+  configuration still loads; once that key no longer points inside `sha1`,
+  the next prune removes it
 
 ### Requirement: REQ-10 — Skill Path Precedence Amendment
 

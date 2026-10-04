@@ -2,12 +2,18 @@
 // source in the GLOBAL harness.toml references. Project files are never
 // read here (SPEC-0026 REQ-9): a pin only a project references is removed,
 // and the next `harness up` for that project fails with REQ-7's
-// missing-pin error rather than silently refetching it.
+// missing-pin error rather than silently refetching it. A file path on a
+// global table that points inside a pin holds that pin as surely as a
+// source does (PinOf): config load reads the file, and fails without it.
 //
 // Governing: ADR-0044 (agent package stables), SPEC-0026 REQ-9 (uninstall
 // and prune), Error Handling Standards.
 //
 // @joestump-agent 10/02/2026 - Added for harness#813.
+//
+// @joestump-agent 10/04/2026 - PinOf: a value kept through the upgrade
+// review is the old pin's absolute path, and pruning that pin broke the
+// next global config load.
 package agentpkg
 
 import (
@@ -69,6 +75,25 @@ func Prune(referenced map[Source]bool) ([]string, error) {
 		return removed, fmt.Errorf("agentpkg: prune %s: %w", root, err)
 	}
 	return removed, nil
+}
+
+// PinOf reports the pin directory an absolute path lies inside — the
+// directory itself or anything under
+// $XDG_STATE_HOME/harness/agents/installed/<stable>/<package>/<sha>/. A
+// relative path, or one anywhere else, is in no pin.
+func PinOf(path string) (Source, bool) {
+	if !filepath.IsAbs(path) {
+		return Source{}, false
+	}
+	rel, err := filepath.Rel(InstalledRoot(), filepath.Clean(path))
+	if err != nil {
+		return Source{}, false
+	}
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	if len(parts) < 3 || !NamePattern.MatchString(parts[0]) || !NamePattern.MatchString(parts[1]) || !shaRe.MatchString(parts[2]) {
+		return Source{}, false
+	}
+	return Source{Stable: parts[0], Package: parts[1], SHA: parts[2]}, true
 }
 
 // ChmodTreeWritable restores write permission over a materialized (read-only)

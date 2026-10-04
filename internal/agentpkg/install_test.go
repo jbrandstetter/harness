@@ -254,6 +254,37 @@ func TestPrune(t *testing.T) {
 	}
 }
 
+// PinOf maps a path to the pin directory holding it: the pin directory
+// itself or anything beneath it, and nothing else — not a relative path, a
+// stable or package parent, a temp sibling, or a path that only climbs
+// back in through "..".
+func TestPinOf(t *testing.T) {
+	isoState(t)
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	want := Source{Stable: "stump-wtf", Package: "pr-reviewer", SHA: sha}
+	pin := PinDir(want)
+	for _, p := range []string{pin, filepath.Join(pin, "system.md"), filepath.Join(pin, "prompts", "review.md"), pin + "/./mcp.json"} {
+		got, ok := PinOf(p)
+		if !ok || got != want {
+			t.Errorf("PinOf(%q) = %v, %v; want %v", p, got, ok, want)
+		}
+	}
+	root := InstalledRoot()
+	for _, p := range []string{
+		"",
+		filepath.Join("stump-wtf", "pr-reviewer", sha, "system.md"),
+		filepath.Join(root, "stump-wtf", "pr-reviewer"),
+		filepath.Join(root, "stump-wtf", "pr-reviewer", ".tmp-123", "system.md"),
+		filepath.Join(root, "stump-wtf", "pr-reviewer", "main", "system.md"),
+		filepath.Join(root, "..", "installed-not", "stump-wtf", "pr-reviewer", sha),
+		filepath.Join(t.TempDir(), "stump-wtf", "pr-reviewer", sha, "system.md"),
+	} {
+		if got, ok := PinOf(p); ok {
+			t.Errorf("PinOf(%q) = %v; want no pin", p, got)
+		}
+	}
+}
+
 func trimSpace(s string) string {
 	for len(s) > 0 && (s[len(s)-1] == '\n' || s[len(s)-1] == '\r' || s[len(s)-1] == ' ') {
 		s = s[:len(s)-1]
