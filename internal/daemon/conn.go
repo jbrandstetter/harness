@@ -30,8 +30,9 @@ type conn struct {
 	raw net.Conn
 	sub chan protocol.EventMsg
 	// peer is the socket peer this connection came from, "uid=N pid=N" when
-	// the platform reports one (SO_PEERCRED, linux): lifecycle verbs it sends
-	// carry it on the intent-change line (issue #835).
+	// the platform reports one (SO_PEERCRED on linux, LOCAL_PEERCRED and
+	// LOCAL_PEERPID on darwin): lifecycle verbs it sends carry it on the
+	// intent-change line (issue #835).
 	peer string
 
 	closed    chan struct{}
