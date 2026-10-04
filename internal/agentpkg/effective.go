@@ -16,6 +16,10 @@
 // every upgrade); a scalar at its zero is keepable rather than "added", so a
 // local auto_accept = false is never overwritten; values compare with
 // reflect.DeepEqual; the mcp_allow row grants the union.
+//
+// @joestump-agent 10/04/2026 - A local override is a row only when the new
+// pin moves its key; an override the package left alone no longer blocks
+// every --yes upgrade.
 package agentpkg
 
 import (
@@ -63,11 +67,11 @@ func (c EffectiveChange) Render(v any) string {
 // pin's manifest: a key PackageKeys lists was the old pin's; a key the old
 // pin supplied but PackageKeys omits, or any other set key, is the
 // operator's own (applySource fills only keys absent from the table). Only
-// behavioral differences surface — a local override the new pin contradicts
-// (the effective value is the operator's either way, but the divergence is
-// worth seeing), a package-supplied value the new pin moves or drops (the
-// effective value would silently follow), and a requested mcp_allow scope
-// the table does not grant.
+// behavioral differences surface — a local override whose key the new pin
+// moves to a value contradicting it (the effective value is the operator's
+// either way, but the package changed underneath it), a package-supplied
+// value the new pin moves or drops (the effective value would silently
+// follow), and a requested mcp_allow scope the table does not grant.
 func EffectiveChanges(h *core.Harness, oldMan, newMan *Manifest) []EffectiveChange {
 	var out []EffectiveChange
 	packageKey := func(key string) bool {
@@ -126,11 +130,13 @@ func EffectiveChanges(h *core.Harness, oldMan, newMan *Manifest) []EffectiveChan
 				out = append(out, EffectiveChange{Key: f.key, Kind: "value", Old: f.cur, New: f.new})
 			}
 		case local:
-			// A local override the new pin contradicts: the effective value
-			// is the operator's either way, but the divergence is exactly
-			// what the review exists to surface — taking the new value
-			// removes the override.
-			if !reflect.DeepEqual(f.cur, f.new) {
+			// A local override the package moved under: the new pin changes
+			// the key from what the installed pin said (or introduces it),
+			// and its value contradicts the operator's. The effective value
+			// is the operator's either way, but a moved package value is
+			// worth a look — taking it removes the override. An override the
+			// package did not move is the operator's settled choice: no row.
+			if !reflect.DeepEqual(f.old, f.new) && !reflect.DeepEqual(f.cur, f.new) {
 				out = append(out, EffectiveChange{Key: f.key, Kind: "value", Old: f.cur, New: f.new, OldLocal: true})
 			}
 		case f.zero != nil:

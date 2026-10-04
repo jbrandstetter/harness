@@ -16,6 +16,9 @@ package main
 // system_prompt_file on a version-only bump, a local auto_accept = false
 // kept through Enter, list values that print alike, and the mcp_allow
 // union.
+//
+// @joestump-agent 10/04/2026 - A local override is a row only when the
+// package moves its key, unit and end to end.
 
 import (
 	"bytes"
@@ -487,5 +490,86 @@ func TestEffectiveChangesGrantsTheUnion(t *testing.T) {
 	h.MCPAllow = []string{"read", "write"}
 	if chgs := agentpkg.EffectiveChanges(&h, man, man); len(chgs) != 0 {
 		t.Fatalf("a fully granted request is not a row: %+v", chgs)
+	}
+}
+
+// A local override is a row only when the package moves its key: one the
+// new pin leaves alone is the operator's settled choice, and one the new
+// pin moves to the operator's own value agrees with it.
+func TestReviewFlagsAnOverrideOnlyWhenThePackageMovesIt(t *testing.T) {
+	h := core.Harness{Adapter: "claude-code", Model: "opus", PackageKeys: []string{"harness"}}
+	pin := func(model string) *agentpkg.Manifest {
+		return &agentpkg.Manifest{Harness: agentpkg.HarnessValues{Harness: "claude-code", Model: model}}
+	}
+	if chgs := agentpkg.EffectiveChanges(&h, pin("sonnet"), pin("sonnet")); len(chgs) != 0 {
+		t.Fatalf("an override the package did not move is not a row: %+v", chgs)
+	}
+	c := changeFor(t, agentpkg.EffectiveChanges(&h, pin("sonnet"), pin("haiku")), "model")
+	if !c.OldLocal || c.Old != "opus" || c.New != "haiku" {
+		t.Fatalf("a package move under an override must be a conflict row: %+v", c)
+	}
+	if chgs := agentpkg.EffectiveChanges(&h, pin("sonnet"), pin("opus")); len(chgs) != 0 {
+		t.Fatalf("a move to the operator's own value is not a row: %+v", chgs)
+	}
+}
+
+// End to end: a version-only bump upgrades under --yes past a local
+// override, leaving it byte-identical; a bump that moves the overridden
+// key refuses, naming it.
+func TestAgentUpgradeLocalOverrideBlocksOnlyOnAMove(t *testing.T) {
+	e := newAgentEnv(t)
+	v1 := strings.Replace(agentPkg, `harness = "claude-code"`, `harness = "claude-code"
+model = "sonnet"`, 1)
+	remote, work := agentRemote(t, map[string]string{"packages/pr-reviewer/package.toml": v1})
+	if _, _, err := e.run("agent", "stable", "add", "stump-wtf", remote); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.run("agent", "install", "stump-wtf/pr-reviewer", "--yes"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(e.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// model needs a one-shot harness: the prompt is the operator's too.
+	e.writeFile("harness.toml", strings.Replace(string(data), "source = ", "prompt = \"go\"\nmodel = \"opus\"\nsource = ", 1))
+	oldSrc := installedSource(t, e.cfgPath, "pr-reviewer")
+
+	push := func(body, msg string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(work, "packages/pr-reviewer/package.toml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		agentGit(t, work, "add", "-A")
+		agentGit(t, work, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", msg)
+		agentGit(t, work, "push", "-q", remote, "main")
+		if _, _, err := e.run("agent", "stable", "update", "stump-wtf"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	push(strings.Replace(v1, "1.0.0", "1.1.0", 1), "bump")
+	if _, _, err := e.run("agent", "upgrade", "stump-wtf/pr-reviewer", "--yes"); err != nil {
+		t.Fatalf("an override the package did not move must not block --yes: %v", err)
+	}
+	midSrc := installedSource(t, e.cfgPath, "pr-reviewer")
+	if midSrc.SHA == oldSrc.SHA {
+		t.Fatal("the upgrade did not move the source")
+	}
+	after, err := os.ReadFile(e.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(after), `model = "opus"`) {
+		t.Fatalf("the override must survive untouched:\n%s", after)
+	}
+
+	push(strings.Replace(strings.Replace(v1, "1.0.0", "1.2.0", 1), `model = "sonnet"`, `model = "haiku"`, 1), "move model")
+	_, _, err = e.run("agent", "upgrade", "stump-wtf/pr-reviewer", "--yes")
+	if err == nil || !strings.Contains(err.Error(), "model: opus -> haiku") {
+		t.Fatalf("a package move under the override must refuse naming it, got %v", err)
+	}
+	if src := installedSource(t, e.cfgPath, "pr-reviewer"); src.SHA != midSrc.SHA {
+		t.Fatalf("a refused upgrade must not move the source: %v -> %v", midSrc.SHA, src.SHA)
 	}
 }
