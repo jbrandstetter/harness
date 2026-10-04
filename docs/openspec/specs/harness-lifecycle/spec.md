@@ -232,7 +232,13 @@ When a harness needs a person, the daemon SHALL tell one: if the global
 tool-loop guard stops a harness (`loop_stopped`), when the session guard rotates
 a wedged session or fails to (`session_rotated`), on a failed or timed-out
 scheduled or triggered run (`run_failed`, opt-in), and when a harness it
-reported `failed` or `loop_stopped` is running again (`recovered`). The program
+reported `failed` or `loop_stopped` is running again (`recovered`). A
+triggered harness never gives up — a failed run lands it in `failed` and its
+next firing is the retry (SPEC-0008 REQ "Firing And Overlap") — so that
+transition SHALL NOT send `failed`, and the next firing's start SHALL NOT send
+`recovered`; the run itself is reported as `run_failed`, whose message SHALL
+name the run ledger's streak of consecutive failed runs (SPEC-0022 REQ-5) when
+it is more than one. The program
 is a daemon-side hook, not a supervised harness (ADR-0033 governs what the
 daemon supervises, and is untouched): it SHALL be exec'd without a shell from an
 absolute `argv[0]`, SHALL receive the event as JSON on stdin and as
@@ -262,6 +268,14 @@ run it once with a `test` event.
   `failed`
 - **THEN** the daemon runs the notify hook with `HARNESS_NOTIFY_EVENT=failed`,
   and the message and `cause` quote that line
+
+#### Scenario: A failing one-shot is not a give-up
+
+- **GIVEN** a scheduled harness whose every run exits 1, and `events` naming
+  `failed`, `recovered` and `run_failed`
+- **WHEN** two firings run and fail
+- **THEN** the hook receives `run_failed` for each, the second saying
+  `2 in a row`, and never `failed` or `recovered`
 
 #### Scenario: A loop-guard stop is not silent
 

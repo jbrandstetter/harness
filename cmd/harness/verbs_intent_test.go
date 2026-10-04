@@ -44,6 +44,19 @@ func bootIntentDaemon(t *testing.T) string {
 		StatePath:   filepath.Join(tmp, "state.json"),
 		LogDir:      filepath.Join(tmp, "logs"),
 		ExtraOutFor: reg.WriterFor,
+		// DefaultPolicy's flapping backoff (1s→30s) can eat this test's whole
+		// wait budget on a loaded runner: CI run 16364 burned 2 minutes in
+		// twenty 1→8s backoff gaps while fork/exec failed under load, and the
+		// train went red on a PR whose own CI was green. A test policy with
+		// millisecond backoff and no give-up turns a retry storm back into
+		// what the wait is meant to measure — spawn latency.
+		Policy: supervisor.Policy{
+			CrashWindow:    30 * time.Second,
+			CrashThreshold: 1000,
+			BackoffBase:    time.Millisecond,
+			BackoffCap:     10 * time.Millisecond,
+			MaxRestarts:    0,
+		},
 	})
 	reg.SetController(mgr)
 

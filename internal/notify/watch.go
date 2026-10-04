@@ -11,6 +11,16 @@ package notify
 // in directly: LoopStopped from the loop guard's OnTrip, SessionRotated from
 // the session guard's OnRotate.
 //
+// A triggered harness is the exception to "a transition into `failed` is the
+// give-up". A one-shot whose run fails lands in `failed`, and its next firing
+// is the retry (SPEC-0008 REQ "Firing And Overlap"): nothing gave up, no
+// restart is owed, and the restart loop's consecFailures it would quote is
+// never counted for it. Its failures are run_failed's, which carries the
+// run-ledger streak `harness jobs` shows. Treating the state as a give-up told
+// an operator a review lane on tars "gave up after 0 consecutive failures",
+// latched until a human cleared it, every ten minutes for ten hours, while the
+// schedule kept firing it and each next start announced `recovered`.
+//
 // The bus is lossy by design (ADR-0007), and so is this subscriber: a
 // notification lost to a full buffer is a missed alert, never a false one.
 // The per-harness log read that finds the cause happens here, on the
@@ -18,6 +28,9 @@ package notify
 //
 // Governing: SPEC-0003 REQ "Operator Notification", REQ "Lifecycle Events";
 // issue #725.
+//
+// @joestump 10/04/2026 - A triggered harness's `failed` is not a give-up;
+//   run_failed quotes the run-ledger streak.
 
 import (
 	"fmt"
@@ -38,6 +51,8 @@ type Source interface {
 	Snapshot(name string) (supervisor.Snapshot, bool)
 	LogDir() string
 	RunLogPath(name string, id int) string
+	// Runs is name's run ledger, oldest first: run_failed's streak.
+	Runs(name string) []supervisor.RunRecord
 }
 
 // Watcher feeds a Dispatcher from the lifecycle bus and the guards.
@@ -98,9 +113,17 @@ func (w *Watcher) handle(ev supervisor.Event) {
 
 func (w *Watcher) failed(ev supervisor.Event) {
 	snap, _ := w.src.Snapshot(ev.Name)
+	if snap.Triggered {
+		return // its next firing retries; run_failed reported this run
+	}
 	cause := w.lastLine(ev.Name)
 	code := snap.LastExitCode
 	msg := fmt.Sprintf("%s failed: gave up after %d consecutive failures (last exit %d)", ev.Name, snap.ConsecutiveFailures, code)
+	if snap.ConsecutiveFailures == 0 {
+		// Not a give-up: a command that never came up under a restart
+		// policy that does not retry it lands here with no streak.
+		msg = fmt.Sprintf("%s failed and will not restart on its own (last exit %d)", ev.Name, code)
+	}
 	w.send(Notification{
 		Event: core.NotifyFailed, Harness: ev.Name, State: string(core.StateFailed),
 		Message:  withCause(msg, cause) + " — restart with `harness restart " + ev.Name + "`; see `harness logs " + ev.Name + "`",
@@ -166,6 +189,11 @@ func (w *Watcher) runFinished(ev supervisor.Event) {
 	msg := fmt.Sprintf("%s run #%d %s", ev.Name, r.RunID, what)
 	if r.ExitCode != nil {
 		msg += fmt.Sprintf(" (exit %d)", *r.ExitCode)
+	}
+	// The journal closes a run before it is published, so the ledger
+	// already holds this one: the same count `harness jobs` shows as FAILS.
+	if n := supervisor.ConsecutiveFailures(w.src.Runs(ev.Name)); n > 1 {
+		msg += fmt.Sprintf(", %d in a row", n)
 	}
 	hint := fmt.Sprintf("harness logs %s --run %d", ev.Name, r.RunID)
 	w.send(Notification{
