@@ -149,6 +149,11 @@ type formInputs struct {
 	// table, so a dropped triggers key silently unbinds a harness from its
 	// event source.
 	triggers string
+	// skillPaths is the comma-separated additional skill roots list
+	// (SPEC-0006 REQ "Skill Path Configuration"), and useDefaultSkillPaths
+	// is the tri-state switch that drops the adapter's defaults ("false")
+	// — both carried for the same round-trip reason as triggers.
+	skillPaths, useDefaultSkillPaths string
 }
 
 // Model is the root Bubble Tea model.

@@ -77,6 +77,13 @@ type rawHarness struct {
 	KeepRuns          *int         `toml:"keep_runs"`
 	HarvestTrajectory *bool        `toml:"harvest_trajectory"`
 	MCPAllow          []string     `toml:"mcp_allow"`
+	// SkillPaths and UseDefaultSkillPaths are the SPEC-0006 REQ "Skill Path
+	// Configuration" keys: additive per-harness skill roots, and the switch
+	// that drops the adapter's defaults. Legal in the global file and in a
+	// project harness.toml alike (ADR-0011: a repo shipping its own skills
+	// is the point).
+	SkillPaths           []string `toml:"skill_paths"`
+	UseDefaultSkillPaths *bool    `toml:"use_default_skill_paths"`
 	// ExportTelemetry is the per-harness telemetry opt-in; nil follows
 	// [telemetry] export_all (SPEC-0015 REQ-1).
 	ExportTelemetry *bool `toml:"export_telemetry"`
@@ -1287,36 +1294,51 @@ func registerHarness(cfg *core.Config, filename, name string, line int, rh rawHa
 		resolve = func(p string) string { return p }
 	}
 
+	// skill_paths resolve against the declaring file at load — the project
+	// root for a project harness.toml — exactly like every other path key
+	// (SPEC-0006 REQ "Skill Path Configuration").
+	var skillPaths []string
+	for _, p := range rh.SkillPaths {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return newError(filename, line, "harness %q: \"skill_paths\" must not contain empty entries", name)
+		}
+		skillPaths = append(skillPaths, resolve(p))
+	}
+	useDefaultSkillPaths := rh.UseDefaultSkillPaths == nil || *rh.UseDefaultSkillPaths
+
 	h := core.Harness{
-		Name:             name,
-		PackageSource:    sourceValue,
-		PackageKeys:      rh.PackageKeys,
-		Adapter:          adapter,
-		Args:             rh.Args,
-		Argv:             rh.Argv,
-		Transcripts:      rh.Transcripts,
-		AutoAccept:       autoAccept,
-		MaxTurns:         maxTurns,
-		Model:            model,
-		Prompt:           prompt,
-		PromptFile:       promptFilePath,
-		Quiet:            quiet,
-		SystemPromptFile: systemPromptFilePath,
-		MCPConfig:        mcpConfigPath,
-		AllowedTools:     allowedTools,
-		Workdir:          resolve(rh.Workdir),
-		EnvFiles:         resolveEnvFiles(rh.EnvFile, resolve),
-		RestartDelay:     time.Duration(rh.RestartDelay) * time.Second,
-		Restart:          restartPolicy,
-		Backend:          backend,
-		Description:      rh.Description,
-		Enabled:          enabled,
-		TmuxSocket:       rh.TmuxSocket,
-		Schedule:         schedule,
-		CatchUp:          catchUp,
-		Timeout:          timeout,
-		OnOverlap:        overlap,
-		KeepRuns:         keepRuns,
+		Name:                 name,
+		PackageSource:        sourceValue,
+		PackageKeys:          rh.PackageKeys,
+		SkillPaths:           skillPaths,
+		UseDefaultSkillPaths: useDefaultSkillPaths,
+		Adapter:              adapter,
+		Args:                 rh.Args,
+		Argv:                 rh.Argv,
+		Transcripts:          rh.Transcripts,
+		AutoAccept:           autoAccept,
+		MaxTurns:             maxTurns,
+		Model:                model,
+		Prompt:               prompt,
+		PromptFile:           promptFilePath,
+		Quiet:                quiet,
+		SystemPromptFile:     systemPromptFilePath,
+		MCPConfig:            mcpConfigPath,
+		AllowedTools:         allowedTools,
+		Workdir:              resolve(rh.Workdir),
+		EnvFiles:             resolveEnvFiles(rh.EnvFile, resolve),
+		RestartDelay:         time.Duration(rh.RestartDelay) * time.Second,
+		Restart:              restartPolicy,
+		Backend:              backend,
+		Description:          rh.Description,
+		Enabled:              enabled,
+		TmuxSocket:           rh.TmuxSocket,
+		Schedule:             schedule,
+		CatchUp:              catchUp,
+		Timeout:              timeout,
+		OnOverlap:            overlap,
+		KeepRuns:             keepRuns,
 
 		OperatingHours:       operatingHours,
 		HoursExpr:            hoursExpr,

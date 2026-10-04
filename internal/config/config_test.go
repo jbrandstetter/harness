@@ -45,6 +45,10 @@ func TestParseZshHarnessdExample(t *testing.T) {
 		Backend:      core.BackendNative, // defaulted, not present in the file
 		Enabled:      false,              // defaulted
 		MCPAllow:     []string{"read"},   // defaulted (SPEC-0005)
+		// SPEC-0006 REQ "Skill Path Configuration": an unset
+		// use_default_skill_paths resolves to true — the adapter's default
+		// roots contribute unless the table says otherwise.
+		UseDefaultSkillPaths: true,
 	}
 	if !reflect.DeepEqual(h, want) {
 		t.Errorf("harness mismatch:\n got %+v\nwant %+v", h, want)
