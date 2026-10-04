@@ -10,11 +10,17 @@
 // REQ-4 (capability requests).
 //
 // @joestump-agent 10/02/2026 - Added for harness#882.
+//
+// @joestump-agent 10/04/2026 - Review fixes: package-supplied keys compare
+// old manifest to new (a pin-relative path no longer reads as moved on
+// every upgrade); a scalar at its zero is keepable rather than "added", so a
+// local auto_accept = false is never overwritten; values compare with
+// reflect.DeepEqual; the mcp_allow row grants the union.
 package agentpkg
 
 import (
 	"fmt"
-	"sort"
+	"reflect"
 	"strings"
 
 	"github.com/stump-wtf/harness/internal/core"
@@ -53,14 +59,16 @@ func (c EffectiveChange) Render(v any) string {
 }
 
 // EffectiveChanges diffs the harness's current effective values against the
-// candidate manifest. Provenance comes from h.PackageKeys: a key it lists
-// was the old pin's; any other set key is the operator's own. Only
+// candidate manifest. Provenance comes from h.PackageKeys and the installed
+// pin's manifest: a key PackageKeys lists was the old pin's; a key the old
+// pin supplied but PackageKeys omits, or any other set key, is the
+// operator's own (applySource fills only keys absent from the table). Only
 // behavioral differences surface — a local override the new pin contradicts
 // (the effective value is the operator's either way, but the divergence is
 // worth seeing), a package-supplied value the new pin moves or drops (the
 // effective value would silently follow), and a requested mcp_allow scope
 // the table does not grant.
-func EffectiveChanges(h *core.Harness, newMan *Manifest) []EffectiveChange {
+func EffectiveChanges(h *core.Harness, oldMan, newMan *Manifest) []EffectiveChange {
 	var out []EffectiveChange
 	packageKey := func(key string) bool {
 		for _, k := range h.PackageKeys {
@@ -71,92 +79,97 @@ func EffectiveChanges(h *core.Harness, newMan *Manifest) []EffectiveChange {
 		return false
 	}
 
-	type pair struct {
-		key    string
-		old    any
-		new    any
-		oldSet bool
+	type field struct {
+		key string
+		cur any  // the current effective value; nil = unset
+		set bool // cur is non-empty (non-zero for a scalar)
+		old any  // the installed pin's manifest value; nil = not supplied
+		new any  // the candidate's manifest value; nil = not supplied
+		// zero is the unset value of a scalar key (false, 0) and nil for
+		// the rest. A scalar always has an effective value, so a new pin
+		// supplying one is never "added": keeping it pins the zero.
+		zero any
 	}
-	var pairs []pair
-	add := func(key string, old any, oldSet bool, new any) {
-		pairs = append(pairs, pair{key, old, new, oldSet})
+	ov, nv := oldMan.Harness, newMan.Harness
+	fields := []field{
+		{"harness", strOrNil(h.Adapter), h.Adapter != "", strOrNil(ov.Harness), strOrNil(nv.Harness), nil},
+		{"args", strSliceOrNil(h.Args), h.Args != nil, strSliceOrNil(ov.Args), strSliceOrNil(nv.Args), nil},
+		{"argv", strSliceOrNil(h.Argv), h.Argv != nil, strSliceOrNil(ov.Argv), strSliceOrNil(nv.Argv), nil},
+		{"model", strOrNil(h.Model), h.Model != "", strOrNil(ov.Model), strOrNil(nv.Model), nil},
+		{"auto_accept", h.AutoAccept, h.AutoAccept, boolOrNil(ov.AutoAccept), boolOrNil(nv.AutoAccept), false},
+		{"max_turns", h.MaxTurns, h.MaxTurns != 0, intOrNil(ov.MaxTurns), intOrNil(nv.MaxTurns), 0},
+		{"quiet", h.Quiet, h.Quiet, boolOrNil(ov.Quiet), boolOrNil(nv.Quiet), false},
+		{"system_prompt_file", strOrNil(h.SystemPromptFile), h.SystemPromptFile != "", strOrNil(ov.SystemPromptFile), strOrNil(nv.SystemPromptFile), nil},
+		{"mcp_config", strOrNil(h.MCPConfig), h.MCPConfig != "", strOrNil(ov.MCPConfig), strOrNil(nv.MCPConfig), nil},
+		{"allowed_tools", strSliceOrNil(h.AllowedTools), h.AllowedTools != nil, strSliceOrNil(ov.AllowedTools), strSliceOrNil(nv.AllowedTools), nil},
 	}
 
-	hv := newMan.Harness
-	add("harness", strOrNil(h.Adapter), h.Adapter != "", strOrNil(hv.Harness))
-	add("args", strSliceOrNil(h.Args), h.Args != nil, strSliceOrNil(hv.Args))
-	add("argv", strSliceOrNil(h.Argv), h.Argv != nil, strSliceOrNil(hv.Argv))
-	add("model", strOrNil(h.Model), h.Model != "", strOrNil(hv.Model))
-	// core.Harness flattens the scalar keys, so presence is inferred: a
-	// package-supplied value rides PackageKeys, and a non-zero local value
-	// is visible. An explicit local false is indistinguishable from unset
-	// here — the review handles that case by writing the chosen value
-	// explicitly rather than letting it flow.
-	add("auto_accept", h.AutoAccept, h.AutoAccept || packageKey("auto_accept"), boolOrNil(hv.AutoAccept))
-	add("max_turns", h.MaxTurns, h.MaxTurns != 0 || packageKey("max_turns"), intOrNil(hv.MaxTurns))
-	add("quiet", h.Quiet, h.Quiet || packageKey("quiet"), boolOrNil(hv.Quiet))
-	add("system_prompt_file", strOrNil(h.SystemPromptFile), h.SystemPromptFile != "", strOrNil(hv.SystemPromptFile))
-	add("mcp_config", strOrNil(h.MCPConfig), h.MCPConfig != "", strOrNil(hv.MCPConfig))
-	add("allowed_tools", strSliceOrNil(h.AllowedTools), h.AllowedTools != nil, strSliceOrNil(hv.AllowedTools))
-
-	for _, p := range pairs {
-		oldLocal := p.oldSet && !packageKey(p.key)
-		// A key the new pin does not supply: a package-supplied value being
-		// dropped moves the effective value to unset (review); a local one
-		// simply stays — nothing the upgrade does touches it.
-		if p.new == nil {
-			if p.oldSet && !oldLocal {
-				out = append(out, EffectiveChange{
-					Key:  p.key,
-					Kind: "value",
-					Old:  p.old,
-					New:  nil,
-				})
-			}
-			continue
-		}
-		if p.oldSet && fmt.Sprint(p.old) == fmt.Sprint(p.new) {
-			continue
-		}
+	for _, f := range fields {
+		fromPackage := packageKey(f.key)
+		local := !fromPackage && (f.set || f.old != nil)
 		switch {
-		case !p.oldSet:
+		case f.new == nil:
+			// A key the new pin does not supply: a package-supplied value
+			// being dropped moves the effective value to unset (review); a
+			// local one simply stays — nothing the upgrade does touches it.
+			if fromPackage && !reflect.DeepEqual(f.cur, f.zero) {
+				out = append(out, EffectiveChange{Key: f.key, Kind: "value", Old: f.cur})
+			}
+		case fromPackage:
+			// The old pin supplied it: compare the two manifests, not the
+			// effective value. A manifest path resolves under its own pin
+			// directory, so an unchanged "system.md" reads as a different
+			// absolute path on every upgrade. The effective value silently
+			// follows the pin unless the operator pins the old one — the
+			// auto-accept danger the review guards.
+			if !reflect.DeepEqual(f.old, f.new) {
+				out = append(out, EffectiveChange{Key: f.key, Kind: "value", Old: f.cur, New: f.new})
+			}
+		case local:
+			// A local override the new pin contradicts: the effective value
+			// is the operator's either way, but the divergence is exactly
+			// what the review exists to surface — taking the new value
+			// removes the override.
+			if !reflect.DeepEqual(f.cur, f.new) {
+				out = append(out, EffectiveChange{Key: f.key, Kind: "value", Old: f.cur, New: f.new, OldLocal: true})
+			}
+		case f.zero != nil:
+			// A scalar at its zero: unset, or an explicit zero on the table
+			// — the loaded config cannot tell them apart. Either way the
+			// current value is the zero, so the row is keepable, and
+			// keeping it pins the zero rather than letting the new value in.
+			if !reflect.DeepEqual(f.cur, f.new) {
+				out = append(out, EffectiveChange{Key: f.key, Kind: "value", Old: f.cur, New: f.new})
+			}
+		default:
 			// The new pin introduces the key: the only choice is to accept
 			// it — there is nothing local to preserve.
-			out = append(out, EffectiveChange{Key: p.key, Kind: "value", New: p.new, Added: true})
-		case oldLocal:
-			// A local override the new pin now contradicts: the effective
-			// value is the operator's either way, but the divergence is
-			// exactly what the review exists to surface — taking the new
-			// value removes the override.
-			out = append(out, EffectiveChange{Key: p.key, Kind: "value", Old: p.old, New: p.new, OldLocal: true})
-		default:
-			// The old pin supplied it and the new pin moves it: the
-			// effective value silently follows the pin unless the operator
-			// pins the old one. The auto-accept danger the review guards.
-			out = append(out, EffectiveChange{Key: p.key, Kind: "value", Old: p.old, New: p.new})
+			out = append(out, EffectiveChange{Key: f.key, Kind: "value", New: f.new, Added: true})
 		}
 	}
 
-	// The requested-scope row: every scope the new pin requests that the
-	// table does not already grant. Package metadata never lands here.
+	// The requested-scope row: the grant the table would carry with every
+	// scope the new pin requests added to what it already grants — never
+	// fewer, so taking the row cannot revoke a scope the operator granted.
+	// Package metadata never lands here.
 	if len(newMan.Requests.MCPAllow) > 0 {
 		granted := map[string]bool{}
 		for _, s := range h.MCPAllow {
 			granted[strings.ToLower(s)] = true
 		}
-		var missing []string
+		grant := append([]string(nil), h.MCPAllow...)
 		for _, s := range newMan.Requests.MCPAllow {
 			if !granted[strings.ToLower(s)] {
-				missing = append(missing, s)
+				granted[strings.ToLower(s)] = true
+				grant = append(grant, s)
 			}
 		}
-		if len(missing) > 0 {
-			sort.Strings(missing)
+		if len(grant) > len(h.MCPAllow) {
 			out = append(out, EffectiveChange{
 				Key:  "mcp_allow",
 				Kind: "request",
 				Old:  h.MCPAllow,
-				New:  newMan.Requests.MCPAllow,
+				New:  grant,
 			})
 		}
 	}

@@ -417,14 +417,16 @@ every local override the new pin's value contradicts, and every requested
 diff is non-empty, upgrade SHALL NOT auto-apply it: `--yes` and unattended
 runs SHALL refuse loudly, naming the changes, and an interactive run SHALL
 present the diff for an explicit per-change choice — keep the current value
-(pinning it onto the table where it was the package's) or take the new one
-(written to the table, removing any local override it replaces). Package
+(pinning it onto the table where it was not already the operator's own) or
+take the new one (removing any local override it replaces, so the new pin
+supplies it). A package-supplied key SHALL be compared manifest to manifest,
+so a pin-relative path the new pin leaves unchanged is not a change. Package
 metadata (version, description) SHALL NOT trigger the review: it changes
 nothing the harness runs.
 
 On confirmation, upgrade SHALL update the `source` line's `@<sha>` on the
-affected harness table plus exactly the changes the operator explicitly
-took; every other key on that table SHALL be left untouched. The prior
+affected harness table plus exactly the changes the review's choices
+require; every other key on that table SHALL be left untouched. The prior
 pin's content-addressed directory SHALL NOT be deleted by upgrade.
 
 #### Scenario: A trivial upgrade still requires confirmation

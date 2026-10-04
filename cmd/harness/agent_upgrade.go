@@ -5,16 +5,23 @@ package main
 // `harness agent upgrade` re-pins a package-sourced harness to a newer
 // commit of the stable's local clone (SPEC-0026 REQ-8): resolve exactly as
 // install does (never fetching), diff the candidate against the installed
-// pin, rescan with the new-finding marks, run install's gate, then update
-// only the @<sha> on each matching source line. Every other key on the
-// table is untouched and the prior pin's directory is never deleted —
-// rollback is `harness agent install <stable>/<package>@<old-sha> --as
-// <name> --replace`, answered from the retained pin with no network.
+// pin, rescan with the new-finding marks, review the effective-value diff,
+// run install's gate, then update the @<sha> on each matching source line.
+// A non-empty review never auto-applies: --yes and unattended runs refuse
+// naming every change, and an interactive run chooses per row (issue #882).
+// Only the rows the operator chose touch any other key on the table, and
+// the prior pin's directory is never deleted — rollback is `harness agent
+// install <stable>/<package>@<old-sha> --as <name> --replace`, answered
+// from the retained pin with no network.
 //
 // Governing: ADR-0044 (agent package stables), SPEC-0026 REQ-8, REQ-5 (the
 // rescan and its new-finding marks), Error Handling Standards.
 //
 // @joestump-agent 10/02/2026 - Added for harness#814.
+//
+// @joestump-agent 10/04/2026 - The #882 review: a taken row removes the
+// local override and writes nothing else, so the new pin supplies the value
+// (a manifest path only resolves under its own pin directory).
 
 import (
 	"errors"
@@ -237,10 +244,10 @@ func upgradeOne(cmd *cobra.Command, o verbOpts, uo upgradeOpts, cfg *core.Config
 		// The effective-value review (issue #882): a diff the operator may
 		// want to see never auto-applies. --yes and unattended runs refuse
 		// loudly; an interactive run chooses per row.
-		choices := map[string]map[int]bool{}
+		choices := map[string]reviewChoice{}
 		for _, name := range names {
 			h := cfg.Harnesses[name]
-			chgs := agentpkg.EffectiveChanges(&h, newMan)
+			chgs := agentpkg.EffectiveChanges(&h, oldMan, newMan)
 			if len(chgs) == 0 {
 				continue
 			}
@@ -252,7 +259,7 @@ func upgradeOne(cmd *cobra.Command, o verbOpts, uo upgradeOpts, cfg *core.Config
 			if err != nil {
 				return err
 			}
-			choices[name] = take
+			choices[name] = reviewChoice{chgs: chgs, take: take}
 		}
 
 		gate := agentpkg.DecisionInput{
@@ -275,9 +282,8 @@ func upgradeOne(cmd *cobra.Command, o verbOpts, uo upgradeOpts, cfg *core.Config
 		}
 
 		// Update the @<sha> on each source line (REQ-8), plus the review
-		// choices: kept package values pin onto the table, taken new values
-		// are written explicitly, and a taken row over a local override
-		// removes it so the package's value applies.
+		// choices: kept package values pin onto the table, and a taken row
+		// over a local override removes it so the new pin's value applies.
 		ed, err := loadGlobalEditor(o.configPath)
 		if err != nil {
 			return err
@@ -286,9 +292,8 @@ func upgradeOne(cmd *cobra.Command, o verbOpts, uo upgradeOpts, cfg *core.Config
 			if err := ed.SetHarnessKey(name, "source", newSrc.String()); err != nil {
 				return fmt.Errorf("agent: update source on [harness.%s]: %w", name, err)
 			}
-			if take := choices[name]; take != nil {
-				h := cfg.Harnesses[name]
-				if err := applyReviewChoices(cmd, ed, name, h, newMan, take); err != nil {
+			if rc, ok := choices[name]; ok {
+				if err := applyReviewChoices(cmd, ed, name, rc.chgs, rc.take); err != nil {
 					return err
 				}
 			}
@@ -380,12 +385,18 @@ func parseReviewChoice(answer string, n int) (map[int]bool, error) {
 	return take, nil
 }
 
+// reviewChoice is one harness's reviewed rows and the operator's answer.
+type reviewChoice struct {
+	chgs []agentpkg.EffectiveChange
+	take map[int]bool
+}
+
 // applyReviewChoices writes one harness's choices to the editor. Keeping a
-// package-supplied value pins it onto the table as an explicit override;
-// taking a new value writes it (or removes the local override it replaces)
-// so the choice is real on disk. Added rows always land.
-func applyReviewChoices(cmd *cobra.Command, ed *tomledit.Editor, name string, h core.Harness, newMan *agentpkg.Manifest, take map[int]bool) error {
-	chgs := agentpkg.EffectiveChanges(&h, newMan)
+// package-supplied value pins it onto the table as an explicit override.
+// Taking a new value removes any local key standing in its way and writes
+// nothing else: the new pin supplies the value, and a manifest path only
+// resolves under its own pin directory. Added rows always land.
+func applyReviewChoices(cmd *cobra.Command, ed *tomledit.Editor, name string, chgs []agentpkg.EffectiveChange, take map[int]bool) error {
 	out := cmd.OutOrStdout()
 	for i, c := range chgs {
 		taken := take[i] || c.Added
@@ -401,21 +412,22 @@ func applyReviewChoices(cmd *cobra.Command, ed *tomledit.Editor, name string, h 
 			}
 		default:
 			switch {
-			case taken && c.OldLocal:
-				if err := ed.RemoveHarnessKey(name, c.Key); err != nil {
+			case taken:
+				err := ed.RemoveHarnessKey(name, c.Key)
+				switch {
+				case err == nil:
+					fmt.Fprintf(out, "agent: %s: took the package's %s (local override removed)\n", name, c.Key)
+				case !errors.Is(err, tomledit.ErrKeyNotFound):
 					return fmt.Errorf("agent: drop local %q on [harness.%s]: %w", c.Key, name, err)
+				case c.New == nil:
+					fmt.Fprintf(out, "agent: %s: %s gone with the old pin\n", name, c.Key)
+				default:
+					fmt.Fprintf(out, "agent: %s: took the package's %s\n", name, c.Key)
 				}
-				fmt.Fprintf(out, "agent: %s: took the package's %s (local override removed)\n", name, c.Key)
-			case taken && c.New != nil:
-				if err := ed.SetHarnessKey(name, c.Key, c.New); err != nil {
-					return fmt.Errorf("agent: take %q on [harness.%s]: %w", c.Key, name, err)
-				}
-				fmt.Fprintf(out, "agent: %s: took the package's %s\n", name, c.Key)
-			case taken && c.New == nil:
-				// The new pin drops the key; nothing to write — the value
-				// goes with the old pin.
-				fmt.Fprintf(out, "agent: %s: %s gone with the old pin\n", name, c.Key)
-			case !taken && c.Old != nil:
+			case c.OldLocal:
+				// Kept a local override: it already wins over the pin.
+				fmt.Fprintf(out, "agent: %s: kept your %s = %s\n", name, c.Key, c.Render(c.Old))
+			case c.Old != nil:
 				if err := ed.SetHarnessKey(name, c.Key, c.Old); err != nil {
 					return fmt.Errorf("agent: pin %q on [harness.%s]: %w", c.Key, name, err)
 				}
