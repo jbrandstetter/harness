@@ -243,9 +243,16 @@ mcp_allow = ["read", "write"]`, 1)
 		t.Fatal(err)
 	}
 
+	// Under the #882 review the refusal fires even earlier and louder: the
+	// requested scope differs from the granted one, so --yes bombs out
+	// naming the diff instead of silently re-confirming it. Interactive runs
+	// still meet the write retype through the gate.
 	_, _, err = e.run("agent", "upgrade", "stump-wtf/pr-reviewer", "--yes")
-	if err == nil || !strings.Contains(err.Error(), `mcp_allow includes "write"`) {
-		t.Fatalf("an already-confirmed write request must still demand the retype, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "mcp_allow") || !strings.Contains(err.Error(), "write") {
+		t.Fatalf("an already-confirmed write request must still demand review, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "may want to review") {
+		t.Fatalf("the refusal must say why it refuses: %v", err)
 	}
 }
 

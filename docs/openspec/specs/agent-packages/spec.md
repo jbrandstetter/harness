@@ -199,7 +199,11 @@ with a distinct warning stating that the installed harness would be able to
 start, stop, or restart its siblings (ADR-0010), and installing or
 upgrading such a package SHALL require the operator to retype
 `<stable>/<package>` at the confirmation prompt, independent of any content
-scan finding and independent of `--yes`.
+scan finding and independent of `--yes`. The confirmed `mcp_allow` SHALL be
+written onto the installing `[harness.<name>]` table alongside `source`
+(issue #882), so the effective scope lives in one visible, hand-editable
+place; a package declaring no scopes writes nothing and the default grant
+applies.
 
 #### Scenario: A read-only package needs no extra confirmation
 
@@ -403,11 +407,25 @@ findings.
 Upgrade SHALL be refused, exactly as install is, on a `high`-severity
 finding without `--force-unsafe`, and on an `mcp_allow` request including
 `"write"` without the typed confirmation, whether or not that request was
-already present and confirmed in the currently installed pin. On
-confirmation, upgrade SHALL update only the `source` line's `@<sha>` on the
-affected harness table; every other key on that table SHALL be left
-untouched. The prior pin's content-addressed directory SHALL NOT be
-deleted by upgrade.
+already present and confirmed in the currently installed pin.
+
+Before the confirmation, upgrade SHALL compute the effective diff: every
+manifest-suppliable key whose effective value would move with the new pin
+(package-supplied values the new pin changes or drops, keys it introduces),
+every local override the new pin's value contradicts, and every requested
+`mcp_allow` scope the table does not already grant (issue #882). When that
+diff is non-empty, upgrade SHALL NOT auto-apply it: `--yes` and unattended
+runs SHALL refuse loudly, naming the changes, and an interactive run SHALL
+present the diff for an explicit per-change choice — keep the current value
+(pinning it onto the table where it was the package's) or take the new one
+(written to the table, removing any local override it replaces). Package
+metadata (version, description) SHALL NOT trigger the review: it changes
+nothing the harness runs.
+
+On confirmation, upgrade SHALL update the `source` line's `@<sha>` on the
+affected harness table plus exactly the changes the operator explicitly
+took; every other key on that table SHALL be left untouched. The prior
+pin's content-addressed directory SHALL NOT be deleted by upgrade.
 
 #### Scenario: A trivial upgrade still requires confirmation
 

@@ -198,7 +198,15 @@ func runAgentInstall(cmd *cobra.Command, o verbOpts, io installOpts, ref string)
 	if name == "" {
 		name = pkg
 	}
-	if err := writeSourceTable(o.configPath, cfg, name, src, io.replace); err != nil {
+	// The confirmed requested scope lands on the table with the source
+	// (issue #882): the effective mcp_allow is visible and hand-editable,
+	// one place, never split between table and manifest. A package that
+	// declares no scopes writes nothing — the default grant is the default.
+	var extra [][2]any
+	if len(man.Requests.MCPAllow) > 0 {
+		extra = append(extra, [2]any{"mcp_allow", man.Requests.MCPAllow})
+	}
+	if err := writeSourceTable(o.configPath, cfg, name, src, io.replace, extra); err != nil {
 		return err
 	}
 
@@ -227,11 +235,11 @@ func runAgentInstall(cmd *cobra.Command, o verbOpts, io installOpts, ref string)
 	return nil
 }
 
-// writeSourceTable writes or updates [harness.<name>] carrying only
-// source, preserving every other key. Overwriting a table whose source
-// names a different stable or package fails naming it unless replace is
-// given (REQ-6).
-func writeSourceTable(path string, cfg *core.Config, name string, src agentpkg.Source, replace bool) error {
+// writeSourceTable writes or updates [harness.<name>] carrying source plus
+// any extra confirmed keys, preserving every other key. Overwriting a table
+// whose source names a different stable or package fails naming it unless
+// replace is given (REQ-6).
+func writeSourceTable(path string, cfg *core.Config, name string, src agentpkg.Source, replace bool, extra [][2]any) error {
 	if existing, ok := cfg.Harnesses[name]; ok && existing.PackageSource != "" {
 		if es, err := agentpkg.ParseSource(existing.PackageSource); err == nil {
 			if es.Stable != src.Stable || es.Package != src.Package {
@@ -249,8 +257,14 @@ func writeSourceTable(path string, cfg *core.Config, name string, src agentpkg.S
 		if err := ed.SetHarnessKey(name, "source", src.String()); err != nil {
 			return fmt.Errorf("agent: set source on [harness.%s]: %w", name, err)
 		}
+		for _, kv := range extra {
+			if err := ed.SetHarnessKey(name, kv[0].(string), kv[1]); err != nil {
+				return fmt.Errorf("agent: set %s on [harness.%s]: %w", kv[0], name, err)
+			}
+		}
 	} else {
-		if err := ed.AddHarness(name, [][2]any{{"source", src.String()}}); err != nil {
+		keys := append([][2]any{{"source", src.String()}}, extra...)
+		if err := ed.AddHarness(name, keys); err != nil {
 			return fmt.Errorf("agent: add [harness.%s]: %w", name, err)
 		}
 	}
