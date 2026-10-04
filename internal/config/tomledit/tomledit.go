@@ -31,6 +31,9 @@ import (
 // ErrTableNotFound names a table the caller expected to be present.
 var ErrTableNotFound = errors.New("table not found")
 
+// ErrKeyNotFound names a key the caller expected to be present.
+var ErrKeyNotFound = errors.New("key not found")
+
 // ErrDuplicateTable names a table that appears more than once; editing it in
 // place would be ambiguous.
 var ErrDuplicateTable = errors.New("duplicate table")
@@ -467,6 +470,35 @@ func (e *Editor) removeTable(names ...string) error {
 		}
 		e.data = append(before[:len(before)-dropBefore], after[dropAfter:]...)
 	}
+	return nil
+}
+
+// RemoveHarnessKey deletes one key line from [harness.<name>] (either
+// spelling), including a multi-line value's continuation lines. It fails
+// closed with ErrKeyNotFound when the key is absent, and never touches any
+// other line. The upgrade review uses it to let a local override go so the
+// package's value applies (issue #882).
+func (e *Editor) RemoveHarnessKey(table, key string) error {
+	if err := validKey(key); err != nil {
+		return err
+	}
+	h, err := e.findTable("harness."+table, table)
+	if err != nil {
+		return err
+	}
+	end := e.tableEnd(h)
+	kv, ok := e.findKey(h.bodyStart, end, key)
+	if !ok {
+		return fmt.Errorf("%w: key %q in [harness.%s]", ErrKeyNotFound, key, table)
+	}
+	// Take the rest of the value's last line and its newline too: a
+	// trailing comment belongs to the key it annotates, and removing the
+	// last key must not leave a stray blank or comment line behind.
+	valueEnd := len(e.data)
+	if nl := bytes.IndexByte(e.data[kv.valueEnd:], '\n'); nl >= 0 {
+		valueEnd = kv.valueEnd + nl + 1
+	}
+	e.data = splice(e.data, kv.start, valueEnd, nil)
 	return nil
 }
 

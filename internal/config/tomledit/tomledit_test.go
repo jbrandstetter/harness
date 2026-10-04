@@ -503,3 +503,116 @@ model = "inside"
 		})
 	}
 }
+
+// RemoveHarnessKey deletes exactly one key line — a multi-line value goes
+// whole — and everything else stays byte-identical.
+func TestRemoveHarnessKey(t *testing.T) {
+	src := `top = "kept"
+
+[harness.reviewer]
+model = "big"
+args = [
+  "a",
+  "b",
+]
+enabled = true
+
+[other]
+x = 1
+`
+	ed := New([]byte(src))
+	if err := ed.RemoveHarnessKey("reviewer", "args"); err != nil {
+		t.Fatal(err)
+	}
+	want := `top = "kept"
+
+[harness.reviewer]
+model = "big"
+enabled = true
+
+[other]
+x = 1
+`
+	if string(ed.Bytes()) != want {
+		t.Fatalf("removal must take the whole multi-line value and nothing else:\n%s", ed.Bytes())
+	}
+
+	// A continuation line that reads like the key — `  "model=opus",` inside
+	// the array — is not the key: the removal takes the real `model` line
+	// below it, and the array survives whole.
+	src2 := `top = "kept"
+
+[harness.reviewer]
+args = [
+  "model=opus",
+  "--verbose",
+]
+enabled = true
+model = "big"
+
+[other]
+x = 1
+`
+	ed2 := New([]byte(src2))
+	if err := ed2.RemoveHarnessKey("reviewer", "model"); err != nil {
+		t.Fatal(err)
+	}
+	want2 := `top = "kept"
+
+[harness.reviewer]
+args = [
+  "model=opus",
+  "--verbose",
+]
+enabled = true
+
+[other]
+x = 1
+`
+	if string(ed2.Bytes()) != want2 {
+		t.Fatalf("a value continuation line that reads like the key must not be removed; the real model line goes:\n%s", ed2.Bytes())
+	}
+	var doc2 map[string]any
+	if _, err := toml.Decode(string(ed2.Bytes()), &doc2); err != nil {
+		t.Fatalf("edited file no longer parses: %v\n%s", err, ed2.Bytes())
+	}
+	r2 := doc2["harness"].(map[string]any)["reviewer"].(map[string]any)
+	if got, ok := r2["args"].([]any); !ok || len(got) != 2 {
+		t.Errorf("args = %v", r2["args"])
+	}
+	if _, exists := r2["model"]; exists {
+		t.Error("model still present")
+	}
+
+	// A trailing comment goes with its key — on a one-line value and on a
+	// multi-line value's closing line — and the next key is untouched.
+	ed3 := New([]byte("[harness.r]\nmodel = \"x\"  # mine\nargs = [\n  \"a\", # first\n]  # list\nquiet = true\n"))
+	for _, k := range []string{"model", "args"} {
+		if err := ed3.RemoveHarnessKey("r", k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := string(ed3.Bytes()); got != "[harness.r]\nquiet = true\n" {
+		t.Fatalf("a removed key's trailing comment must go with it: %q", got)
+	}
+
+	// A missing key fails closed.
+	if err := ed.RemoveHarnessKey("reviewer", "nope"); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("want ErrKeyNotFound, got %v", err)
+	}
+
+	// A bare-spelled table resolves too.
+	bare := New([]byte("[reviewer]\nmodel = \"x\"\n"))
+	if err := bare.RemoveHarnessKey("reviewer", "model"); err != nil {
+		t.Fatal(err)
+	}
+	// The emptied table keeps its header, which is still valid TOML.
+	if string(bare.Bytes()) != "[reviewer]\n" {
+		t.Fatalf("bare table removal shape: %q", bare.Bytes())
+	}
+
+	// The edited file still parses.
+	if _, err := toml.Decode(string(ed.Bytes()), &map[string]any{}); err != nil {
+		t.Fatalf("edited file no longer parses: %v", err)
+	}
+}
