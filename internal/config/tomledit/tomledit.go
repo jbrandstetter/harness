@@ -491,45 +491,28 @@ func (e *Editor) setKey(dotted, key string, value any, altNames ...string) error
 		return err
 	}
 	end := e.tableEnd(h)
-	body := e.data[h.bodyStart:end]
-
-	// Find the key's line within the body: first line whose first token is
-	// `key =`. The body has no headers, so a line-oriented search is safe —
-	// multi-line values are only a problem for matching the START of a key,
-	// and a key always starts a fresh line.
-	lines := splitLines(body)
-	for _, ln := range lines {
-		if keyLineKey(ln.content) == key {
-			encoded, err := encodeValue(value)
-			if err != nil {
-				return err
-			}
-			// The existing value may span lines (a multi-line array or
-			// string); replacing only the key's first line would orphan its
-			// continuation lines as garbage. Replace through the value's
-			// true end.
-			abs := ln.start + h.bodyStart
-			eqInLine := strings.Index(ln.content, "=")
-			eq := abs + eqInLine
-			valueEnd := valueSpanEnd(e.data, eq+1)
-			// Reuse the file's own key text — its quoting and indentation —
-			// rather than re-emitting the caller's key string: a quoted key
-			// rewritten unquoted can stop parsing, and only the file's bytes
-			// are known good here.
-			origKey := strings.TrimRight(ln.content[:eqInLine], " \t")
-			replacement := origKey + " = " + encoded
-			e.data = splice(e.data, abs, valueEnd, []byte(replacement))
-			return nil
-		}
+	encoded, err := encodeValue(value)
+	if err != nil {
+		return err
+	}
+	if kv, ok := e.findKey(h.bodyStart, end, key); ok {
+		// The existing value may span lines (a multi-line array or string);
+		// replacing only the key's first line would orphan its continuation
+		// lines as garbage, so the splice runs through the value's true end.
+		// It reuses the file's own key text — its quoting and indentation —
+		// rather than re-emitting the caller's key string: a quoted key
+		// rewritten unquoted can stop parsing, and only the file's bytes are
+		// known good here.
+		replacement := kv.keyText + " = " + encoded
+		e.data = splice(e.data, kv.start, kv.valueEnd, []byte(replacement))
+		return nil
 	}
 	// Absent: append inside the table, after the last key. tableEnd already
 	// normalized the body to at most one trailing newline, so the new key
 	// lands after it (or after a newline we add when the file ended without
 	// one).
-	encoded, err := encodeValue(value)
-	if err != nil {
-		return err
-	}
+	body := e.data[h.bodyStart:end]
+	lines := splitLines(body)
 	insert := []byte(key + " = " + encoded + "\n")
 	if len(body) > 0 && body[len(body)-1] != '\n' {
 		insert = append([]byte("\n"), insert...)
@@ -551,8 +534,56 @@ func (e *Editor) setKey(dotted, key string, value any, altNames ...string) error
 	return nil
 }
 
+// keyValue is one key/value pair inside a table body, as absolute offsets
+// into the file.
+type keyValue struct {
+	start    int    // first byte of the key's line, indentation included
+	valueEnd int    // where the value ends, per valueSpanEnd
+	keyText  string // the file's own text before '=', trailing blanks trimmed
+}
+
+// findKey returns the pair whose key is key in the table body [from, to).
+// It walks the body key line by key line and jumps over each value through
+// valueSpanEnd, so a multi-line value's continuation lines are never tested
+// as key starts: once its quotes are stripped, `  "model=opus",` inside an
+// array reads exactly like a `model` key line, and so does `model = "x"`
+// inside a multi-line string. Every lookup of an existing key goes through
+// here, never through a plain line scan.
+func (e *Editor) findKey(from, to int, key string) (keyValue, bool) {
+	for off := from; off < to; {
+		lineEnd := to
+		if nl := bytes.IndexByte(e.data[off:to], '\n'); nl >= 0 {
+			lineEnd = off + nl
+		}
+		line := string(e.data[off:lineEnd])
+		k := keyLineKey(line)
+		if k == "" {
+			off = lineEnd + 1
+			continue
+		}
+		eqInLine := strings.Index(line, "=")
+		kv := keyValue{
+			start:    off,
+			valueEnd: valueSpanEnd(e.data, off+eqInLine+1),
+			keyText:  strings.TrimRight(line[:eqInLine], " \t"),
+		}
+		if k == key {
+			return kv, true
+		}
+		// Resume at the line after the value's last line; a trailing
+		// comment between the value and that newline is not a key line.
+		nl := bytes.IndexByte(e.data[kv.valueEnd:], '\n')
+		if nl < 0 {
+			break
+		}
+		off = kv.valueEnd + nl + 1
+	}
+	return keyValue{}, false
+}
+
 // keyLineKey returns the TOML key of a `key = value` line, or "" when the
-// line is not a key line (comment, blank, continuation).
+// line is not a key line (comment, blank). It cannot recognize a value's
+// continuation line on its own; callers walk key lines with findKey.
 func keyLineKey(line string) string {
 	s := strings.TrimLeft(line, " \t")
 	if s == "" || strings.HasPrefix(s, "#") || strings.HasPrefix(s, "[") {
