@@ -24,6 +24,7 @@ import (
 	"github.com/robfig/cron/v3"
 
 	"github.com/stump-wtf/harness/internal/adapter"
+	"github.com/stump-wtf/harness/internal/agentpkg"
 	"github.com/stump-wtf/harness/internal/core"
 	"github.com/stump-wtf/harness/internal/skillmerge"
 	"github.com/stump-wtf/harness/internal/tmpl"
@@ -676,6 +677,12 @@ func projectSkills(h core.Harness, workdir string) error {
 	}
 
 	var roots []skillmerge.Root
+	// The package bundle tier sits below the adapter defaults (SPEC-0026
+	// REQ-10): only a sourced harness whose pinned manifest requested
+	// skill_paths contributes its bundled skills, at that exact pin.
+	if dir, ok := agentpkg.BundleSkillsDir(h.PackageSource); ok {
+		roots = append(roots, skillmerge.Root{Dir: dir, Tier: 0, Source: "package bundle"})
+	}
 	if h.UseDefaultSkillPaths {
 		for _, d := range a.SkillRoots(workdir) {
 			roots = append(roots, skillmerge.Root{Dir: expandHome(d), Tier: 1, Source: "adapter default"})
@@ -703,7 +710,7 @@ func projectSkills(h core.Harness, workdir string) error {
 // by search and excluded from projection unconditionally, whether or not
 // an operator pointed skill_paths at the clone.
 func excludeServingRoot(roots []skillmerge.Root) []skillmerge.Root {
-	serving := StateHome() + string(filepath.Separator)
+	serving := filepath.Join(StateHome(), "skills") + string(filepath.Separator)
 	kept := roots[:0]
 	for _, r := range roots {
 		if strings.HasPrefix(r.Dir, serving) {

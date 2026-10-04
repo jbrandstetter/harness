@@ -100,6 +100,15 @@ func applySource(filename, name string, line int, rh rawHarness) (rawHarness, er
 		rh.AllowedTools = hv.AllowedTools
 		fromPackage("allowed_tools")
 	}
+	// A package's skill_paths is rewritten to point at the bundle: the
+	// manifest's paths resolve against the pin directory exactly like the
+	// other path keys (ADR-0044; SPEC-0026 REQ-10's amendment note).
+	if rh.SkillPaths == nil && hv.SkillPaths != nil {
+		for _, p := range hv.SkillPaths {
+			rh.SkillPaths = append(rh.SkillPaths, manifestPath(p))
+		}
+		fromPackage("skill_paths")
+	}
 	sort.Strings(rh.PackageKeys)
 	return rh, nil
 }

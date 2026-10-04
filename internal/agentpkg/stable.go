@@ -289,3 +289,29 @@ func NewerThanPin(name, pinSHA string) bool {
 	}
 	return true
 }
+
+// BundleSkillsDir returns the installed pin's bundled skills directory when
+// the harness's pinned manifest requested it — `[requests].skill_paths =
+// true` (SPEC-0026 REQ-10). It is the merge engine's lowest tier: only the
+// skills bundled at that exact pinned commit, only for a harness whose
+// effective configuration carries a source, and never for a manifest that
+// left the request unset or false. A harness without a source, a missing
+// pin or a missing manifest yields false, and the merge behaves exactly as
+// SPEC-0006 defines it.
+func BundleSkillsDir(packageSource string) (string, bool) {
+	if packageSource == "" {
+		return "", false
+	}
+	src, err := ParseSource(packageSource)
+	if err != nil {
+		return "", false
+	}
+	man, err := LoadManifest(ManifestPath(src))
+	if err != nil {
+		return "", false
+	}
+	if man.Requests.SkillPaths == nil || !*man.Requests.SkillPaths {
+		return "", false
+	}
+	return filepath.Join(PinDir(src), "skills"), true
+}

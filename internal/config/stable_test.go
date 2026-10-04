@@ -170,3 +170,49 @@ skill_paths = ["./skills"]
 		t.Fatal("unset defaults to true")
 	}
 }
+
+// A manifest's [harness].skill_paths is allowlisted and rewritten to point
+// into the bundle: each path resolves against the pin directory at load
+// (issue #816, per ADR-0044's rewrite rule).
+func TestSourceRewritesSkillPaths(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+
+	src := agentpkg.Source{Stable: "stump-wtf", Package: "pr-reviewer", SHA: strings.Repeat("a", 40)}
+	pinManifest := `[package]
+name = "pr-reviewer"
+
+[harness]
+harness = "claude-code"
+skill_paths = ["skills", "skills/extra"]
+`
+	if err := os.MkdirAll(agentpkg.PinDir(src), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(agentpkg.ManifestPath(src), []byte(pinManifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgSrc := `[harness.reviewer]
+source = "` + src.String() + `"
+`
+	cfg, err := Parse([]byte(cfgSrc), "harness.toml")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	h := cfg.Harnesses["reviewer"]
+	want0 := filepath.Join(agentpkg.PinDir(src), "skills")
+	want1 := filepath.Join(agentpkg.PinDir(src), "skills", "extra")
+	if len(h.SkillPaths) != 2 || h.SkillPaths[0] != want0 || h.SkillPaths[1] != want1 {
+		t.Fatalf("skill_paths must rewrite to pin-dir paths, got %v", h.SkillPaths)
+	}
+	pkg := false
+	for _, k := range h.PackageKeys {
+		if k == "skill_paths" {
+			pkg = true
+		}
+	}
+	if !pkg {
+		t.Fatalf("the rewritten key is the package's: %v", h.PackageKeys)
+	}
+}

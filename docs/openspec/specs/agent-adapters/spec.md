@@ -202,7 +202,9 @@ resolve against the project root.
 
 Skills SHALL be merged from all contributing roots in the fixed precedence
 order: adapter defaults (lowest), global `skill_paths`, project `skill_paths`,
-then project-local directories (highest). When two roots supply a skill of the
+then project-local directories (highest). SPEC-0026 REQ-10 amends this order
+to insert the agent package's bundled `skills/` below the adapter defaults,
+for a harness whose pinned manifest requests it. When two roots supply a skill of the
 same name, the higher-precedence copy SHALL win. Shadowed copies MUST remain
 enumerable through a diagnostic surface so the winning copy is attributable.
 
