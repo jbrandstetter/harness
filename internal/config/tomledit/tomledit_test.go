@@ -547,10 +547,7 @@ x = 1
 	if err := bare.RemoveHarnessKey("reviewer", "model"); err != nil {
 		t.Fatal(err)
 	}
-	if len(bytes.TrimSpace(bare.Bytes())) == 0 {
-		// an empty table header remains, which is valid TOML
-		t.Log("empty table left")
-	}
+	// The emptied table keeps its header, which is still valid TOML.
 	if string(bare.Bytes()) != "[reviewer]\n" {
 		t.Fatalf("bare table removal shape: %q", bare.Bytes())
 	}
