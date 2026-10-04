@@ -68,6 +68,7 @@ func TestEffectiveChanges(t *testing.T) {
 		Model:            "pkg-model",
 		SystemPromptFile: "/pin/system.md",
 		MCPAllow:         []string{"read"},
+		SkillPaths:       []string{"/operator/skills"},
 		PackageKeys:      []string{"harness", "model", "system_prompt_file"},
 	}
 	oldMan := &agentpkg.Manifest{Harness: agentpkg.HarnessValues{
@@ -83,10 +84,18 @@ func TestEffectiveChanges(t *testing.T) {
 			Args:             []string{"--deep"},
 			SystemPromptFile: "",
 			MCPConfig:        "/pin/mcp.json",
+			SkillPaths:       []string{"/pin/skills"},
 		},
 		Requests: agentpkg.Requests{MCPAllow: []string{"read", "write"}},
 	}
 	chgs := agentpkg.EffectiveChanges(h, oldMan, newMan)
+
+	// skill_paths (issue #816): the review covers the key — a local
+	// override the new pin contradicts is a conflict row.
+	sk := changeFor(t, chgs, "skill_paths")
+	if !sk.OldLocal || sk.Render(sk.Old) != "[/operator/skills]" || sk.Render(sk.New) != "[/pin/skills]" {
+		t.Fatalf("skill_paths change shape wrong: %+v", sk)
+	}
 
 	// model moved with the pin (package-supplied).
 	c := changeFor(t, chgs, "model")

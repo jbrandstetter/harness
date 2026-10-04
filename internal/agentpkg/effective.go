@@ -106,6 +106,7 @@ func EffectiveChanges(h *core.Harness, oldMan, newMan *Manifest) []EffectiveChan
 		{"system_prompt_file", strOrNil(h.SystemPromptFile), h.SystemPromptFile != "", strOrNil(ov.SystemPromptFile), strOrNil(nv.SystemPromptFile), nil},
 		{"mcp_config", strOrNil(h.MCPConfig), h.MCPConfig != "", strOrNil(ov.MCPConfig), strOrNil(nv.MCPConfig), nil},
 		{"allowed_tools", strSliceOrNil(h.AllowedTools), h.AllowedTools != nil, strSliceOrNil(ov.AllowedTools), strSliceOrNil(nv.AllowedTools), nil},
+		{"skill_paths", strSliceOrNil(h.SkillPaths), h.SkillPaths != nil, strSliceOrNil(ov.SkillPaths), strSliceOrNil(nv.SkillPaths), nil},
 	}
 
 	for _, f := range fields {
