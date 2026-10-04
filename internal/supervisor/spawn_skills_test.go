@@ -137,6 +137,10 @@ func TestProjectSkillsDefaultsDroppable(t *testing.T) {
 }
 
 // An unreadable root warns and the start proceeds with the rest merged.
+// The blocked root puts a regular file in the path's way: a CI runner
+// executing as root bypasses mode bits, so a chmod 000 directory reads
+// fine there and the tolerance would go untested (ENOTDIR is denied to
+// root too).
 func TestProjectSkillsUnreadableRootWarns(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -144,17 +148,13 @@ func TestProjectSkillsUnreadableRootWarns(t *testing.T) {
 	workdir := t.TempDir()
 	paths := t.TempDir()
 	writeSkillDir(t, paths, "path-skill", "from skill_paths")
-	locked := filepath.Join(paths, "locked")
-	if err := os.Mkdir(locked, 0o755); err != nil {
+	blockedParent := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blockedParent, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	writeSkillDir(t, locked, "inside", "x")
-	if err := os.Chmod(locked, 0o000); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(locked, 0o755) })
+	blocked := filepath.Join(blockedParent, "locked")
 
-	h := skillHarness(t, workdir, paths)
+	h := skillHarness(t, workdir, strings.Join([]string{blocked, paths}, ", "))
 	if err := projectSkills(h, workdir); err != nil {
 		t.Fatalf("an unreadable root must not block the start: %v", err)
 	}

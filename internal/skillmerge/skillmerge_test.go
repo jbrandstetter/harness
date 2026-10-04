@@ -61,16 +61,20 @@ func TestResolvePrecedenceAndShadowing(t *testing.T) {
 	}
 }
 
-// An unreadable root warns and never blocks; a missing root is silent.
+// An unreadable root warns and never blocks; a missing root is silent. The
+// blocked path puts a regular file in the way of the root itself: a CI
+// runner executing as root bypasses mode bits, so a chmod 000 directory
+// reads fine there and the warning path would go untested. ENOTDIR is
+// denied to root too.
 func TestResolveUnreadableRoot(t *testing.T) {
 	ok := t.TempDir()
 	writeSkill(t, ok, "a", "a")
 
-	locked := filepath.Join(t.TempDir(), "locked")
-	if err := os.Mkdir(locked, 0o000); err != nil {
+	blockedParent := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blockedParent, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(locked, 0o755) })
+	locked := filepath.Join(blockedParent, "locked")
 	missing := filepath.Join(t.TempDir(), "missing")
 
 	set, warns := Resolve([]Root{
