@@ -371,6 +371,14 @@ type Harness struct {
 	// repository cannot grant its own harnesses write authority over the
 	// fleet. Governing: SPEC-0005 REQ "Capability Scoping".
 	MCPAllow []string
+	// SkillPaths is the harness's additional skill roots (SPEC-0006 REQ
+	// "Skill Path Configuration"), resolved to absolute paths against the
+	// declaring file at load. Additive to the adapter's default roots unless
+	// UseDefaultSkillPaths is false, which drops the defaults entirely.
+	SkillPaths []string
+	// UseDefaultSkillPaths is true unless the table set it false: the
+	// adapter's default roots contribute only while this is true.
+	UseDefaultSkillPaths bool
 	// OperatingHours is the raw operating_hours expression (SPEC-0012 REQ
 	// "Operating Hours Key"): the weekly windows this resident harness is
 	// allowed to run in. Empty means "not gated" — always allowed to run, the

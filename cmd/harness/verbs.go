@@ -285,6 +285,20 @@ func cmdDescribe(c *client.Client, o verbOpts) error {
 	if len(h.AllowedTools) > 0 {
 		t.Row("allowed_tools", t.faintPlain(mark("allowed_tools", strings.Join(h.AllowedTools, ", "))))
 	}
+	// The resolved skill set with its shadow map (SPEC-0006 REQ "Ordered
+	// Merge and Shadowing"): each name's winning copy and every shadowed
+	// one, attributable the way the requirement demands.
+	for i, sk := range h.Skills {
+		key := ""
+		if i == 0 {
+			key = "skills"
+		}
+		cell := fmt.Sprintf("%s — %s (%s)", sk.Name, sk.Winner, sk.WinnerSource)
+		if len(sk.Shadowed) > 0 {
+			cell += "; shadowed: " + strings.Join(sk.Shadowed, ", ")
+		}
+		t.Row(key, t.faintPlain(cell))
+	}
 	t.Row("backend", t.faintPlain(h.Backend))
 	switch {
 	case h.Schedule != "":

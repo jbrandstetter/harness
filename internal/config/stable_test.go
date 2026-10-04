@@ -103,3 +103,70 @@ func TestNoStableDeclared(t *testing.T) {
 		t.Fatal("no stables should be declared")
 	}
 }
+
+// SPEC-0006 REQ "Skill Path Configuration": skill_paths resolve against the
+// declaring file at load, use_default_skill_paths defaults to true, and a
+// project file carrying both is accepted — relative paths resolving against
+// the project root.
+func TestSkillPathConfiguration(t *testing.T) {
+	global := `
+[harness.reviewer]
+harness = "claude-code"
+prompt = "review"
+skill_paths = ["~/team-skills", "relative/from-global", ""]
+`
+	_, err := Parse([]byte(global), "harness.toml")
+	if err == nil || !strings.Contains(err.Error(), "empty entries") {
+		t.Fatalf("an empty skill_paths entry must be refused, got %v", err)
+	}
+
+	// The global file stores paths raw — exactly like workdir and env_file —
+	// and spawn expands ~ against the operator's home.
+	global = `
+[harness.reviewer]
+harness = "claude-code"
+prompt = "review"
+skill_paths = ["~/team-skills", "relative/from-global"]
+use_default_skill_paths = false
+`
+	cfg, err := Parse([]byte(global), "harness.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := cfg.Harnesses["reviewer"]
+	if len(h.SkillPaths) != 2 || h.SkillPaths[0] != "~/team-skills" || h.SkillPaths[1] != "relative/from-global" {
+		t.Fatalf("global skill_paths stay raw until spawn, got %v", h.SkillPaths)
+	}
+	if h.UseDefaultSkillPaths {
+		t.Errorf("use_default_skill_paths = false must resolve false")
+	}
+
+	// A project file carries both keys, relative against the project root.
+	proj := `
+[project]
+name = "demo"
+
+[harness.reviewer]
+harness = "claude-code"
+prompt = "review"
+skill_paths = ["./skills"]
+`
+	projPath := filepath.Join(t.TempDir(), "proj", "harness.toml")
+	if err := os.MkdirAll(filepath.Dir(projPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(projPath, []byte(proj), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadProject(projPath)
+	if err != nil {
+		t.Fatalf("a project file must carry skill_paths: %v", err)
+	}
+	ph := loaded.Config.Harnesses["reviewer"]
+	if len(ph.SkillPaths) != 1 || !strings.Contains(ph.SkillPaths[0], "skills") {
+		t.Fatalf("project-relative skill_paths must resolve: %v", ph.SkillPaths)
+	}
+	if !ph.UseDefaultSkillPaths {
+		t.Fatal("unset defaults to true")
+	}
+}

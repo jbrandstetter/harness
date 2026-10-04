@@ -28,6 +28,16 @@ import (
 // a config-validation error identifying the harness and the unknown adapter.
 var ErrUnknownAdapter = errors.New("unknown adapter")
 
+// NoSkills is the default skill surface: no default roots and no target, so
+// a harness on such an adapter starts normally with no projection
+// (SPEC-0006 REQ "Spawn-Time Projection"). Adapters whose tool discovers
+// skills elsewhere embed it until ADR-0039's [adapter.<name>.skills] tables
+// give them a real answer.
+type NoSkills struct{}
+
+func (NoSkills) SkillRoots(string) []string { return nil }
+func (NoSkills) SkillTarget() string        { return "" }
+
 // Adapter answers tool-specific questions about a harness. The full ADR-0011
 // interface covers skills (from/to) and trajectory; issue #76 implements only
 // the trajectory surface — skill methods arrive in later stories.
@@ -62,6 +72,20 @@ type Adapter interface {
 	// Governing: issue #74 (adapter-aware prompt synthesis), SPEC-0017 REQ
 	// "Generic Kind Rejects Prompts".
 	PromptCommand(prompt string, opts core.AgentOpts) (cmd string, args []string)
+
+	// SkillRoots returns the adapter's default skill roots — the lowest
+	// precedence tier of the SPEC-0006 merge ("Ordered Merge and
+	// Shadowing") — with workdir-relative entries resolved. Empty when the
+	// adapter declares no defaults. ADR-0039 keeps these in the Go registry
+	// until [adapter.<name>.skills] tables exist (issue #75's recorded
+	// decision).
+	SkillRoots(workdir string) []string
+
+	// SkillTarget returns the directory the merged skill set is materialized
+	// into before exec, or "" when the adapter projects nothing: a harness
+	// on such an adapter starts normally with no projection (SPEC-0006 REQ
+	// "Spawn-Time Projection").
+	SkillTarget() string
 }
 
 // Registry maps adapter names to Adapter implementations. The daemon holds one
@@ -157,6 +181,28 @@ func (a *ClaudeCode) TrajectoryDir(_ string) string {
 
 func (a *ClaudeCode) TailAdapter() tail.Adapter { return &tail.ClaudeCodeAdapter{} }
 
+// SkillRoots and SkillTarget are ADR-0039's claude-code built-in, held in
+// the Go registry until [adapter.<name>.skills] tables exist to carry them
+// (issue #75's recorded decision): the per-repo default root and the
+// repo-root default, with the per-workdir one resolved. ~/.claude/skills is
+// both a root and the target in the ADR; SPEC-0006's target rule excludes it
+// from the merge, so SkillRoots drops it — whatever lives there is the
+// tool's own concern, and projection lands beside it.
+func (a *ClaudeCode) SkillRoots(workdir string) []string {
+	if workdir == "" {
+		return nil
+	}
+	return []string{filepath.Join(workdir, ".claude", "skills")}
+}
+
+func (a *ClaudeCode) SkillTarget() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".claude", "skills")
+}
+
 func (a *ClaudeCode) PromptCommand(prompt string, opts core.AgentOpts) (string, []string) {
 	args := []string{"-p"}
 	if opts.AutoAccept {
@@ -199,7 +245,9 @@ func (a *ClaudeCode) PromptCommand(prompt string, opts core.AgentOpts) (string, 
 }
 
 // Crush is the adapter for Crush.
-type Crush struct{}
+type Crush struct {
+	NoSkills
+}
 
 func (a *Crush) Name() string { return "crush" }
 
@@ -235,7 +283,9 @@ func (a *Crush) PromptCommand(prompt string, opts core.AgentOpts) (string, []str
 }
 
 // Codex is the adapter for Codex.
-type Codex struct{}
+type Codex struct {
+	NoSkills
+}
 
 func (a *Codex) Name() string { return "codex" }
 
@@ -288,6 +338,7 @@ const PiAgentDirEnv = "PI_CODING_AGENT_DIR"
 // Governing: ADR-0023, SPEC-0017 REQ-13 "Pi And OMP Adapters", design.md
 // "pi and omp: one implementation, two registry entries".
 type PiFamily struct {
+	NoSkills
 	name string
 	exe  string
 	// agentDir is the default agent directory relative to HOME; sessions
@@ -382,7 +433,9 @@ func (a *PiFamily) PromptCommand(prompt string, opts core.AgentOpts) (string, []
 // Generic is the adapter for unrecognized tools. It reports no trajectory —
 // the daemon falls back to the SPEC-0002 scrollback ring (ADR-0007). Per
 // SPEC-0006 REQ "Adapter Selection", this is a real adapter, not an error.
-type Generic struct{}
+type Generic struct {
+	NoSkills
+}
 
 func (a *Generic) Name() string { return "generic" }
 
@@ -425,7 +478,9 @@ type ArgvOwner interface {
 // with `transcripts` gets that adapter's through Registry.TrajectoryAdapter.
 // Governing: ADR-0023, SPEC-0017 REQ-2 "Command Harness Kind", REQ-4
 // "Transcript Binding".
-type Command struct{}
+type Command struct {
+	NoSkills
+}
 
 func (a *Command) Name() string { return "command" }
 

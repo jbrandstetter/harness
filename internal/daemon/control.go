@@ -16,11 +16,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
+	"github.com/stump-wtf/harness/internal/adapter"
 	"github.com/stump-wtf/harness/internal/config"
 	"github.com/stump-wtf/harness/internal/core"
 	"github.com/stump-wtf/harness/internal/protocol"
+	"github.com/stump-wtf/harness/internal/skillmerge"
 	"github.com/stump-wtf/harness/internal/supervisor"
 )
 
@@ -146,6 +151,7 @@ func (c *conn) infoFor(snap supervisor.Snapshot) protocol.HarnessInfo {
 		// silently converting the table to a bare one (SPEC-0026 REQ-7).
 		info.Source = h.PackageSource
 		info.PackageKeys = h.PackageKeys
+		info.Skills = c.skillAttributions(h)
 		info.Backend = string(h.Backend)
 		info.Description = h.Description
 		info.Schedule = h.Schedule
@@ -206,6 +212,66 @@ func (c *conn) opList() []protocol.HarnessInfo {
 	out := make([]protocol.HarnessInfo, 0, len(snaps))
 	for _, s := range snaps {
 		out = append(out, c.infoFor(s))
+	}
+	return out
+}
+
+// skillAttributions resolves the harness's merged skill set with its shadow
+// map for describe (SPEC-0006 REQ "Ordered Merge and Shadowing": shadowed
+// copies MUST remain enumerable). Pure local reads — the same roots
+// spawn's projection draws from, never a fetch. Nil when the harness has
+// no skill ground at all.
+func (c *conn) skillAttributions(h core.Harness) []protocol.SkillAttribution {
+	reg := adapter.NewRegistryWithDefaults()
+	a := reg.Resolve(h)
+	target := a.SkillTarget()
+	if target == "" && len(h.SkillPaths) == 0 {
+		return nil
+	}
+	// Global-file skill_paths are stored raw (the workdir convention) and
+	// spawn expands them; describe expands the same way so the two surfaces
+	// name the same directories.
+	expand := func(d string) string {
+		if strings.HasPrefix(d, "~") {
+			if home, err := os.UserHomeDir(); err == nil {
+				return filepath.Join(home, d[1:])
+			}
+		}
+		return d
+	}
+	var roots []skillmerge.Root
+	if h.UseDefaultSkillPaths {
+		for _, d := range a.SkillRoots(supervisor.Workdir(h)) {
+			roots = append(roots, skillmerge.Root{Dir: expand(d), Tier: 1, Source: "adapter default"})
+		}
+	}
+	for _, d := range h.SkillPaths {
+		roots = append(roots, skillmerge.Root{Dir: expand(d), Tier: 2, Source: "skill_paths"})
+	}
+	// The serving-clone store is out of bounds for roots, exactly as the
+	// spawn-time projection excludes it.
+	serving := supervisor.StateHome() + string(filepath.Separator)
+	kept := roots[:0]
+	for _, r := range roots {
+		if strings.HasPrefix(r.Dir, serving) {
+			continue
+		}
+		kept = append(kept, r)
+	}
+	set, _ := skillmerge.Resolve(kept)
+	names := make([]string, 0, len(set))
+	for name := range set {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]protocol.SkillAttribution, 0, len(names))
+	for _, name := range names {
+		sk := set[name]
+		sa := protocol.SkillAttribution{Name: name, Winner: sk.Winner, WinnerSource: sk.WinSrc}
+		for _, sh := range sk.Shadowed {
+			sa.Shadowed = append(sa.Shadowed, sh.Dir)
+		}
+		out = append(out, sa)
 	}
 	return out
 }

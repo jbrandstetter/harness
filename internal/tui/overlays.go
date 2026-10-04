@@ -398,6 +398,14 @@ func buildHarnessForm(fi *formInputs) *huh.Form {
 			huh.NewConfirm().Title("enabled (autostart)").Value(&fi.enabled),
 			huh.NewConfirm().Title("harvest_trajectory (expose the trajectory read-only over MCP)").Value(&fi.harvestTrajectory),
 			huh.NewInput().Title("mcp_allow (space-separated; read write; blank = no capabilities)").Value(&fi.mcpAllow),
+			huh.NewInput().Title("skill_paths (comma-separated additional skill roots; SPEC-0006)").Value(&fi.skillPaths),
+			huh.NewSelect[string]().Title("use_default_skill_paths (drop the adapter's default skill roots)").
+				Options(
+					huh.NewOption("unset (defaults contribute)", ""),
+					huh.NewOption("true", "true"),
+					huh.NewOption("false", "false"),
+				).
+				Value(&fi.useDefaultSkillPaths),
 			huh.NewInput().Title("operating_hours (weekly windows this resident harness may run in; excludes schedule)").Value(&fi.operatingHours),
 			huh.NewInput().Title("hours_shutdown (graceful/immediate; blank = graceful; requires operating_hours)").Value(&fi.hoursShutdown),
 			huh.NewInput().Title("hours_shutdown_timeout (e.g. 15m; blank = 15m; requires operating_hours)").Value(&fi.hoursShutdownTimeout),

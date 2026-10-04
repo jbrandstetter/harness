@@ -108,11 +108,14 @@ const (
 	// fields, which a client reads as "not waiting", exactly like any other
 	// unknown field. (16 through 20 were taken on main while this branch was
 	// in flight; renumbered here during the merge.)
+	// ProtoMinor 23 added Skills on HarnessInfo (issue #75; SPEC-0006): the
+	// resolved skill set with its shadow map, additive only — an older
+	// daemon omits it and describe simply shows no skill rows.
 	// ProtoMinor 22 added PackageKeys on HarnessInfo (issue #815;
 	// ADR-0044): additive only — an older daemon omits it, so describe
 	// shows the source without per-key attribution; an older client
 	// ignores the unknown field.
-	ProtoMinor = 22
+	ProtoMinor = 23
 )
 
 // ProtoVersion is the "major.minor" string carried in HELLO.
@@ -385,6 +388,16 @@ type SkillsStatusData struct {
 	Repos []SkillRepoStatus `json:"repos"`
 }
 
+// SkillAttribution is one resolved skill name: where the winning copy
+// lives and which tier supplied it, with every shadowed copy enumerable
+// (SPEC-0006 REQ "Ordered Merge and Shadowing").
+type SkillAttribution struct {
+	Name         string   `json:"name"`
+	Winner       string   `json:"winner"`
+	WinnerSource string   `json:"winner_source"`
+	Shadowed     []string `json:"shadowed,omitempty"`
+}
+
 // HarnessInfo is one harness's state for list/describe (SPEC-0003 fields; the
 // glyph is derived client-side from State). It is the JSON projection of a
 // supervisor.Snapshot plus the config-derived Cmd/Backend/Description.
@@ -446,6 +459,11 @@ type HarnessInfo struct {
 	// package's or the operator's own. Empty on daemons older than
 	// ProtoMinor 22, where describe shows the source without attribution.
 	PackageKeys []string `json:"package_keys,omitempty"`
+	// Skills is the harness's resolved skill set with its shadow map
+	// (SPEC-0006 REQ "Ordered Merge and Shadowing"): each name's winning
+	// source path and every shadowed one. Nil on daemons older than
+	// ProtoMinor 23.
+	Skills []SkillAttribution `json:"skills,omitempty"`
 	// LastStarted / LastExitAt (RFC 3339) bound the harness's latest run, so a
 	// client can attribute a session to the harness whose run covers it, not
 	// merely to one sharing its workdir (SPEC-0006 REQ "Run Correlation";

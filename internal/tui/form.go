@@ -147,6 +147,15 @@ type HarnessForm struct {
 	// silently revokes a harness's write authority — or, worse on the way back,
 	// would re-grant it.
 	MCPAllow []string
+	// SkillPaths is the harness's additional skill roots, comma-separated in
+	// the form (SPEC-0006 REQ "Skill Path Configuration"). Round-trip field
+	// (issue #161).
+	SkillPaths []string
+	// UseDefaultSkillPaths is the tri-state switch that drops the adapter's
+	// default skill roots when "false"; "" and "true" both mean the
+	// SPEC-0006 default (defaults contribute). Round-trip field (issue
+	// #161).
+	UseDefaultSkillPaths string
 	// OperatingHours gates a resident harness to weekly windows (ADR-0019):
 	// requires the harness NOT be scheduled (Validate mirrors the parser's
 	// mutual exclusion with Schedule). Carried through the form for the same
@@ -611,6 +620,20 @@ func (f HarnessForm) TOML() string {
 		}
 		fmt.Fprintf(&b, "mcp_allow = [%s]\n", strings.Join(parts, ", "))
 	}
+	// SPEC-0006 REQ "Skill Path Configuration": paths are quoted list
+	// entries; the defaults switch is written only when false — "" and
+	// "true" both mean the parser default (defaults contribute), so an
+	// untouched edit never grows keys.
+	if len(f.SkillPaths) > 0 {
+		parts := make([]string, len(f.SkillPaths))
+		for i, p := range f.SkillPaths {
+			parts[i] = strconv.Quote(p)
+		}
+		fmt.Fprintf(&b, "skill_paths = [%s]\n", strings.Join(parts, ", "))
+	}
+	if strings.TrimSpace(f.UseDefaultSkillPaths) == "false" {
+		b.WriteString("use_default_skill_paths = false\n")
+	}
 	// SPEC-0018 REQ-11: the claude-code one-shot persona keys.
 	if f.SystemPromptFile != "" {
 		fmt.Fprintf(&b, "system_prompt_file = %s\n", strconv.Quote(f.SystemPromptFile))
@@ -778,6 +801,10 @@ func editInputsFor(path string, sel protocol.HarnessInfo) formInputs {
 		fi.exportTelemetry = strconv.FormatBool(*h.ExportTelemetry)
 	}
 	fi.mcpAllow = strings.Join(h.MCPAllow, " ")
+	fi.skillPaths = strings.Join(h.SkillPaths, ", ")
+	if !h.UseDefaultSkillPaths {
+		fi.useDefaultSkillPaths = "false"
+	}
 	fi.operatingHours = h.OperatingHours
 	if h.OperatingHours != "" {
 		// Same "blank means the parser default" convention as the schedule
@@ -852,6 +879,8 @@ func (fi formInputs) toForm() HarnessForm {
 	// with the parser's ["read"] default, so a blank field is a deliberate
 	// clear rather than an unset one.
 	f.MCPAllow = strings.Fields(fi.mcpAllow)
+	f.SkillPaths = splitEnvFileInput(fi.skillPaths)
+	f.UseDefaultSkillPaths = strings.TrimSpace(fi.useDefaultSkillPaths)
 	if d, err := strconv.Atoi(strings.TrimSpace(fi.delay)); err == nil {
 		f.RestartDelay = d
 	}
