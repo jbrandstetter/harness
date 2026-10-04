@@ -93,8 +93,8 @@ func TestDescribeShowsLastIntentChange(t *testing.T) {
 	if h.LastIntentSource != "verb:start" || h.LastIntentAt == "" {
 		t.Fatalf("after start, last intent = %q @ %q, want verb:start with a time", h.LastIntentSource, h.LastIntentAt)
 	}
-	// The verb came over the unix socket, so the platform (Linux) reports
-	// the peer and the daemon must carry it.
+	// The verb came over the unix socket, so the platform (linux and darwin,
+	// both release targets) reports the peer and the daemon must carry it.
 	if h.LastIntentPeer == "" {
 		t.Fatal("socket verb did not record the peer credentials")
 	}
