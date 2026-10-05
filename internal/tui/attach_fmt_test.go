@@ -117,3 +117,51 @@ func TestAttachRawToggleIsANoOpWithoutAFormatter(t *testing.T) {
 		t.Errorf("status bar badges a raw mode that does not exist:\n%s", got)
 	}
 }
+
+// TestAttachInteractiveClaudeRendersLikeTheMirror: a claude-code harness
+// that is an interactive session, not a stream-json one-shot, paints a
+// full-screen Ink UI. The readable view must be invisible to it: the same
+// bytes through the claude-code attach and through the byte-faithful one
+// leave the same screen. Before, the formatter dropped the frame's blank
+// rows, the redraw's "up 5 rows" then reached past the frame's top, and the
+// dialog's options overwrote each other after one keypress.
+func TestAttachInteractiveClaudeRendersLikeTheMirror(t *testing.T) {
+	const frame = "\x1b[?2026h" +
+		"Do you trust this folder?\r\r\n" +
+		"\r\r\n" +
+		"\x1b[2G❯\x1b[4G1. No, exit\r\r\n" +
+		"\x1b[4G2. Yes, trust\r\r\n" +
+		"\r\r\n" +
+		"Enter to confirm" +
+		"\x1b[?2026l"
+	const redraw = "\x1b[?2026h" +
+		"\x1b[5A\r\x1b[J" +
+		"Do you trust this folder?\r\n" +
+		"\r\n" +
+		"\x1b[4G1. No, exit\r\n" +
+		"\x1b[2G❯\x1b[4G2. Yes, trust\r\n" +
+		"\r\n" +
+		"Enter to confirm" +
+		"\x1b[1C\x1b[3A\x1b[?2026l"
+
+	screen := func(adapterName string) string {
+		m, _ := attachModelWithAdapter(t, adapterName)
+		drain(m.attachTo(m.harnesses[0], 0))
+		for _, chunk := range []string{frame[:30], frame[30:], redraw[:21], redraw[21:]} {
+			m.Update(attachDataMsg{sessionID: m.att.sessionID, data: []byte(chunk)})
+		}
+		var rows []string
+		for _, row := range strings.Split(ansi.Strip(m.att.view.render()), "\n") {
+			rows = append(rows, strings.TrimRight(row, " "))
+		}
+		return strings.TrimRight(strings.Join(rows, "\n"), "\n")
+	}
+
+	want := screen("generic")
+	if !strings.Contains(want, "2. Yes, trust") {
+		t.Fatalf("the byte-faithful reference lost the dialog; the fixture is wrong:\n%s", want)
+	}
+	if got := screen("claude-code"); got != want {
+		t.Errorf("claude-code attach drew an interactive session differently from the byte mirror:\n--- claude-code\n%s\n--- mirror\n%s", got, want)
+	}
+}
