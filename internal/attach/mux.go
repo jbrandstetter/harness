@@ -78,6 +78,9 @@ type Mux struct {
 	// Guarded by mu: written from the EnableMode/DisableMode callbacks, which
 	// fire under term.Write in Mux.Write, and read in Input.
 	bracketedPaste bool
+	// mouse shadows the guest's mouse-reporting modes for the snapshot (see
+	// mousemodes.go). Guarded by mu like bracketedPaste.
+	mouse mouseModes
 
 	// sizeMu guards the authoritative viewport, and only that. It is
 	// deliberately not mu: the supervisor's actor loop reads the size (through
@@ -132,18 +135,21 @@ func newMuxLimits(name string, lim RingLimits, onResize func(cols, rows int), on
 	// ever sees the guest's ?2004h: a client attaches to a screen snapshot
 	// (renderScreen emits cells, cursor and SGR — no modes), so a client-side
 	// emulator has no way to learn that an agent TUI which started before the
-	// attach has the mode on. See Input.
+	// attach has the mode on. See Input. The mouse modes are shadowed for the
+	// same reason; the snapshot states them (snapshotLocked).
 	if e, ok := m.term.(*vt.Emulator); ok {
 		e.SetCallbacks(vt.Callbacks{
 			EnableMode: func(mode ansi.Mode) {
 				if mode == ansi.ModeBracketedPaste {
 					m.bracketedPaste = true
 				}
+				m.mouse.track(mode, true)
 			},
 			DisableMode: func(mode ansi.Mode) {
 				if mode == ansi.ModeBracketedPaste {
 					m.bracketedPaste = false
 				}
+				m.mouse.track(mode, false)
 			},
 		})
 	}
@@ -350,7 +356,7 @@ func (m *Mux) Attach(id uint32, mode protocol.AttachMode, cols, rows int, write 
 		createdAt: time.Now(),
 	}
 	m.mu.Lock()
-	s.enqueueLocked(renderScreen(m.term)) // 1. screen snapshot
+	s.enqueueLocked(m.snapshotLocked()) // 1. screen snapshot
 	for _, f := range m.ring.tailFrames() {
 		s.enqueueLocked(f) // 2. scrollback tail, one storage chunk per frame
 	}
@@ -451,7 +457,15 @@ func (m *Mux) setSize(cols, rows int) {
 }
 
 // renderSnapshotLocked renders the current screen. Caller holds mu.
-func (m *Mux) renderSnapshotLocked() []byte { return renderScreen(m.term) }
+func (m *Mux) renderSnapshotLocked() []byte { return m.snapshotLocked() }
+
+// snapshotLocked is what an attach client is repainted from: the screen, then
+// the guest's mouse modes (a repaint of cells cannot carry them). AnsiScreen
+// stays cells-only, because capture writes those bytes to a real terminal that
+// must not start reporting the mouse. Caller holds mu.
+func (m *Mux) snapshotLocked() []byte {
+	return append(renderScreen(m.term), m.mouse.repaint()...)
+}
 
 // applyResizeLocked recomputes the authoritative PTY size as the smallest
 // viewport across attached sessions and, if it changed, resizes the emulator

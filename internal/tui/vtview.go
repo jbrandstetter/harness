@@ -27,6 +27,8 @@ type vtView struct {
 	// interface exposes no reader for it, so it has to be reconstructed from
 	// callbacks — see newVTView for why one callback isn't enough.
 	cursorHidden bool
+	// mouse shadows the guest's mouse-reporting modes (see guestMouse).
+	mouse guestMouse
 }
 
 // newVTView creates an embedded terminal of the given size.
@@ -62,11 +64,13 @@ func newVTView(cols, rows int) *vtView {
 			if m == ansi.ModeTextCursorEnable {
 				v.cursorHidden = false
 			}
+			v.mouse.track(m, true)
 		},
 		DisableMode: func(m ansi.Mode) {
 			if m == ansi.ModeTextCursorEnable {
 				v.cursorHidden = true
 			}
+			v.mouse.track(m, false)
 		},
 	})
 	installMarginClamps(v.term.(*vt.Emulator))
@@ -134,6 +138,7 @@ func (v *vtView) reset(cols, rows int) {
 	v.write([]byte("\x1bc"))
 	v.resize(cols, rows)
 	v.cursorHidden = false
+	v.mouse = guestMouse{}
 }
 
 // resize resizes the emulator (the client viewport changed; smallest-attached-
