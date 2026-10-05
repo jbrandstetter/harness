@@ -83,16 +83,27 @@ func (a *ClaudeCode) PeekFormatter() PeekFormatter {
 }
 
 // streamJSONLineCap bounds the partial-line buffer. A guest that writes
-// endlessly without ever emitting a newline (a full-screen TUI redraw, or
-// binary traffic) must not pin memory or wedge the renderer; past the cap
-// the buffered bytes pass through untouched and the line buffer restarts.
+// an endless line that merely begins with "{" must not pin memory or
+// wedge the renderer; past the cap the buffered bytes pass through
+// untouched and the rest of the line follows them.
 const streamJSONLineCap = 64 << 10
 
 // streamJSONRenderer is the claude-code PeekFormatter. It buffers partial
 // lines across chunks, renders the modeled Claude Code event kinds, and
 // passes everything else through verbatim.
+//
+// Only a line that begins with "{" can be a stream-json event, so that is
+// the only line it holds back. Everything else is forwarded as it arrives:
+// an interactive claude session is a full-screen Ink UI whose redraws are
+// relative cursor moves, and holding, dropping or reshaping any of its
+// bytes (a blank row, a cursor-parking sequence that has no newline after
+// it) moves the screen out from under the cursor.
 type streamJSONRenderer struct {
+	// buf holds the unfinished line of a stream-json candidate.
 	buf []byte
+	// raw is set while the current line is being forwarded verbatim: it
+	// did not start with "{", or it turned out not to be JSON.
+	raw bool
 
 	// Heartbeat tally. A heartbeat paints a tally line once and then
 	// rewrites it in place on every ping (the cursor stays at the line's
@@ -145,38 +156,60 @@ type blockInput struct {
 // FormatPTY renders a chunk of the guest's PTY output.
 func (r *streamJSONRenderer) FormatPTY(chunk []byte) []byte {
 	var out []byte
-	r.buf = append(r.buf, chunk...)
-	for {
-		i := bytes.IndexByte(r.buf, '\n')
-		if i < 0 {
-			break
+	for len(chunk) > 0 {
+		if !r.raw && len(r.buf) == 0 && chunk[0] != '{' {
+			// Not a stream-json line: terminal output is forwarded
+			// as-is. A live heartbeat tally must not bleed into it.
+			out = append(out, r.closeTally()...)
+			r.raw = true
 		}
-		line := r.buf[:i]
-		r.buf = r.buf[i+1:]
-		out = append(out, r.renderLine(line)...)
-	}
-	if len(r.buf) > streamJSONLineCap {
-		// The tally line, if one is live, must not bleed into the
-		// passthrough bytes: close it first.
-		out = append(out, r.closeTally()...)
-		out = append(out, r.buf...)
+		nl := bytes.IndexByte(chunk, '\n')
+		end := len(chunk)
+		if nl >= 0 {
+			end = nl + 1
+		}
+		if r.raw {
+			out = append(out, chunk[:end]...)
+			chunk = chunk[end:]
+			r.raw = nl < 0
+			continue
+		}
+		// A stream-json line is JSON, and JSON cannot contain a raw
+		// escape byte: one means this is terminal output that happens to
+		// start with "{".
+		if bytes.IndexByte(chunk[:end], 0x1b) >= 0 {
+			out = append(out, r.closeTally()...)
+			out = append(out, r.buf...)
+			out = append(out, chunk[:end]...)
+			r.buf = r.buf[:0]
+			chunk = chunk[end:]
+			r.raw = nl < 0
+			continue
+		}
+		if nl < 0 {
+			r.buf = append(r.buf, chunk...)
+			chunk = nil
+			if len(r.buf) > streamJSONLineCap {
+				out = append(out, r.closeTally()...)
+				out = append(out, r.buf...)
+				r.buf = r.buf[:0]
+				r.raw = true
+			}
+			continue
+		}
+		r.buf = append(r.buf, chunk[:nl]...)
+		chunk = chunk[end:]
+		out = append(out, r.renderLine(r.buf)...)
 		r.buf = r.buf[:0]
 	}
 	return out
 }
 
-// renderLine renders one complete PTY line. The trailing \r of a CRLF pair
-// is stripped before anything looks at the content.
+// renderLine renders one complete PTY line that begins with "{". The
+// trailing \r of a CRLF pair is stripped before anything looks at the
+// content.
 func (r *streamJSONRenderer) renderLine(line []byte) []byte {
 	line = bytes.TrimRight(line, "\r")
-	if len(bytes.TrimSpace(line)) == 0 {
-		return nil
-	}
-	if line[0] != '{' {
-		// Terminal escape output, a shell error, anything that is not
-		// JSON: the preview is a faithful mirror for it.
-		return r.passthrough(line)
-	}
 	var ev streamEvent
 	if err := json.Unmarshal(line, &ev); err != nil {
 		// Looks like JSON but is not parseable: passthrough keeps the

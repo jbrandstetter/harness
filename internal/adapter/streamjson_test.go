@@ -150,6 +150,102 @@ func TestStreamJSONCRLEFPassthrough(t *testing.T) {
 	}
 }
 
+// The PTY terminates each guest line with CRLF and the VT emulator treats a
+// bare LF as "down one row, no carriage return", so every byte the formatter
+// emits must carry its CR (#877).
+func TestStreamJSONFormatPTYNeverEmitsBareLF(t *testing.T) {
+	in := "bash: line 1: foo: command not found\r\n" +
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"First line.\nSecond line."}]}}\r\n` +
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls","description":"List files"}}]}}\r\n` +
+		`{"type":"tool_progress","heartbeat":true,"elapsed_time_seconds":30}\r\n` +
+		`{"type":"result","subtype":"success","is_error":false,"duration_ms":1000,"num_turns":1,"total_cost_usd":0.01}\r\n`
+	got := renderAll(t, in)
+	for i := 1; i < len(got); i++ {
+		if got[i] == '\n' && got[i-1] != '\r' {
+			t.Fatalf("a bare \\n reached the emulator; every LF must be a CRLF pair:\n%q", got)
+		}
+	}
+}
+
+// inkRedraw is the shape of an interactive claude session's output, cut down
+// from a recorded trust dialog: Ink paints a frame inside synchronized-output
+// markers and, on every keypress, redraws it with relative cursor moves
+// (\x1b[nA up, \x1b[nG column) that count rows, blank ones included. The
+// frame ends on a cursor-parking sequence with no newline after it.
+const inkFrame = "\x1b[?2026h" +
+	"Do you trust this folder?\r\r\n" +
+	"\r\r\n" +
+	"\x1b[2G\u276f\x1b[4G1. No, exit\r\r\n" +
+	"\x1b[4G2. Yes, trust\r\r\n" +
+	"\r\r\n" +
+	"Enter to confirm" +
+	"\x1b[?2026l"
+
+const inkRedraw = "\x1b[?2026h" +
+	"\x1b[5A\r\x1b[J" +
+	"Do you trust this folder?\r\n" +
+	"\r\n" +
+	"\x1b[4G1. No, exit\r\n" +
+	"\x1b[2G\u276f\x1b[4G2. Yes, trust\r\n" +
+	"\r\n" +
+	"Enter to confirm" +
+	"\x1b[1C\x1b[3A\x1b[?2026l"
+
+// An interactive claude session is not stream-json. Its bytes must come out
+// exactly as they went in, and without waiting for a newline: dropping the
+// blank rows or withholding the cursor-parking tail leaves the emulator
+// counting rows against a screen that is no longer the one Ink drew.
+func TestStreamJSONInteractiveBytesPassThroughVerbatim(t *testing.T) {
+	in := inkFrame + inkRedraw
+	for split := 0; split <= len(in); split++ {
+		if split > 0 && split < len(in) && in[split-1] == '\r' && in[split] == '\n' {
+			// onlcr keeps no state between chunks, so a CRLF cut in half
+			// gains a redundant CR. Harmless to an emulator, and not what
+			// this test is about.
+			continue
+		}
+		r := &streamJSONRenderer{}
+		var out []byte
+		for _, c := range []string{in[:split], in[split:]} {
+			got := r.FormatPTY([]byte(c))
+			if len(got) != len(c) {
+				t.Fatalf("split at %d: %d bytes in, %d out; a chunk without a newline must not be held or reshaped:\n in %q\nout %q", split, len(c), len(got), c, got)
+			}
+			out = append(out, got...)
+		}
+		if string(out) != in {
+			t.Fatalf("split at %d: bytes changed in transit:\n got %q\nwant %q", split, out, in)
+		}
+	}
+}
+
+// A terminal line that merely starts with "{" is held only until it is
+// recognised as terminal output: JSON cannot contain a raw escape byte, so
+// the first one releases the line.
+func TestStreamJSONBraceLedTerminalOutputIsReleased(t *testing.T) {
+	r := &streamJSONRenderer{}
+	in := "{ \x1b[1mbold\x1b[0m cursor parked\x1b[3A"
+	if got := r.FormatPTY([]byte(in)); string(got) != in {
+		t.Errorf("a brace-led line carrying an escape byte was held back:\n got %q\nwant %q", got, in)
+	}
+	if r.FormatPTY([]byte("more\r\n")); len(r.buf) != 0 || r.raw {
+		t.Errorf("renderer did not return to line start after the line ended: buf=%q raw=%v", r.buf, r.raw)
+	}
+}
+
+// The line buffer's cap releases an endless brace-led line and keeps
+// forwarding the rest of it, rather than buffering it again.
+func TestStreamJSONBufferCapReleasesTheRestOfTheLine(t *testing.T) {
+	r := &streamJSONRenderer{}
+	head := "{" + strings.Repeat("x", streamJSONLineCap)
+	if got := r.FormatPTY([]byte(head)); string(got) != head {
+		t.Fatalf("oversized brace-led chunk was not released: %d bytes in, %d out", len(head), len(got))
+	}
+	if got := r.FormatPTY([]byte("tail")); string(got) != "tail" {
+		t.Errorf("the rest of a released line was held again:\n%q", got)
+	}
+}
+
 func TestStreamJSONBufferCapFlushesVerbatim(t *testing.T) {
 	r := &streamJSONRenderer{}
 	big := strings.Repeat("x", streamJSONLineCap+16) // no newline anywhere
