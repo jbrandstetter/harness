@@ -5,6 +5,7 @@ package tui
 // TOML table deletion for the delete confirm — ADR-0006 file-is-truth).
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"regexp"
@@ -40,34 +41,67 @@ func keyToBytes(msg tea.KeyPressMsg) []byte {
 	if ctrl && msg.Code >= 'a' && msg.Code <= 'z' {
 		return altPrefix(alt, []byte{byte(msg.Code - 'a' + 1)})
 	}
+	// Shift and Ctrl on a cursor or editing key travel as xterm's modifier
+	// parameter (ESC [ 1 ; 5 D for Ctrl+Left). Alt joins that parameter when
+	// either is held; Alt alone keeps the ESC prefix below.
+	shift := msg.Mod&tea.ModShift != 0
+	xmod := 1
+	if shift {
+		xmod += 1
+	}
+	if alt {
+		xmod += 2
+	}
+	if ctrl {
+		xmod += 4
+	}
+	modified := shift || ctrl
+	csi := func(num int, final byte) []byte {
+		if !modified {
+			if final == '~' {
+				return []byte(fmt.Sprintf("\x1b[%d~", num))
+			}
+			return []byte{0x1b, '[', final}
+		}
+		if final == '~' {
+			return []byte(fmt.Sprintf("\x1b[%d;%d~", num, xmod))
+		}
+		return []byte(fmt.Sprintf("\x1b[1;%d%c", xmod, final))
+	}
+
 	var base []byte
 	switch msg.Code {
 	case tea.KeyEnter:
 		base = []byte{'\r'}
 	case tea.KeyTab:
-		base = []byte{'\t'}
+		if shift && !ctrl {
+			// Back-tab. Claude Code cycles its permission mode on it.
+			base = []byte("\x1b[Z")
+		} else {
+			base = []byte{'\t'}
+		}
 	case tea.KeyBackspace:
 		base = []byte{0x7f}
 	case tea.KeyDelete:
-		base = []byte("\x1b[3~")
+		base = csi(3, '~')
 	case tea.KeyEscape:
 		base = []byte{0x1b}
 	case tea.KeyUp:
-		base = []byte("\x1b[A")
+		base = csi(1, 'A')
 	case tea.KeyDown:
-		base = []byte("\x1b[B")
+		base = csi(1, 'B')
 	case tea.KeyRight:
-		base = []byte("\x1b[C")
+		base = csi(1, 'C')
 	case tea.KeyLeft:
-		base = []byte("\x1b[D")
+		base = csi(1, 'D')
 	case tea.KeyHome:
-		base = []byte("\x1b[H")
+		base = csi(1, 'H')
 	case tea.KeyEnd:
-		base = []byte("\x1b[F")
+		base = csi(1, 'F')
 	case tea.KeyPgUp:
-		base = []byte("\x1b[5~")
+		base = csi(5, '~')
 	case tea.KeyPgDown:
-		base = []byte("\x1b[6~")
+		base = csi(6, '~')
 	}
 	if base == nil && msg.Text != "" {
 		// Printable characters (space included) pass through verbatim. Text is
@@ -75,9 +109,21 @@ func keyToBytes(msg tea.KeyPressMsg) []byte {
 		// v1's KeyRunes/KeySpace pair collapsed into one case.
 		base = []byte(msg.Text)
 	}
+	if modified && isCSIKey(msg.Code) {
+		return base // Alt is already in the modifier parameter
+	}
 	// Alt/Meta prefixes ESC — what a real terminal sends for an Alt chord
 	// (#178: this used to forward Alt+a as a bare "a", losing the modifier).
 	return altPrefix(alt, base)
+}
+
+func isCSIKey(code rune) bool {
+	switch code { //nolint:exhaustive
+	case tea.KeyUp, tea.KeyDown, tea.KeyRight, tea.KeyLeft, tea.KeyHome, tea.KeyEnd,
+		tea.KeyDelete, tea.KeyPgUp, tea.KeyPgDown:
+		return true
+	}
+	return false
 }
 
 // altPrefix prepends the ESC byte an Alt/Meta chord carries on the wire.

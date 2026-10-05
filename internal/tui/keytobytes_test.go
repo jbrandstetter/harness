@@ -146,6 +146,56 @@ func TestKeyToBytesAltPrefixesEsc(t *testing.T) {
 	}
 }
 
+// TestKeyToBytesModifiedCursorKeys pins the xterm encodings a guest reads for
+// Shift/Ctrl on the cursor and editing keys, and for Shift+Tab. Before this
+// the modifiers were dropped on the way to the PTY, so Ctrl+Left moved one
+// character instead of one word and Shift+Tab, which Claude Code uses to cycle
+// its permission mode, arrived as a plain Tab.
+func TestKeyToBytesModifiedCursorKeys(t *testing.T) {
+	const (
+		shift = tea.ModShift
+		alt   = tea.ModAlt
+		ctrl  = tea.ModCtrl
+	)
+	tests := []struct {
+		name string
+		msg  tea.KeyPressMsg
+		want string
+	}{
+		{"shift+tab is back-tab", tea.KeyPressMsg{Code: tea.KeyTab, Mod: shift}, "\x1b[Z"},
+		{"alt+shift+tab keeps the ESC prefix", tea.KeyPressMsg{Code: tea.KeyTab, Mod: alt | shift}, "\x1b\x1b[Z"},
+		{"ctrl+tab stays a tab", tea.KeyPressMsg{Code: tea.KeyTab, Mod: ctrl}, "\t"},
+
+		{"shift+up", tea.KeyPressMsg{Code: tea.KeyUp, Mod: shift}, "\x1b[1;2A"},
+		{"ctrl+down", tea.KeyPressMsg{Code: tea.KeyDown, Mod: ctrl}, "\x1b[1;5B"},
+		{"ctrl+right", tea.KeyPressMsg{Code: tea.KeyRight, Mod: ctrl}, "\x1b[1;5C"},
+		{"ctrl+left", tea.KeyPressMsg{Code: tea.KeyLeft, Mod: ctrl}, "\x1b[1;5D"},
+		{"ctrl+shift+left", tea.KeyPressMsg{Code: tea.KeyLeft, Mod: ctrl | shift}, "\x1b[1;6D"},
+		{"shift+home", tea.KeyPressMsg{Code: tea.KeyHome, Mod: shift}, "\x1b[1;2H"},
+		{"ctrl+end", tea.KeyPressMsg{Code: tea.KeyEnd, Mod: ctrl}, "\x1b[1;5F"},
+		{"ctrl+delete", tea.KeyPressMsg{Code: tea.KeyDelete, Mod: ctrl}, "\x1b[3;5~"},
+		{"shift+pgup", tea.KeyPressMsg{Code: tea.KeyPgUp, Mod: shift}, "\x1b[5;2~"},
+		{"ctrl+pgdown", tea.KeyPressMsg{Code: tea.KeyPgDown, Mod: ctrl}, "\x1b[6;5~"},
+
+		// With Shift or Ctrl present Alt rides in the parameter (2), not as an
+		// extra ESC in front.
+		{"alt+shift+left", tea.KeyPressMsg{Code: tea.KeyLeft, Mod: alt | shift}, "\x1b[1;4D"},
+		{"ctrl+alt+right", tea.KeyPressMsg{Code: tea.KeyRight, Mod: ctrl | alt}, "\x1b[1;7C"},
+		{"ctrl+alt+delete", tea.KeyPressMsg{Code: tea.KeyDelete, Mod: ctrl | alt}, "\x1b[3;7~"},
+		{"meta counts as alt", tea.KeyPressMsg{Code: tea.KeyLeft, Mod: tea.ModMeta | ctrl}, "\x1b[1;7D"},
+
+		// Alt alone is unchanged (TestKeyToBytesAltPrefixesEsc pins alt+left).
+		{"alt+delete", tea.KeyPressMsg{Code: tea.KeyDelete, Mod: alt}, "\x1b\x1b[3~"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := keyToBytes(tt.msg); string(got) != tt.want {
+				t.Errorf("keyToBytes(%s) = %q, want %q", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestKeyToBytesNoChordReturnsNothing pins the invariant from #178: every
 // chord a real terminal can report over the shapes keyToBytes handles —
 // Ctrl±(Shift|Alt) letters and Alt over text, specials, and control keys —
