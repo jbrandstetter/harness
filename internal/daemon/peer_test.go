@@ -1,10 +1,10 @@
-//go:build linux || darwin
-
 package daemon
 
 // Governing: issue #835, ask 1 — where the platform gives it, an enabled-
 // intent change from a socket verb carries the peer's uid/pid, so the journal
-// line says which user and which process flipped the intent.
+// line says which user and which process flipped the intent. The test runs on
+// every platform and keys on ReportsPeerCredentials, so a platform that gains
+// or loses an implementation cannot leave the expectation behind.
 
 import (
 	"net"
@@ -44,7 +44,10 @@ func TestPeerCredentialsUnix(t *testing.T) {
 	}
 	defer c.Close()
 
-	want := "uid=" + strconv.Itoa(os.Getuid()) + " pid=" + strconv.Itoa(os.Getpid())
+	want := ""
+	if ReportsPeerCredentials {
+		want = "uid=" + strconv.Itoa(os.Getuid()) + " pid=" + strconv.Itoa(os.Getpid())
+	}
 	if got := <-peer; got != want {
 		t.Fatalf("peer = %q, want %q", got, want)
 	}

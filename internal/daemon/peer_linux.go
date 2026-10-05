@@ -8,6 +8,10 @@ import (
 	"syscall"
 )
 
+// ReportsPeerCredentials says peerCredentials names the peer here, so a test
+// can expect a peer on a socket verb without hardcoding which OS gives one.
+const ReportsPeerCredentials = true
+
 // peerCredentials reads SO_PEERCRED off an accepted unix-socket connection:
 // the uid and pid the kernel saw on the other end, so an intent-change line
 // can name the process that issued the verb (issue #835). It returns "" when

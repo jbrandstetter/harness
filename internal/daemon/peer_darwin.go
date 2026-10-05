@@ -9,6 +9,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// ReportsPeerCredentials says peerCredentials names the peer here, so a test
+// can expect a peer on a socket verb without hardcoding which OS gives one.
+const ReportsPeerCredentials = true
+
 // peerCredentials reads LOCAL_PEERCRED and LOCAL_PEERPID off an accepted
 // unix-socket connection: darwin's counterpart to linux SO_PEERCRED, giving
 // the uid and pid the kernel saw on the other end, so an intent-change line
