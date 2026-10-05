@@ -467,9 +467,7 @@ func (m *Model) onAttachedKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// SPEC-0001 REQ "Attached Mode" + ADR-0008).
 	if !m.att.readOnly() && m.attach != nil {
 		if b := keyToBytes(msg); len(b) > 0 {
-			sid := m.att.sessionID
-			data := b
-			return m, func() tea.Msg { _ = m.attach.AttachInput(sid, data); return nil }
+			return m, m.sendAttachInput(m.att.sessionID, b)
 		}
 	}
 	return m, nil
@@ -525,9 +523,7 @@ func (m *Model) onPaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 	// so the next real keystroke isn't swallowed as one (tmux behaves the
 	// same way).
 	m.att.prefixArmed = false
-	sid := m.att.sessionID
-	data := []byte("\x1b[200~" + msg.Content + "\x1b[201~")
-	return m, func() tea.Msg { _ = m.attach.AttachInput(sid, data); return nil }
+	return m, m.sendAttachInput(m.att.sessionID, []byte("\x1b[200~"+msg.Content+"\x1b[201~"))
 }
 
 // focusedPasteInput returns the textinput that currently owns the keyboard,
