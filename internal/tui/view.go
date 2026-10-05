@@ -34,6 +34,11 @@ func (m *Model) View() tea.View {
 	v.AltScreen = true
 	if !m.mouseReleased {
 		v.MouseMode = tea.MouseModeCellMotion
+		// A guest that tracks every motion (?1003) only hears hovers if the
+		// terminal reports them to us.
+		if m.guestOwnsMouse() && m.att.view.mouse.anyEvent {
+			v.MouseMode = tea.MouseModeAllMotion
+		}
 	}
 	return v
 }

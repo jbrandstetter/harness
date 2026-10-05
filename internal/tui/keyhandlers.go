@@ -45,9 +45,11 @@ func (m *Model) onMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// onAttachedMouse handles mouse events while in attached mode. Wheel-up in
-// the interactive substate enters scrollback; wheel in scrollback navigates.
-// Shift+click/drag releases the TUI's mouse grab so the terminal handles
+// onAttachedMouse handles mouse events while in attached mode. A guest that
+// asked for mouse reporting owns them: they are encoded and forwarded to its
+// PTY, so a fullscreen agent TUI scrolls its own transcript from the wheel.
+// Otherwise wheel-up in the interactive substate enters scrollback, and wheel
+// in scrollback navigates. Shift+click/drag releases the TUI's mouse grab so the terminal handles
 // native text selection (tmux-style shift-passthrough, #49); wheel events
 // keep their normal meaning even with shift held. Any key press re-enables
 // the grab (onKey).
@@ -69,6 +71,21 @@ func (m *Model) onAttachedMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		// session was killed.
 		m.mouseReleased = true
 		return m, mouseRegrab()
+	}
+	if m.guestOwnsMouse() {
+		// Events the guest's mode does not ask for (or outside its screen, such
+		// as the status bar) are dropped, never turned into scrollback. So are
+		// all of them while an overlay is up: it owns the screen, and the guest
+		// behind it must not act on clicks it cannot see.
+		if m.overlay != overlayNone {
+			return m, nil
+		}
+		data := m.att.view.mouse.encode(msg, m.att.view.term.Width(), m.att.view.term.Height())
+		if data == nil {
+			return m, nil
+		}
+		sid := m.att.sessionID
+		return m, func() tea.Msg { _ = m.attach.AttachInput(sid, data); return nil }
 	}
 	if !isWheel {
 		return m, nil
@@ -457,8 +474,10 @@ func (m *Model) onAttachedKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// PgUp enters scrollback without the prefix.
-	if key.Matches(msg, m.keys.Scrollback) {
+	// PgUp enters scrollback without the prefix, unless the guest scrolls
+	// itself (it asked for mouse reporting, as a fullscreen agent TUI does):
+	// then PgUp is its key, and ^b [ is the way into harness scrollback.
+	if key.Matches(msg, m.keys.Scrollback) && !m.guestOwnsMouse() {
 		m.att.enterScrollback(m.peekLines(), m.scrollbackHeight())
 		return m, nil
 	}
