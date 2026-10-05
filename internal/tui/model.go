@@ -177,6 +177,9 @@ type Model struct {
 	// the dashboard. Used by `harness attach <name>`.
 	attachOnlyPending string
 
+	// inq orders the keystrokes and pastes sent to the attached session.
+	inq *attachInputQueue
+
 	// connection (two conns: control + events/attach — see readloop.go).
 	ctrl    Controller
 	attach  attachConn
